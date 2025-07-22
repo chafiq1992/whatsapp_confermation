@@ -17,6 +17,7 @@ gspread==6.2.0
 h11==0.14.0
 aiosqlite
 aiofiles
+redis
 httpcore==1.0.7
 httplib2==0.22.0
 httptools==0.6.4
