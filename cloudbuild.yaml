@@ -1,0 +1,46 @@
+# cloudbuild.yaml
+substitutions:
+  _SERVICE: whatsapp-last                    # Cloud Run service name
+  _REGION: europe-west1                      # pick yours
+  _REPO: whatsapp-last                       # Artifact Registry repo name
+
+steps:
+# 1) Build
+- id: build
+  name: gcr.io/cloud-builders/docker
+  dir: .
+  args:
+    - build
+    - --tag
+    - ${LOCATION}-docker.pkg.dev/$PROJECT_ID/$_REPO/app:$SHORT_SHA
+    - .
+  privileged: true           # <<< MUST be present for DinD
+
+# 2) Push
+- id: push
+  name: gcr.io/cloud-builders/docker
+  args:
+    - push
+    - ${LOCATION}-docker.pkg.dev/$PROJECT_ID/$_REPO/app:$SHORT_SHA
+  privileged: true           # push also needs Docker
+
+# 3) Deploy
+- id: deploy
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+  entrypoint: gcloud
+  args:
+    - run
+    - deploy
+    - $_SERVICE
+    - --image
+    - ${LOCATION}-docker.pkg.dev/$PROJECT_ID/$_REPO/app:$SHORT_SHA
+    - --region
+    - $_REGION
+    - --platform
+    - managed
+    - --quiet
+    # uncomment if you want public HTTP
+    - --allow-unauthenticated
+
+images:
+  - ${LOCATION}-docker.pkg.dev/$PROJECT_ID/$_REPO/app:$SHORT_SHA
