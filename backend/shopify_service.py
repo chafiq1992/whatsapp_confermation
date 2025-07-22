@@ -3,8 +3,8 @@ import os
 import requests
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY")
-SHOPIFY_API_PW = os.getenv("SHOPIFY_API_PW")
-SHOPIFY_STORE = os.getenv("SHOPIFY_STORE", "nouralibas.myshopify.com")  # Set as env var or fallback
+SHOPIFY_API_PW  = os.getenv("SHOPIFY_PASSWORD")     # ← same as integration file
+SHOPIFY_STORE   = os.getenv("SHOPIFY_STORE_DOMAIN") # e.g. nouralibas.myshopify.com
 
 if not all([SHOPIFY_API_KEY, SHOPIFY_API_PW, SHOPIFY_STORE]):
     raise RuntimeError("Please set SHOPIFY_API_KEY, SHOPIFY_API_PW, and SHOPIFY_STORE environment variables.")

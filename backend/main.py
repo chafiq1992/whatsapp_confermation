@@ -15,9 +15,18 @@ import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
 from shopify_integration import router as shopify_router
 from dotenv import load_dotenv
-import asyncio, subprocess
+import asyncio, subprocess, os
 from pathlib import Path
+
 from fastapi.staticfiles import StaticFiles
+
+# ── Cloud‑Run helpers ────────────────────────────────────────────
+PORT = int(os.getenv("PORT", "8080"))
+BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+DB_PATH = os.getenv("DB_PATH", "/tmp/whatsapp_messages.db")
+# Anything that **must not** be baked in the image (tokens, IDs …) is
+# already picked up with os.getenv() further below. Keep it that way.
 
 # Load environment variables
 load_dotenv()
@@ -148,8 +157,8 @@ class ConnectionManager:
 
 # Redis Manager for caching
 class RedisManager:
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.redis_url = redis_url
+    def __init__(self, redis_url: str | None = None):
+        self.redis_url = redis_url or REDIS_URL
         self.redis_client: Optional[redis.Redis] = None
     
     async def connect(self):
@@ -330,8 +339,8 @@ _STATUS_RANK = {"sending": 0, "sent": 1, "delivered": 2, "read": 3, "failed": 99
 class DatabaseManager:
     """Aiosqlite helper with WhatsApp-Web-compatible schema & helpers."""
 
-    def __init__(self, db_path: str = "whatsapp_messages.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or DB_PATH
 
     # ── basic connection helper ──
     @asynccontextmanager
@@ -516,7 +525,7 @@ class MessageProcessor:
                 optimistic_message["url"] = message_data["url"]
             elif message_text and not message_text.startswith("http"):
                 filename = Path(message_text).name
-                optimistic_message["url"] = f"http://localhost:5000/media/{filename}"
+                optimistic_message["url"] = f"{BASE_URL}/media/{filename}"
             else:
                 optimistic_message["url"] = message_text
         
@@ -740,17 +749,17 @@ class MessageProcessor:
         elif msg_type == "image":
             image_path = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
-            message_obj["url"] = f"http://localhost:5000/media/{Path(image_path).name}"
+            message_obj["url"] = f"{BASE_URL}/media/{Path(image_path).name}"
             message_obj["caption"] = message["image"].get("caption", "")
         elif msg_type == "audio":
             audio_path = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
-            message_obj["url"] = f"http://localhost:5000/media/{Path(audio_path).name}"
+            message_obj["url"] = f"{BASE_URL}/media/{Path(audio_path).name}"
             message_obj["transcription"] = ""
         elif msg_type == "video":
             video_path = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
-            message_obj["url"] = f"http://localhost:5000/media/{Path(video_path).name}"
+            message_obj["url"] = f"{BASE_URL}/media/{Path(video_path).name}"
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
@@ -1109,7 +1118,7 @@ async def send_media(
                     return {"error": f"Audio conversion failed: {exc}", "status": "failed"}
 
             # ---------- build metadata ----------
-            media_url = f"http://localhost:5000/media/{filename}"
+            media_url = f"{BASE_URL}/media/{filename}"
 
             message_data = {
                 "user_id": user_id,
@@ -1201,7 +1210,7 @@ from fastapi.staticfiles import StaticFiles
 # 1. Fix the port in main block
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)  # Changed from 8000 to 5000
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
 
 META_CATALOG_URL = f"https://graph.facebook.com/v19.0/{CATALOG_ID}/products"
 
