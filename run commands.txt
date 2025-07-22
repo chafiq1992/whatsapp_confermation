@@ -1,0 +1,3 @@
+run front end:  npm start
+run back end uvicorn main:  app --reload --port 5000
+run ngrok server:  ngrok http 5000

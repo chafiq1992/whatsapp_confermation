@@ -1,0 +1,15 @@
+# Backend
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Frontend
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+whatsapp-inbox.git/
