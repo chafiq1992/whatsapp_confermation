@@ -12,4 +12,8 @@ dist/
 .DS_Store
 Thumbs.db
 
-whatsapp-inbox.git/
+# Runtime
+backend/uploads/
+backend/media/
+*.db
+backend/catalog_cache.json
