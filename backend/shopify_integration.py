@@ -4,9 +4,11 @@ import os
 from fastapi import APIRouter, Body, Query
 
 # ================= CONFIG ==================
-API_KEY = os.getenv('SHOPIFY_API_KEY')
-PASSWORD = os.getenv('SHOPIFY_PASSWORD')
-STORE_URL = 'https://nouralibas.myshopify.com'
+API_KEY = os.getenv("SHOPIFY_API_KEY")
+PASSWORD = os.getenv("SHOPIFY_PASSWORD")
+STORE_URL = os.getenv("SHOPIFY_STORE_URL")   # e.g. https://nouralibas.myshopify.com
+if not all([API_KEY, PASSWORD, STORE_URL]):
+    raise RuntimeError("\u274c\u00a0Missing SHOPIFY_* environment variables")
 API_VERSION = "2023-04"
 
 SEARCH_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers/search.json"
