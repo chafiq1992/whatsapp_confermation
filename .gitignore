@@ -17,3 +17,4 @@ backend/uploads/
 backend/media/
 *.db
 backend/catalog_cache.json
+catalog_cache.json
