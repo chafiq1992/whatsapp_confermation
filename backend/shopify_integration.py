@@ -4,11 +4,26 @@ import os
 from fastapi import APIRouter, Body, Query
 
 # ================= CONFIG ==================
-API_KEY = os.getenv("SHOPIFY_API_KEY")
-PASSWORD = os.getenv("SHOPIFY_PASSWORD")
-STORE_URL = os.getenv("SHOPIFY_STORE_URL")   # e.g. https://nouralibas.myshopify.com
-if not all([API_KEY, PASSWORD, STORE_URL]):
-    raise RuntimeError("\u274c\u00a0Missing SHOPIFY_* environment variables")
+
+def _load_store_config() -> tuple[str, str, str]:
+    """Return the first set of Shopify credentials found in the environment."""
+    prefixes = [
+        "SHOPIFY",
+        "IRRAKIDS",
+        "IRRANOVA",
+    ]
+
+    for prefix in prefixes:
+        api_key = os.getenv(f"{prefix}_API_KEY")
+        password = os.getenv(f"{prefix}_PASSWORD")
+        store_url = os.getenv(f"{prefix}_STORE_URL")
+        if all([api_key, password, store_url]):
+            return api_key, password, store_url
+
+    raise RuntimeError("\u274c\u00a0Missing Shopify environment variables")
+
+
+API_KEY, PASSWORD, STORE_URL = _load_store_config()
 API_VERSION = "2023-04"
 
 SEARCH_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers/search.json"
