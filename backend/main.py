@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
-from shopify_integration import router as shopify_router
+from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import asyncio, subprocess, os
 from pathlib import Path
