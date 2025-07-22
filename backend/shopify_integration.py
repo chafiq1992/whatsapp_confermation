@@ -6,7 +6,13 @@ from fastapi import APIRouter, Body, Query
 # ================= CONFIG ==================
 
 def _load_store_config() -> tuple[str, str, str]:
-    """Return the first set of Shopify credentials found in the environment."""
+    """Return the first set of Shopify credentials found in the environment.
+
+    Environment variables are checked using the prefixes ``SHOPIFY``,
+    ``IRRAKIDS`` and ``IRRANOVA``. For each prefix we look for
+    ``<prefix>_API_KEY`` and ``<prefix>_PASSWORD`` together with either
+    ``<prefix>_STORE_URL`` or ``<prefix>_STORE_DOMAIN``.
+    """
     prefixes = [
         "SHOPIFY",
         "IRRAKIDS",
@@ -17,7 +23,12 @@ def _load_store_config() -> tuple[str, str, str]:
         api_key = os.getenv(f"{prefix}_API_KEY")
         password = os.getenv(f"{prefix}_PASSWORD")
         store_url = os.getenv(f"{prefix}_STORE_URL")
+        if not store_url:
+            domain = os.getenv(f"{prefix}_STORE_DOMAIN")
+            if domain:
+                store_url = domain if domain.startswith("http") else f"https://{domain}"
         if all([api_key, password, store_url]):
+            logging.getLogger(__name__).info("Using Shopify prefix %s", prefix)
             return api_key, password, store_url
 
     raise RuntimeError("\u274c\u00a0Missing Shopify environment variables")
