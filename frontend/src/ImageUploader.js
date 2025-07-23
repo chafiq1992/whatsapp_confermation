@@ -6,7 +6,7 @@ export default function ImageUploader({ userId, onImagesSent, ws }) {
   const fileInputRef = useRef();
 
   // Utility to get API URL
-  const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+  const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   // Function to handle upload - now compatible with ChatWindow's approach
   const handleFileUpload = async (files) => {

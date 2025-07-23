@@ -6,6 +6,12 @@ import EmojiPicker from 'emoji-picker-react';
 import CatalogPanel from "./CatalogPanel";
 import { v4 as uuidv4 } from 'uuid'; // If not already imported
 
+// API and WebSocket endpoints
+const API_BASE = process.env.REACT_APP_API_BASE || '';
+const WS_BASE =
+  process.env.REACT_APP_WS_URL ||
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
+
 const sortByTime = (list = []) =>
   [...list].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -103,7 +109,7 @@ export default function ChatWindow({ activeUser }) {
   useEffect(() => {
     if (!activeUser?.user_id) return;
     
-    const websocket = new WebSocket(`ws://localhost:5000/ws/${activeUser.user_id}`);
+    const websocket = new WebSocket(`${WS_BASE}${activeUser.user_id}`);
     setWs(websocket); // store in state
     
     websocket.onopen = () => {
@@ -199,7 +205,7 @@ export default function ChatWindow({ activeUser }) {
   useEffect(() => {
     async function fetchAllProducts() {
       try {
-        const res = await axios.get("http://localhost:5000/all-catalog-products");
+        const res = await axios.get(`${API_BASE}/all-catalog-products`);
         const lookup = {};
         res.data.forEach(prod => {
           lookup[String(prod.retailer_id)] = {
@@ -221,7 +227,7 @@ export default function ChatWindow({ activeUser }) {
     if (!activeUser?.user_id) return [];
     try {
       const res = await axios.get(
-        `http://localhost:5000/messages/${activeUser.user_id}?offset=${off}&limit=${MESSAGE_LIMIT}`,
+        `${API_BASE}/messages/${activeUser.user_id}?offset=${off}&limit=${MESSAGE_LIMIT}`,
         { signal }
       );
       const data = res.data;
@@ -304,7 +310,7 @@ export default function ChatWindow({ activeUser }) {
     } else {
       // Fallback to HTTP
       try {
-        await axios.post('http://localhost:5000/send-message', {
+        await axios.post(`${API_BASE}/send-message`, {
           user_id: activeUser.user_id,
           type: 'text',
           message: text,
@@ -331,7 +337,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append('user_id', activeUser.user_id);
       formData.append('media_type', 'audio');
       try {
-        await axios.post('http://localhost:5000/send-media', formData);
+        await axios.post(`${API_BASE}/send-media`, formData);
         // WebSocket will handle the real-time update
       } catch (err) {
         console.error("Audio upload error:", err);
@@ -344,7 +350,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append('user_id', activeUser.user_id);
       formData.append('media_type', 'audio');
       try {
-        await axios.post('http://localhost:5000/send-media', formData);
+        await axios.post(`${API_BASE}/send-media`, formData);
         fetchMessages();
       } catch (err) {
         console.error("Audio upload error:", err);
@@ -398,7 +404,7 @@ export default function ChatWindow({ activeUser }) {
       );
     } else {
       axios.post(
-        `http://localhost:5000/conversations/${activeUser.user_id}/mark-read`,
+        `${API_BASE}/conversations/${activeUser.user_id}/mark-read`,
         { message_ids: unreadIds }
       ).catch(() => {});
     }
@@ -482,7 +488,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append("media_type", "image");
       
       try {
-        const response = await axios.post("http://localhost:5000/send-media", formData, {
+        const response = await axios.post(`${API_BASE}/send-media`, formData, {
           onUploadProgress: (e) => {
             setPendingImages(images => {
               let copy = [...images];

@@ -4,7 +4,7 @@ import React, { useState, useCallback } from "react";
 function getSafeMediaUrl(raw) {
   if (!raw) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
-  const base = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+  const base = process.env.REACT_APP_API_BASE || "";
   return `${base.replace(/\/$/, "")}/${raw.replace(/^\/+/, "")}`;
 }
 

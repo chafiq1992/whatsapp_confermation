@@ -6,7 +6,8 @@ import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
 import axios from 'axios';
 
 // Read API base from env for production/dev compatibility
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+// Default to relative paths if not provided
+const API_BASE = process.env.REACT_APP_API_BASE || "";
 
 export default function App() {
   const [products, setProducts] = useState([]);
@@ -73,9 +74,10 @@ export default function App() {
     if (wsRef.current) wsRef.current.close();
 
     // Connect to backend WebSocket for the selected user
-    const ws = new WebSocket(
-      (process.env.REACT_APP_WS_URL || "ws://localhost:5000/ws/") + activeUser.user_id
-    );
+    const wsBase =
+      process.env.REACT_APP_WS_URL ||
+      `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
+    const ws = new WebSocket(`${wsBase}${activeUser.user_id}`);
     wsRef.current = ws;
 
     ws.onopen = () => {

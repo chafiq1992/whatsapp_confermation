@@ -3,7 +3,7 @@ import { FaShopify } from "react-icons/fa";
 import axios from "axios";
 
 export default function ShopifyIntegrationsPanel({ activeUser }) {
-  const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+  const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   const [customer, setCustomer] = useState(null);
   const [loading, setLoading] = useState(false);
