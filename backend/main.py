@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-DB_PATH = os.getenv("DB_PATH", "/tmp/whatsapp_messages.db")
+DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 

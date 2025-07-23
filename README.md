@@ -39,6 +39,16 @@ gcloud run deploy whatsapp-backend \
 
 Replace the values with the credentials for your Shopify store. Alternatively use the `IRRAKIDS_*` or `IRRANOVA_*` variable names if those are available.
 
+## SQLite database
+
+Messages are stored in a local SQLite file. By default the backend writes to
+`data/whatsapp_messages.db`. The directory is created automatically if it does
+not exist.
+
+When deploying to providers with ephemeral filesystems, point the `DB_PATH`
+environment variable at a location backed by a persistent volume so that chat
+history is retained across restarts.
+
 ## Frontend build
 
 Before running the backend make sure the React frontend is compiled:
