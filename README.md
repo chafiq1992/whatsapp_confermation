@@ -53,7 +53,25 @@ All Node dependencies are defined in `frontend/package.json`.
 
 When building the Docker image this step is handled automatically.
 
+
 The FastAPI service serves the static files from the built directory at the root path (`/`).
+
+### API and WebSocket URLs
+
+The React build reads two optional variables:
+
+* `REACT_APP_API_BASE` - base URL for all HTTP requests
+* `REACT_APP_WS_URL` - WebSocket endpoint prefix
+
+If these variables are not set, the frontend will default to relative paths and the current host.
+
+Example build command:
+
+```bash
+REACT_APP_API_BASE=https://api.example.com \
+REACT_APP_WS_URL=wss://api.example.com/ws/ \
+npm run build
+```
 
 ## Building the Docker image
 
