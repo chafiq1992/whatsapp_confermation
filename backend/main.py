@@ -795,7 +795,7 @@ class MessageProcessor:
             print(f"Error downloading media {media_id}: {e}")
             return ""
     
-def _get_file_extension(self, media_type: str) -> str:
+    def _get_file_extension(self, media_type: str) -> str:
         """Get file extension based on media type"""
         extensions = {
             "image": ".jpg",
