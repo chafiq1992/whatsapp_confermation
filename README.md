@@ -39,3 +39,15 @@ gcloud run deploy whatsapp-backend \
 
 Replace the values with the credentials for your Shopify store. Alternatively use the `IRRAKIDS_*` or `IRRANOVA_*` variable names if those are available.
 
+## Frontend build
+
+Before running the backend make sure the React frontend is compiled:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+The FastAPI service serves the static files from the built directory at the root path (`/`).
+

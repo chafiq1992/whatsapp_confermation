@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 COPY . .
+# Ensure the built frontend is included
+COPY frontend/build ./frontend/build
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
