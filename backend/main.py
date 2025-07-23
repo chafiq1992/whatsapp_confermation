@@ -341,6 +341,8 @@ class DatabaseManager:
 
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or DB_PATH
+        # Ensure parent directory exists before attempting to connect
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
     # ── basic connection helper ──
     @asynccontextmanager
