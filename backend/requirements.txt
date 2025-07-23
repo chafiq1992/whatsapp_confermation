@@ -47,3 +47,6 @@ uvicorn==0.34.0
 watchfiles==1.0.4
 websockets==15.0.1
 python-multipart
+aiosqlite
+aiofiles
+redis
