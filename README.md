@@ -2,6 +2,8 @@
 
 This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores.
 
+**Note:** File upload endpoints require the `python-multipart` package. Make sure this dependency is installed when deploying the backend.
+
 ## Shopify Credentials
 
 The backend supports multiple environment variable prefixes to load Shopify credentials. It will use the first complete set it finds.
