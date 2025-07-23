@@ -835,6 +835,9 @@ messenger = message_processor.whatsapp_messenger
 app = FastAPI()
 app.include_router(shopify_router)
 
+# Serve React build before other routes so '/' returns index.html
+app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
+
 # Mount the media directory to serve uploaded files
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
@@ -1225,7 +1228,6 @@ async def get_all_catalog_products():
         return []
 
 # Add static file serving for media files
-from fastapi.staticfiles import StaticFiles
 
 
 # 1. Fix the port in main block
