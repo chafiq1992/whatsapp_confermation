@@ -1,4 +1,4 @@
-﻿annotated-types==0.7.0
+annotated-types==0.7.0
 anyio==4.9.0
 beautifulsoup4==4.13.3
 cachetools==5.5.2
