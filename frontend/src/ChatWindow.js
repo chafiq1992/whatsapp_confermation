@@ -4,7 +4,6 @@ import MessageBubble from './MessageBubble';
 import useAudioRecorder from './useAudioRecorder';
 import EmojiPicker from 'emoji-picker-react';
 import CatalogPanel from "./CatalogPanel";
-import { v4 as uuidv4 } from 'uuid'; // If not already imported
 
 // API and WebSocket endpoints
 const API_BASE = process.env.REACT_APP_API_BASE || '';
