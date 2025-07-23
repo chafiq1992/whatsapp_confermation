@@ -20,7 +20,10 @@ Supported variable sets:
    - `IRRAKIDS_STORE_DOMAIN`
    - `IRRANOVA_STORE_DOMAIN`
 
-Each set requires an API key, password, and store URL (or domain). Only one set needs to be defined.
+Each set requires an API key, password, and store URL (or domain). Only one set
+needs to be defined. You **must** provide one complete set of `SHOPIFY_*`,
+`IRRAKIDS_*`, or `IRRANOVA_*` variables before starting the backend or it will
+exit with the error `Missing Shopify environment variables`.
 
 ## Example: Setting variables on Cloud Run
 
