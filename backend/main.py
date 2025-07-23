@@ -343,6 +343,20 @@ class DatabaseManager:
         self.db_path = db_path or DB_PATH
         # Ensure parent directory exists before attempting to connect
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        # Columns allowed in the messages table (except auto-increment id)
+        self.message_columns = {
+            "wa_message_id",
+            "temp_id",
+            "user_id",
+            "message",
+            "type",
+            "from_me",
+            "status",
+            "price",
+            "caption",
+            "media_path",
+            "timestamp",
+        }
 
     # ── basic connection helper ──
     @asynccontextmanager
@@ -392,6 +406,9 @@ class DatabaseManager:
         Insert a new row or update an existing one (found by wa_message_id OR temp_id).
         The status is *only* upgraded – you can’t go from 'delivered' ➜ 'sent', etc.
         """
+        # Drop any keys not present in the messages table to avoid SQL errors
+        data = {k: v for k, v in data.items() if k in self.message_columns}
+
         async with self._conn() as db:
             # 1) look for an existing row
             row = None
