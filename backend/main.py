@@ -793,15 +793,34 @@ class MessageProcessor:
             print(f"Error downloading media {media_id}: {e}")
             return ""
     
-    def _get_file_extension(self, media_type: str) -> str:
+def _get_file_extension(self, media_type: str) -> str:
         """Get file extension based on media type"""
         extensions = {
             "image": ".jpg",
-            "audio": ".ogg", 
+            "audio": ".ogg",
             "video": ".mp4",
             "document": ".pdf"
         }
         return extensions.get(media_type, "")
+
+# ------------------------- helpers -------------------------
+
+def lookup_phone(user_id: str) -> Optional[str]:
+    """Return the stored phone number for a user, if available."""
+    import sqlite3
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
+            row = cur.fetchone()
+            if row:
+                phone = row["phone"]
+                if phone:
+                    return str(phone)
+    except Exception as exc:
+        print(f"lookup_phone error: {exc}")
+    return None
 
 # Initialize managers
 db_manager = DatabaseManager()
