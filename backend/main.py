@@ -857,10 +857,12 @@ class MessageProcessor:
             "type": "message_received",
             "data": message_obj
         })
-        
-        # Cache and save to database
-        await self.redis_manager.cache_message(sender, message_obj)
-        await self.db_manager.upsert_message(message_obj)
+
+        # Cache and save to database. Remove "id" so SQLite doesn't try to
+        # insert the text wa_message_id into the INTEGER primary key column.
+        db_data = {k: v for k, v in message_obj.items() if k != "id"}
+        await self.redis_manager.cache_message(sender, db_data)
+        await self.db_manager.upsert_message(db_data)
     
     async def _download_media(self, media_id: str, media_type: str) -> str:
         """Download media from WhatsApp"""
