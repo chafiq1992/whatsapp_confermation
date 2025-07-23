@@ -49,6 +49,8 @@ npm install
 npm run build
 ```
 
+All Node dependencies are defined in `frontend/package.json`.
+
 When building the Docker image this step is handled automatically.
 
 The FastAPI service serves the static files from the built directory at the root path (`/`).

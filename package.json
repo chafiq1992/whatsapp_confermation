@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "dayjs": "^1.11.13",
-    "emoji-picker-react": "^4.12.2",
-    "openai": "^4.95.1"
-  }
-}
