@@ -478,6 +478,92 @@ class DatabaseManager:
             )
             await db.commit()
 
+    async def save_message(self, message: dict, wa_message_id: str, status: str):
+        """Persist a sent message using the final WhatsApp ID."""
+        data = {
+            "wa_message_id": wa_message_id,
+            "temp_id": message.get("temp_id") or message.get("id"),
+            "user_id": message.get("user_id"),
+            "message": message.get("message"),
+            "type": message.get("type", "text"),
+            "from_me": 1,
+            "status": status,
+            "price": message.get("price"),
+            "caption": message.get("caption"),
+            "media_path": message.get("media_path"),
+            "timestamp": message.get("timestamp"),
+        }
+        # Remove None values so SQL doesn't fail on NOT NULL columns
+        clean = {k: v for k, v in data.items() if v is not None}
+        await self.upsert_message(clean)
+
+    async def mark_messages_as_read(self, user_id: str, message_ids: List[str] | None = None):
+        """Mark one or all messages in a conversation as read."""
+        async with self._conn() as db:
+            if message_ids:
+                placeholders = ",".join("?" * len(message_ids))
+                await db.execute(
+                    f"UPDATE messages SET status='read' WHERE user_id = ? AND wa_message_id IN ({placeholders})",
+                    (user_id, *message_ids),
+                )
+            else:
+                await db.execute(
+                    "UPDATE messages SET status='read' WHERE user_id = ? AND from_me = 0 AND status != 'read'",
+                    (user_id,),
+                )
+            await db.commit()
+
+    async def get_conversations_with_stats(self) -> List[dict]:
+        """Return conversation summaries for chat list."""
+        async with self._conn() as db:
+            cur = await db.execute("SELECT DISTINCT user_id FROM messages")
+            user_rows = await cur.fetchall()
+            user_ids = [r["user_id"] for r in user_rows]
+
+            conversations = []
+            for uid in user_ids:
+                cur = await db.execute("SELECT name, phone FROM users WHERE user_id = ?", (uid,))
+                user = await cur.fetchone()
+
+                cur = await db.execute(
+                    "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1",
+                    (uid,),
+                )
+                last = await cur.fetchone()
+                last_msg = last["message"] if last else None
+                last_time = last["timestamp"] if last else None
+
+                cur = await db.execute(
+                    "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'",
+                    (uid,),
+                )
+                unread = (await cur.fetchone())["c"]
+
+                cur = await db.execute(
+                    "SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1",
+                    (uid,),
+                )
+                last_agent = (await cur.fetchone())["t"] or "1970-01-01"
+
+                cur = await db.execute(
+                    "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?",
+                    (uid, last_agent),
+                )
+                unresponded = (await cur.fetchone())["c"]
+
+                conversations.append({
+                    "user_id": uid,
+                    "name": user["name"] if user else None,
+                    "phone": user["phone"] if user else None,
+                    "last_message": last_msg,
+                    "last_message_time": last_time,
+                    "unread_count": unread,
+                    "unresponded_count": unresponded,
+                })
+
+            conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
+            return conversations
+
 # Message Processor with Complete Optimistic UI
 class MessageProcessor:
     def __init__(self, connection_manager: ConnectionManager, redis_manager: RedisManager, db_manager: DatabaseManager):
