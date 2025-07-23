@@ -49,9 +49,11 @@ npm install
 npm run build
 ```
 
+When building the Docker image this step is handled automatically.
+
 The FastAPI service serves the static files from the built directory at the root path (`/`).
 
 ## Building the Docker image
 
-Before invoking `docker build`, make sure the React frontend has been compiled by running `npm run build` inside the `frontend` directory. The Dockerfile uses `COPY frontend/build ./frontend/build` to include the built assets in the image, so the build step must complete successfully first.
+The Dockerfile includes a dedicated Node build stage. When you run `docker build` the frontend dependencies are installed and `npm run build` is executed automatically. The resulting `frontend/build` directory is copied into the final Python image, so no manual build step is required.
 
