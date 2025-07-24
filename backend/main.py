@@ -1045,6 +1045,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     try:
         # Send recent messages on connection
         recent_messages = await redis_manager.get_recent_messages(user_id)
+        if not recent_messages:
+            recent_messages = await db_manager.get_messages(user_id, limit=20)
         if recent_messages:
             await websocket.send_json({
                 "type": "recent_messages",
