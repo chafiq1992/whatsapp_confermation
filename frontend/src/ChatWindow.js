@@ -243,6 +243,17 @@ export default function ChatWindow({ activeUser }) {
         { signal }
       );
       const data = res.data;
+      if (!Array.isArray(data) || data.length === 0) {
+        // No data from server, fall back to cached messages
+        const cached = await loadMessages(activeUser.user_id);
+        if (cached.length > 0) {
+          setMessages(prev =>
+            append ? sortByTime([...cached, ...prev]) : sortByTime(cached)
+          );
+          setHasMore(false);
+        }
+        return cached;
+      }
       setMessages(prev =>
         append ? sortByTime([...data, ...prev]) : sortByTime(data)
       );
@@ -253,13 +264,20 @@ export default function ChatWindow({ activeUser }) {
       } else {
         setOffset(data.length);
       }
-      if (data.length < MESSAGE_LIMIT) setHasMore(false);
-      else setHasMore(true);
+      setHasMore(data.length >= MESSAGE_LIMIT);
       return data;
     } catch (err) {
       if (axios.isCancel(err) || err.name === 'CanceledError') return [];
       console.error("Failed to fetch messages", err);
-      return [];
+      // Error while fetching, fall back to cached messages
+      const cached = await loadMessages(activeUser.user_id);
+      if (cached.length > 0) {
+        setMessages(prev =>
+          append ? sortByTime([...cached, ...prev]) : sortByTime(cached)
+        );
+        setHasMore(false);
+      }
+      return cached;
     }
   };
 
