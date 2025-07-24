@@ -336,6 +336,10 @@ from contextlib import asynccontextmanager
 
 _STATUS_RANK = {"sending": 0, "sent": 1, "delivered": 2, "read": 3, "failed": 99}
 
+# Order status flags used by the payout/archive workflow
+ORDER_STATUS_PAYOUT = "payout"
+ORDER_STATUS_ARCHIVED = "archived"
+
 class DatabaseManager:
     """Aiosqlite helper with WhatsApp-Web-compatible schema & helpers."""
 
@@ -396,6 +400,14 @@ class DatabaseManager:
 
                 CREATE INDEX IF NOT EXISTS idx_msg_user_time
                     ON messages (user_id, datetime(timestamp));
+
+                -- Orders table used to track payout status
+                CREATE TABLE IF NOT EXISTS orders (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id   TEXT UNIQUE,
+                    status     TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             await db.commit()
@@ -589,6 +601,49 @@ class DatabaseManager:
 
             conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
             return conversations
+
+    # ----- Order payout helpers -----
+    async def add_delivered_order(self, order_id: str):
+        """Add an order to the payouts list."""
+        async with self._conn() as db:
+            await db.execute(
+                """
+                INSERT INTO orders (order_id, status)
+                VALUES (?, ?)
+                ON CONFLICT(order_id) DO UPDATE SET status=?
+                """,
+                (order_id, ORDER_STATUS_PAYOUT, ORDER_STATUS_PAYOUT),
+            )
+            await db.commit()
+
+    async def mark_payout_paid(self, order_id: str):
+        """Archive an order once its payout has been processed."""
+        async with self._conn() as db:
+            await db.execute(
+                "UPDATE orders SET status=? WHERE order_id = ?",
+                (ORDER_STATUS_ARCHIVED, order_id),
+            )
+            await db.commit()
+
+    async def get_payouts(self) -> List[dict]:
+        """Return orders currently awaiting payout."""
+        async with self._conn() as db:
+            cur = await db.execute(
+                "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC",
+                (ORDER_STATUS_PAYOUT,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_archived_orders(self) -> List[dict]:
+        """Return archived (paid) orders."""
+        async with self._conn() as db:
+            cur = await db.execute(
+                "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC",
+                (ORDER_STATUS_ARCHIVED,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
 # Message Processor with Complete Optimistic UI
 class MessageProcessor:
@@ -1193,6 +1248,33 @@ async def health_check():
             "verify_token_configured": bool(VERIFY_TOKEN)
         }
     }
+
+# ----- Payout and archive endpoints -----
+
+@app.post("/orders/{order_id}/delivered")
+async def order_delivered(order_id: str):
+    """Record a delivered order in the payouts list."""
+    await db_manager.add_delivered_order(order_id)
+    return {"status": ORDER_STATUS_PAYOUT, "order_id": order_id}
+
+
+@app.post("/payouts/{order_id}/mark-paid")
+async def mark_payout_paid_endpoint(order_id: str):
+    """Mark payout as paid and archive the order."""
+    await db_manager.mark_payout_paid(order_id)
+    return {"status": ORDER_STATUS_ARCHIVED, "order_id": order_id}
+
+
+@app.get("/payouts")
+async def list_payouts():
+    """List orders awaiting payout."""
+    return await db_manager.get_payouts()
+
+
+@app.get("/archive")
+async def list_archive():
+    """List archived (paid) orders."""
+    return await db_manager.get_archived_orders()
 
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50):
