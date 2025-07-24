@@ -87,3 +87,14 @@ npm run build
 
 The Dockerfile includes a dedicated Node build stage. When you run `docker build` the frontend dependencies are installed and `npm run build` is executed automatically. The resulting `frontend/build` directory is copied into the final Python image, so no manual build step is required.
 
+
+## Catalog Setup
+
+For catalog operations the environment variables `WHATSAPP_ACCESS_TOKEN` and `CATALOG_ID` must contain valid credentials for your WhatsApp Business catalog.
+
+The backend stores a cached copy of the catalog in `backend/catalog_cache.json`. There are two ways to populate this file:
+
+1. Use the **Refresh Catalog** button in the web UI.
+2. Call the `/refresh-catalog-cache` endpoint manually.
+
+The cache file must exist for the `catalog-sets` and `catalog-set-products` endpoints to return data.
