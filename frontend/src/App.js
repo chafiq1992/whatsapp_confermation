@@ -4,6 +4,7 @@ import ChatList from './ChatList';
 import ChatWindow from './ChatWindow';
 import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
 import axios from 'axios';
+import { loadConversations, saveConversations } from './chatStorage';
 
 // Read API base from env for production/dev compatibility
 // Default to relative paths if not provided
@@ -23,8 +24,13 @@ export default function App() {
     try {
       const res = await axios.get(`${API_BASE}/conversations`);
       setConversations(res.data);
+      saveConversations(res.data);
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
+      const cached = await loadConversations();
+      if (cached.length > 0) {
+        setConversations(cached);
+      }
     }
   };
 
@@ -55,8 +61,13 @@ export default function App() {
     }
   };
 
-  // Load conversations/products on mount, and whenever a new message is received (optional)
+  // Load conversations/products on mount
   useEffect(() => {
+    loadConversations().then(cached => {
+      if (cached.length > 0) {
+        setConversations(cached);
+      }
+    });
     fetchConversations();
     fetchCatalogProducts();
     // You can remove the interval now if using WebSocket for chat!
