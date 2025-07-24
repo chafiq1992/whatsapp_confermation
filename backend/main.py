@@ -1457,10 +1457,6 @@ async def get_all_catalog_products():
 app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
 
 
-# 1. Fix the port in main block
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
 
 META_CATALOG_URL = f"https://graph.facebook.com/v19.0/{CATALOG_ID}/products"
 
@@ -1556,3 +1552,8 @@ class CatalogManager:
 
 
 catalog_manager = CatalogManager()
+
+# 1. Fix the port in main block
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
