@@ -4,6 +4,7 @@ import MessageBubble from './MessageBubble';
 import useAudioRecorder from './useAudioRecorder';
 import EmojiPicker from 'emoji-picker-react';
 import CatalogPanel from "./CatalogPanel";
+import { saveMessages, loadMessages } from './chatStorage';
 
 // API and WebSocket endpoints
 const API_BASE = process.env.REACT_APP_API_BASE || '';
@@ -78,6 +79,18 @@ export default function ChatWindow({ activeUser }) {
   const MESSAGE_LIMIT = 50;
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+
+  // Load cached messages when switching conversations
+  useEffect(() => {
+    if (!activeUser?.user_id) return;
+    loadMessages(activeUser.user_id).then((msgs) => {
+      if (Array.isArray(msgs) && msgs.length > 0) {
+        setMessages(sortByTime(msgs));
+      } else {
+        setMessages([]);
+      }
+    });
+  }, [activeUser?.user_id]);
   
   // Simplified WebSocket state
   const [ws, setWs] = useState(null);
@@ -380,6 +393,12 @@ export default function ChatWindow({ activeUser }) {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Persist messages to IndexedDB whenever they change
+  useEffect(() => {
+    if (!activeUser?.user_id) return;
+    saveMessages(activeUser.user_id, messages);
+  }, [messages, activeUser?.user_id]);
 
   // Mark incoming messages as read when they appear
   useEffect(() => {
