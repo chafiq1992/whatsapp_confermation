@@ -1087,7 +1087,23 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
         
     elif message_type == "typing":
         is_typing = data.get("is_typing", False)
-        # Broadcast typing status
+        typing_event = {
+            "type": "typing",
+            "data": {"user_id": user_id, "is_typing": is_typing},
+        }
+
+        # Send to other connections of the same user (excluding sender)
+        for ws in connection_manager.active_connections.get(user_id, set()).copy():
+            if ws is not websocket:
+                try:
+                    await ws.send_json(typing_event)
+                except Exception:
+                    connection_manager.disconnect(ws)
+
+        # Notify admin dashboards
+        await connection_manager.broadcast_to_admins(
+            typing_event, exclude_user=user_id
+        )
         
     elif message_type == "get_conversation_history":
         offset = data.get("offset", 0)
