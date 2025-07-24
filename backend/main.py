@@ -530,6 +530,15 @@ class DatabaseManager:
                 )
             await db.commit()
 
+    async def get_admin_users(self) -> List[str]:
+        """Return list of user_ids flagged as admins."""
+        async with self._conn() as db:
+            cur = await db.execute(
+                "SELECT user_id FROM users WHERE is_admin = 1"
+            )
+            rows = await cur.fetchall()
+            return [r["user_id"] for r in rows]
+
     async def get_conversations_with_stats(self) -> List[dict]:
         """Return conversation summaries for chat list."""
         async with self._conn() as db:
@@ -874,6 +883,12 @@ class MessageProcessor:
             "type": "message_received",
             "data": message_obj
         })
+
+        # Notify any admin dashboards about the new message
+        await self.connection_manager.broadcast_to_admins(
+            {"type": "message_received", "data": message_obj},
+            exclude_user=sender
+        )
 
         # Cache and save to database. Remove "id" so SQLite doesn't try to
         # insert the text wa_message_id into the INTEGER primary key column.

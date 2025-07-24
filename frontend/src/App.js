@@ -16,8 +16,9 @@ export default function App() {
   const [conversations, setConversations] = useState([]);
   const [activeUser, setActiveUser] = useState(null);
 
-  // WebSocket for chat
+  // WebSocket for chat and a separate one for admin updates
   const wsRef = useRef(null);
+  const adminWsRef = useRef(null);
 
   // Fetch all conversations for chat list
   const fetchConversations = async () => {
@@ -76,6 +77,20 @@ export default function App() {
     //   fetchCatalogProducts();
     // }, 5000);
     // return () => clearInterval(interval);
+  }, []);
+
+  // Open a persistent WebSocket for admin notifications
+  useEffect(() => {
+    const wsBase =
+      process.env.REACT_APP_WS_URL ||
+      `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
+    const ws = new WebSocket(`${wsBase}admin`);
+    adminWsRef.current = ws;
+    ws.onmessage = () => {
+      // Refresh conversations when any new message arrives
+      fetchConversations();
+    };
+    return () => ws.close();
   }, []);
 
   // --- Setup WebSocket for messages ---
