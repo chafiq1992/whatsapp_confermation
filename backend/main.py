@@ -957,6 +957,16 @@ async def startup():
     await db_manager.init_db()
     await redis_manager.connect()
 
+    if not os.path.exists(config.CATALOG_CACHE_FILE):
+        async def _refresh_cache_bg():
+            try:
+                count = await catalog_manager.refresh_catalog_cache()
+                print(f"Catalog cache created with {count} items")
+            except Exception as exc:
+                print(f"Catalog cache refresh failed: {exc}")
+
+        asyncio.create_task(_refresh_cache_bg())
+
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """WebSocket endpoint for real-time communication"""

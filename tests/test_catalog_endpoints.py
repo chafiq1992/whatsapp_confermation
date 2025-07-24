@@ -44,3 +44,22 @@ def test_send_catalog_item_fallback(monkeypatch):
     resp = client.post("/send-catalog-item", data={"user_id": "U4", "product_retailer_id": "pid2"})
     assert resp.status_code == 200
     assert fake_send_single_catalog_item.called == ("U4", "pid2")
+
+
+def test_startup_creates_catalog_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "cache.json"
+    monkeypatch.setattr(main.config, "CATALOG_CACHE_FILE", str(cache))
+
+    async def fake_refresh():
+        cache.write_text("[]")
+        fake_refresh.called = True
+        return 0
+
+    monkeypatch.setattr(main.catalog_manager, "refresh_catalog_cache", fake_refresh)
+
+    with TestClient(main.app):
+        import time
+        time.sleep(0.01)
+
+    assert cache.exists()
+    assert getattr(fake_refresh, "called", False)
