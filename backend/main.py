@@ -1139,7 +1139,10 @@ class MessageProcessor:
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
-                bucket_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
+                if S3_ENDPOINT_URL:
+                    bucket_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
+                else:
+                    bucket_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
 
             return str(file_path), bucket_url
 
@@ -1554,7 +1557,10 @@ async def send_media(
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
-                media_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
+                if S3_ENDPOINT_URL:
+                    media_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
+                else:
+                    media_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
             else:
                 media_url = f"{BASE_URL}/media/{filename}"
 
