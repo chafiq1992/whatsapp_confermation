@@ -982,15 +982,15 @@ class MessageProcessor:
 
 # ------------------------- helpers -------------------------
 
-def lookup_phone(user_id: str) -> Optional[str]:
+async def lookup_phone(user_id: str) -> Optional[str]:
     """Return the stored phone number for a user, if available."""
-    import sqlite3
-
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute("SELECT phone FROM users WHERE user_id = ?", (user_id,))
-            row = cur.fetchone()
+        async with db_manager._conn() as conn:
+            cur = await conn.execute(
+                "SELECT phone FROM users WHERE user_id = ?",
+                (user_id,),
+            )
+            row = await cur.fetchone()
             if row:
                 phone = row["phone"]
                 if phone:
@@ -1404,7 +1404,7 @@ async def send_catalog_set_endpoint(
 ):
     try:
         product_id_list = json.loads(product_ids)
-        customer_phone = lookup_phone(user_id) or user_id
+        customer_phone = await lookup_phone(user_id) or user_id
         results = await messenger.send_catalog_products(customer_phone, product_id_list)
         return {"status": "ok", "results": results}
     except Exception as e:
@@ -1416,7 +1416,7 @@ async def send_catalog_item_endpoint(
     user_id: str = Form(...),
     product_retailer_id: str = Form(...)
 ):
-    customer_phone = lookup_phone(user_id) or user_id
+    customer_phone = await lookup_phone(user_id) or user_id
     response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id)
     return {"status": "ok", "response": response}
 

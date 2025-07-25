@@ -15,7 +15,10 @@ async def fake_send_single_catalog_item(to, rid):
 
 
 def test_send_catalog_set_uses_lookup(monkeypatch):
-    monkeypatch.setattr(main, "lookup_phone", lambda uid: "+123")
+    async def fake_lookup_phone(uid):
+        return "+123"
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
     monkeypatch.setattr(main.messenger, "send_catalog_products", fake_send_catalog_products)
     resp = client.post("/send-catalog-set", data={"user_id": "U1", "product_ids": json.dumps(["a", "b"])})
     assert resp.status_code == 200
@@ -23,7 +26,10 @@ def test_send_catalog_set_uses_lookup(monkeypatch):
 
 
 def test_send_catalog_set_fallback(monkeypatch):
-    monkeypatch.setattr(main, "lookup_phone", lambda uid: None)
+    async def fake_lookup_phone(uid):
+        return None
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
     monkeypatch.setattr(main.messenger, "send_catalog_products", fake_send_catalog_products)
     resp = client.post("/send-catalog-set", data={"user_id": "U2", "product_ids": json.dumps(["x"])})
     assert resp.status_code == 200
@@ -31,7 +37,10 @@ def test_send_catalog_set_fallback(monkeypatch):
 
 
 def test_send_catalog_item_uses_lookup(monkeypatch):
-    monkeypatch.setattr(main, "lookup_phone", lambda uid: "+999")
+    async def fake_lookup_phone(uid):
+        return "+999"
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
     monkeypatch.setattr(main.messenger, "send_single_catalog_item", fake_send_single_catalog_item)
     resp = client.post("/send-catalog-item", data={"user_id": "U3", "product_retailer_id": "pid"})
     assert resp.status_code == 200
@@ -39,7 +48,10 @@ def test_send_catalog_item_uses_lookup(monkeypatch):
 
 
 def test_send_catalog_item_fallback(monkeypatch):
-    monkeypatch.setattr(main, "lookup_phone", lambda uid: None)
+    async def fake_lookup_phone(uid):
+        return None
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
     monkeypatch.setattr(main.messenger, "send_single_catalog_item", fake_send_single_catalog_item)
     resp = client.post("/send-catalog-item", data={"user_id": "U4", "product_retailer_id": "pid2"})
     assert resp.status_code == 200
