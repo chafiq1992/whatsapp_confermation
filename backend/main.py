@@ -1542,7 +1542,7 @@ async def send_media(
                 async with aiofiles.open(file_path, "wb") as f:
                     await f.write(content)
             except Exception as exc:
-                return {"error": f"Failed to save file: {exc}", "status": "failed"}
+                raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
 
             # ---------- AUDIO-ONLY: convert WebM → OGG ----------
             if media_type == "audio" and file_extension.lower() != ".ogg":
@@ -1552,7 +1552,7 @@ async def send_media(
                     file_path = ogg_path
                     filename = ogg_path.name
                 except Exception as exc:
-                    return {"error": f"Audio conversion failed: {exc}", "status": "failed"}
+                    raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
             # ---------- build metadata ----------
             if MEDIA_BUCKET:
@@ -1587,6 +1587,9 @@ async def send_media(
 
         return {"status": "success", "messages": saved_results}
 
+    except HTTPException:
+        # Propagate HTTP errors to the client
+        raise
     except Exception as exc:
         print(f"❌ Error in /send-media: {exc}")
         return {"error": f"Internal server error: {exc}", "status": "failed"}
