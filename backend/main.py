@@ -454,7 +454,12 @@ class DatabaseManager:
                 );
                 """
             if self.use_postgres:
-                script = script.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+                script = script.replace(
+                    "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
+                )
+                # PostgreSQL doesn't support the SQLite datetime() function in
+                # index definitions, so index the raw timestamp column instead.
+                script = script.replace("datetime(timestamp)", "timestamp")
                 statements = [s.strip() for s in script.split(";") if s.strip()]
                 for stmt in statements:
                     await db.execute(stmt)
@@ -524,9 +529,14 @@ class DatabaseManager:
     async def get_messages(self, user_id: str, offset=0, limit=50) -> list[dict]:
         """Chronological (oldest➜newest) – just like WhatsApp."""
         async with self._conn() as db:
-            query = self._convert(
-                "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
-            )
+            if self.use_postgres:
+                query = self._convert(
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp ASC LIMIT ? OFFSET ?"
+                )
+            else:
+                query = self._convert(
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
+                )
             params = [user_id, limit, offset]
             if self.use_postgres:
                 rows = await db.fetch(query, *params)
@@ -654,12 +664,16 @@ class DatabaseManager:
 
                 if self.use_postgres:
                     last = await db.fetchrow(
-                        self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
+                        self._convert(
+                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1"
+                        ),
                         uid,
                     )
                 else:
                     cur = await db.execute(
-                        self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
+                        self._convert(
+                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"
+                        ),
                         (uid,)
                     )
                     last = await cur.fetchone()
@@ -681,12 +695,16 @@ class DatabaseManager:
 
                 if self.use_postgres:
                     last_agent_row = await db.fetchrow(
-                        self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
+                        self._convert(
+                            "SELECT MAX(timestamp) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                        ),
                         uid,
                     )
                 else:
                     cur = await db.execute(
-                        self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
+                        self._convert(
+                            "SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                        ),
                         (uid,)
                     )
                     last_agent_row = await cur.fetchone()
@@ -694,13 +712,17 @@ class DatabaseManager:
 
                 if self.use_postgres:
                     unr_row = await db.fetchrow(
-                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
+                        self._convert(
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND timestamp > ?"
+                        ),
                         uid,
                         last_agent,
                     )
                 else:
                     cur = await db.execute(
-                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
+                        self._convert(
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"
+                        ),
                         (uid, last_agent),
                     )
                     unr_row = await cur.fetchone()
@@ -747,7 +769,14 @@ class DatabaseManager:
     async def get_payouts(self) -> List[dict]:
         """Return orders currently awaiting payout."""
         async with self._conn() as db:
-            query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
+            if self.use_postgres:
+                query = self._convert(
+                    "SELECT * FROM orders WHERE status=? ORDER BY created_at DESC"
+                )
+            else:
+                query = self._convert(
+                    "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC"
+                )
             params = [ORDER_STATUS_PAYOUT]
             if self.use_postgres:
                 rows = await db.fetch(query, *params)
@@ -759,7 +788,14 @@ class DatabaseManager:
     async def get_archived_orders(self) -> List[dict]:
         """Return archived (paid) orders."""
         async with self._conn() as db:
-            query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
+            if self.use_postgres:
+                query = self._convert(
+                    "SELECT * FROM orders WHERE status=? ORDER BY created_at DESC"
+                )
+            else:
+                query = self._convert(
+                    "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC"
+                )
             params = [ORDER_STATUS_ARCHIVED]
             if self.use_postgres:
                 rows = await db.fetch(query, *params)
