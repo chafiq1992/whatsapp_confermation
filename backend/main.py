@@ -9,7 +9,7 @@ import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as redis
@@ -1400,7 +1400,7 @@ async def get_online_users():
     return {"online_users": connection_manager.get_active_users()}
 
 @app.post("/conversations/{user_id}/mark-read")
-async def mark_conversation_read(user_id: str, message_ids: List[str] = None):
+async def mark_conversation_read(user_id: str, message_ids: List[str] = Body(None)):
     """Mark messages as read"""
     try:
         await db_manager.mark_messages_as_read(user_id, message_ids)
