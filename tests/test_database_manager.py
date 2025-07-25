@@ -99,3 +99,37 @@ async def test_upsert_message_update_postgres(monkeypatch):
     assert conn.calls[1][0] == "execute"
     assert conn.calls[1][1].startswith("UPDATE messages SET")
     assert conn.calls[1][2] == ("m1", "u1", "delivered", 1)
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_postgres(monkeypatch):
+    dm = DatabaseManager(db_url="postgresql://")
+    conn = FakeConn()
+
+    @asynccontextmanager
+    async def fake_conn():
+        yield conn
+
+    monkeypatch.setattr(dm, "_conn", fake_conn)
+    await dm.upsert_user("u1", name="N", phone="P")
+
+    assert conn.calls[0][0] == "execute"
+    assert "users.name" in conn.calls[0][1]
+    assert "users.phone" in conn.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_postgres_admin(monkeypatch):
+    dm = DatabaseManager(db_url="postgresql://")
+    conn = FakeConn()
+
+    @asynccontextmanager
+    async def fake_conn():
+        yield conn
+
+    monkeypatch.setattr(dm, "_conn", fake_conn)
+    await dm.upsert_user("u2", name="N2", phone="P2", is_admin=1)
+
+    assert conn.calls[0][0] == "execute"
+    qry = conn.calls[0][1]
+    assert "users.name" in qry and "users.phone" in qry and "EXCLUDED.is_admin" in qry

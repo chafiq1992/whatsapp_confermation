@@ -567,8 +567,8 @@ class DatabaseManager:
                     INSERT INTO users (user_id, name, phone, last_seen)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(user_id) DO UPDATE SET
-                        name=COALESCE(excluded.name, name),
-                        phone=COALESCE(excluded.phone, phone),
+                        name=COALESCE(EXCLUDED.name, users.name),
+                        phone=COALESCE(EXCLUDED.phone, users.phone),
                         last_seen=CURRENT_TIMESTAMP
                     """
                 )
@@ -579,9 +579,9 @@ class DatabaseManager:
                     INSERT INTO users (user_id, name, phone, is_admin, last_seen)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(user_id) DO UPDATE SET
-                        name=COALESCE(excluded.name, name),
-                        phone=COALESCE(excluded.phone, phone),
-                        is_admin=excluded.is_admin,
+                        name=COALESCE(EXCLUDED.name, users.name),
+                        phone=COALESCE(EXCLUDED.phone, users.phone),
+                        is_admin=EXCLUDED.is_admin,
                         last_seen=CURRENT_TIMESTAMP
                     """
                 )
