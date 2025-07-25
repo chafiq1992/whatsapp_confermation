@@ -57,6 +57,36 @@ async def test_init_db_creates_indexes(tmp_path):
     assert "idx_msg_temp_id" in indexes
 
 
+@pytest.mark.asyncio
+async def test_init_db_adds_url_column(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            """
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wa_message_id TEXT UNIQUE,
+                user_id TEXT NOT NULL,
+                message TEXT,
+                type TEXT DEFAULT 'text',
+                from_me INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'sending',
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.commit()
+
+    dm = DatabaseManager(db_path=str(db_path))
+    await dm.init_db()
+
+    async with aiosqlite.connect(str(db_path)) as db:
+        cur = await db.execute("PRAGMA table_info(messages)")
+        cols = [r[1] for r in await cur.fetchall()]
+
+    assert "url" in cols
+
+
 def test_convert_mixed_placeholders():
     dm = DatabaseManager(db_url="postgresql://")
     q = "UPDATE t SET a=:a, b=? WHERE id=:id AND other=?"

@@ -71,6 +71,10 @@ CREATE INDEX IF NOT EXISTS idx_msg_wa_id ON messages(wa_message_id);
 CREATE INDEX IF NOT EXISTS idx_msg_temp_id ON messages(temp_id);
 ```
 
+Newer releases also store public URLs for uploaded media in a `url` column.
+Starting the backend will automatically add this column when missing, so you do
+not need to recreate an existing database.
+
 ## Frontend build
 
 Before running the backend make sure the React frontend is compiled:
