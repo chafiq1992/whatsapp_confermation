@@ -369,6 +369,7 @@ class DatabaseManager:
             "caption",
             "media_path",
             "timestamp",
+            "url",  # store public URL for media
         }
 
     async def _get_pool(self):
@@ -425,6 +426,7 @@ class DatabaseManager:
                     status         TEXT  DEFAULT 'sending',
                     price          TEXT,
                     caption        TEXT,
+                    url            TEXT,
                     media_path     TEXT,
                     timestamp      TEXT  DEFAULT CURRENT_TIMESTAMP
                 );
@@ -607,6 +609,7 @@ class DatabaseManager:
             "status": status,
             "price": message.get("price"),
             "caption": message.get("caption"),
+            "url": message.get("url"),
             "media_path": message.get("media_path"),
             "timestamp": message.get("timestamp"),
         }

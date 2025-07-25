@@ -23,7 +23,7 @@ class FakeConn:
 import aiosqlite
 
 @pytest.mark.asyncio
-async def test_upsert_message_filters_unknown_keys(tmp_path):
+async def test_upsert_message_saves_url(tmp_path):
     db_path = tmp_path / "db.sqlite"
     dm = DatabaseManager(db_path=str(db_path))
     await dm.init_db()
@@ -34,13 +34,13 @@ async def test_upsert_message_filters_unknown_keys(tmp_path):
         "from_me": 0,
         "status": "received",
         "timestamp": "t",
-        "url": "http://bad",  # unknown column should be ignored
+        "url": "http://example.com/img.jpg",
     })
     msgs = await dm.get_messages("user")
     assert len(msgs) == 1
     msg = msgs[0]
     assert msg["wa_message_id"] == "x1"
-    assert "url" not in msg
+    assert msg["url"] == "http://example.com/img.jpg"
 
 
 @pytest.mark.asyncio
