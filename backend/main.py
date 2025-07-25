@@ -723,15 +723,19 @@ class DatabaseManager:
     async def add_delivered_order(self, order_id: str):
         """Add an order to the payouts list."""
         async with self._conn() as db:
-            await db.execute(
+            query = self._convert(
                 """
                 INSERT INTO orders (order_id, status)
                 VALUES (?, ?)
                 ON CONFLICT(order_id) DO UPDATE SET status=?
-                """,
-                (order_id, ORDER_STATUS_PAYOUT, ORDER_STATUS_PAYOUT),
+                """
             )
-            await db.commit()
+            params = [order_id, ORDER_STATUS_PAYOUT, ORDER_STATUS_PAYOUT]
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, tuple(params))
+                await db.commit()
 
     async def mark_payout_paid(self, order_id: str):
         """Archive an order once its payout has been processed."""
