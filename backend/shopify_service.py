@@ -153,10 +153,63 @@ def search_products(query):
     return products
 
 def get_customer_by_phone(phone):
-    # Implement per your Shopify setup (can use API: /admin/api/2023-04/customers/search.json?query=)
-    # Return customer info dict or None
-    pass
+    """Return customer info by phone number or ``None`` if not found."""
+    phone = _normalize_phone(phone)
+    endpoint = (
+        f"https://{SHOPIFY_API_KEY}:{SHOPIFY_API_PW}@{SHOPIFY_STORE}/admin/api/2023-04/customers/search.json"
+    )
+
+    resp = requests.get(endpoint, params={"query": f"phone:{phone}"})
+    resp.raise_for_status()
+    customers = resp.json().get("customers", [])
+
+    if not customers and phone.startswith("+212"):
+        alt_phone = "0" + phone[4:]
+        resp = requests.get(endpoint, params={"query": f"phone:{alt_phone}"})
+        resp.raise_for_status()
+        customers = resp.json().get("customers", [])
+
+    if not customers:
+        return None
+
+    c = customers[0]
+    return {
+        "customer_id": c.get("id"),
+        "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
+        "email": c.get("email"),
+        "phone": c.get("phone"),
+        "total_orders": c.get("orders_count", 0),
+    }
 
 def get_order_status_for_customer(phone):
-    # Implement per your Shopify setup (orders API)
-    pass
+    """Return the most recent order status for a customer phone number."""
+    profile = get_customer_by_phone(phone)
+    if not profile:
+        return None
+
+    customer_id = profile["customer_id"]
+    endpoint = (
+        f"https://{SHOPIFY_API_KEY}:{SHOPIFY_API_PW}@{SHOPIFY_STORE}/admin/api/2023-04/orders.json"
+    )
+    params = {
+        "customer_id": customer_id,
+        "status": "any",
+        "limit": 1,
+        "order": "created_at desc",
+    }
+
+    resp = requests.get(endpoint, params=params)
+    resp.raise_for_status()
+    orders = resp.json().get("orders", [])
+    if not orders:
+        return None
+
+    o = orders[0]
+    return {
+        "status": o.get("fulfillment_status") or o.get("financial_status"),
+        "items": [
+            f"{item.get('title')} - {item.get('variant_title', '')}".strip()
+            for item in o.get("line_items", [])
+        ],
+        "order_date": o.get("created_at"),
+    }
