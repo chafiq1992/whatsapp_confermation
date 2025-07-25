@@ -398,6 +398,12 @@ class DatabaseManager:
                     created_at TEXT  DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE INDEX IF NOT EXISTS idx_msg_wa_id
+                    ON messages (wa_message_id);
+
+                CREATE INDEX IF NOT EXISTS idx_msg_temp_id
+                    ON messages (temp_id);
+
                 CREATE INDEX IF NOT EXISTS idx_msg_user_time
                     ON messages (user_id, datetime(timestamp));
 

@@ -49,6 +49,15 @@ When deploying to providers with ephemeral filesystems, point the `DB_PATH`
 environment variable at a location backed by a persistent volume so that chat
 history is retained across restarts.
 
+Recent versions add indexes on the `wa_message_id` and `temp_id` columns of the
+`messages` table. Running the backend automatically applies these indexes if
+they are missing. If upgrading an existing deployment manually, execute:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_msg_wa_id ON messages(wa_message_id);
+CREATE INDEX IF NOT EXISTS idx_msg_temp_id ON messages(temp_id);
+```
+
 ## Frontend build
 
 Before running the backend make sure the React frontend is compiled:
