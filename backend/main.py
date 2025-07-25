@@ -29,6 +29,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 MEDIA_BUCKET = os.getenv("MEDIA_BUCKET")  # optional S3 bucket for media
+# Custom S3 endpoint for providers like Cloudflare R2
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1133,7 +1135,7 @@ class MessageProcessor:
 
             bucket_url = None
             if MEDIA_BUCKET:
-                s3 = boto3.client('s3')
+                s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT_URL) if S3_ENDPOINT_URL else boto3.client('s3')
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
@@ -1548,7 +1550,7 @@ async def send_media(
 
             # ---------- build metadata ----------
             if MEDIA_BUCKET:
-                s3 = boto3.client('s3')
+                s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT_URL) if S3_ENDPOINT_URL else boto3.client('s3')
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
