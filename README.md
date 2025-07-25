@@ -52,11 +52,14 @@ to a valid connection string. When this variable is present the backend will use
 `asyncpg` to communicate with PostgreSQL.
 
 Uploaded media files can be stored in an S3 bucket by setting the `MEDIA_BUCKET`
-variable to your bucket name. If your provider uses a custom endpoint (for
-example Cloudflare R2), set `S3_ENDPOINT_URL` to that endpoint URL (e.g.
-`https://<account-id>.r2.cloudflarestorage.com`). When configured, uploaded
-media will be copied to the bucket and served from that endpoint using
-path-style URLs.
+variable to your bucket name. `S3_ENDPOINT_URL` should point to the S3 API
+endpoint (for example `https://<account-id>.r2.cloudflarestorage.com`). When
+configured, uploaded media will be copied to the bucket and served from that
+endpoint using path-style URLs. If the public URL for your bucket differs from
+the API endpoint you can set `MEDIA_PUBLIC_URL` to that domain (e.g.
+`https://pub-<account-id>.r2.dev` or your own host). When defined the backend
+returns URLs based on `MEDIA_PUBLIC_URL` while still using `S3_ENDPOINT_URL` to
+interact with the bucket.
 
 When deploying to providers with ephemeral filesystems, point the `DB_PATH`
 environment variable at a location backed by a persistent volume so that chat

@@ -31,6 +31,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 MEDIA_BUCKET = os.getenv("MEDIA_BUCKET")  # optional S3 bucket for media
 # Custom S3 endpoint for providers like Cloudflare R2
 S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")
+# Public base URL for accessing uploaded media. Defaults to the S3 endpoint.
+MEDIA_PUBLIC_URL = os.getenv("MEDIA_PUBLIC_URL", S3_ENDPOINT_URL)
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1163,7 +1165,9 @@ class MessageProcessor:
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
-                if S3_ENDPOINT_URL:
+                if MEDIA_PUBLIC_URL:
+                    bucket_url = f"{MEDIA_PUBLIC_URL}/{MEDIA_BUCKET}/{filename}"
+                elif S3_ENDPOINT_URL:
                     bucket_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
                 else:
                     bucket_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
@@ -1581,7 +1585,9 @@ async def send_media(
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
-                if S3_ENDPOINT_URL:
+                if MEDIA_PUBLIC_URL:
+                    media_url = f"{MEDIA_PUBLIC_URL}/{MEDIA_BUCKET}/{filename}"
+                elif S3_ENDPOINT_URL:
                     media_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
                 else:
                     media_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
