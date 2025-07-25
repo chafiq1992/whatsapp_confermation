@@ -115,3 +115,26 @@ The backend stores a cached copy of the catalog in `backend/catalog_cache.json`.
 2. Call the `/refresh-catalog-cache` endpoint manually.
 
 The cache file must exist for the `catalog-sets` and `catalog-set-products` endpoints to return data.
+
+## Running Tests
+
+The unit tests in `tests/` rely on a few additional packages beyond the standard
+backend requirements.
+Install the backend dependencies and the following test packages:
+
+- `pytest`
+- `pytest-asyncio`
+- `fastapi`
+- `aiosqlite`
+
+You can install everything with:
+
+```bash
+pip install -r backend/requirements.txt -r requirements-test.txt
+```
+
+Then run the suite with:
+
+```bash
+pytest
+```
