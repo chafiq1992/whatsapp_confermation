@@ -4,6 +4,8 @@ This project contains a FastAPI backend and React frontend for integrating Whats
 
 **Note:** File upload endpoints require the `python-multipart` package. Make sure this dependency is installed when deploying the backend.
 
+**Note:** Audio messaging relies on `ffmpeg` for processing voice notes. The provided Dockerfile installs this package automatically.
+
 ## Shopify Credentials
 
 The backend supports multiple environment variable prefixes to load Shopify credentials. It will use the first complete set it finds.
