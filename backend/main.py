@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 import os
+import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
@@ -374,11 +375,25 @@ class DatabaseManager:
         return self._pool
 
     def _convert(self, query: str) -> str:
+        """Convert SQLite style placeholders to asyncpg numbered ones."""
         if not self.use_postgres:
             return query
-        cnt = query.count('?')
-        for i in range(1, cnt + 1):
-            query = query.replace('?', f'${i}', 1)
+
+        idx = 1
+
+        # Replace positional "?" placeholders
+        while "?" in query:
+            query = query.replace("?", f"${idx}", 1)
+            idx += 1
+
+        # Replace named ":name" parameters
+        def repl(match):
+            nonlocal idx
+            rep = f"${idx}"
+            idx += 1
+            return rep
+
+        query = re.sub(r":\w+", repl, query)
         return query
 
     # ── basic connection helper ──
@@ -460,13 +475,21 @@ class DatabaseManager:
             row = None
             if data.get("wa_message_id"):
                 query = self._convert("SELECT * FROM messages WHERE wa_message_id = ?")
-                cur = await db.execute(query, *( [data["wa_message_id"]] if self.use_postgres else (data["wa_message_id"],) ))
-                row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
+                params = [data["wa_message_id"]]
+                if self.use_postgres:
+                    row = await db.fetchrow(query, *params)
+                else:
+                    cur = await db.execute(query, tuple(params))
+                    row = await cur.fetchone()
 
             if not row and data.get("temp_id"):
                 query = self._convert("SELECT * FROM messages WHERE temp_id = ?")
-                cur = await db.execute(query, *( [data["temp_id"]] if self.use_postgres else (data["temp_id"],) ))
-                row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
+                params = [data["temp_id"]]
+                if self.use_postgres:
+                    row = await db.fetchrow(query, *params)
+                else:
+                    cur = await db.execute(query, tuple(params))
+                    row = await cur.fetchone()
 
             # 2) decide insert vs update
             if row:
@@ -504,8 +527,12 @@ class DatabaseManager:
             query = self._convert(
                 "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
             )
-            cur = await db.execute(query, *( [user_id, limit, offset] if self.use_postgres else (user_id, limit, offset) ))
-            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
+            params = [user_id, limit, offset]
+            if self.use_postgres:
+                rows = await db.fetch(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
     async def update_message_status(self, wa_message_id: str, status: str):
@@ -514,8 +541,12 @@ class DatabaseManager:
     async def get_user_for_message(self, wa_message_id: str) -> str | None:
         async with self._conn() as db:
             query = self._convert("SELECT user_id FROM messages WHERE wa_message_id = ?")
-            cur = await db.execute(query, *( [wa_message_id] if self.use_postgres else (wa_message_id,) ))
-            row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
+            params = [wa_message_id]
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                row = await cur.fetchone()
             return row["user_id"] if row else None
 
     async def upsert_user(self, user_id: str, name=None, phone=None, is_admin: int | None = None):
@@ -595,47 +626,85 @@ class DatabaseManager:
         """Return list of user_ids flagged as admins."""
         async with self._conn() as db:
             query = self._convert("SELECT user_id FROM users WHERE is_admin = 1")
-            cur = await db.execute(query)
-            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
+            if self.use_postgres:
+                rows = await db.fetch(query)
+            else:
+                cur = await db.execute(query)
+                rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
     async def get_conversations_with_stats(self) -> List[dict]:
         """Return conversation summaries for chat list."""
         async with self._conn() as db:
-            cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
-            user_rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
+            if self.use_postgres:
+                user_rows = await db.fetch(self._convert("SELECT DISTINCT user_id FROM messages"))
+            else:
+                cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
+                user_rows = await cur.fetchall()
             user_ids = [r["user_id"] for r in user_rows]
 
             conversations = []
             for uid in user_ids:
-                cur = await db.execute(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), *( [uid] if self.use_postgres else (uid,)))
-                user = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
+                params = [uid]
+                if self.use_postgres:
+                    user = await db.fetchrow(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), *params)
+                else:
+                    cur = await db.execute(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), tuple(params))
+                    user = await cur.fetchone()
 
-                cur = await db.execute(
-                    self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
-                    *( [uid] if self.use_postgres else (uid,))
-                )
-                last = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
+                if self.use_postgres:
+                    last = await db.fetchrow(
+                        self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
+                        uid,
+                    )
+                else:
+                    cur = await db.execute(
+                        self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
+                        (uid,)
+                    )
+                    last = await cur.fetchone()
                 last_msg = last["message"] if last else None
                 last_time = last["timestamp"] if last else None
 
-                cur = await db.execute(
-                    self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
-                    *( [uid] if self.use_postgres else (uid,))
-                )
-                unread = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["c"]
+                if self.use_postgres:
+                    unread_row = await db.fetchrow(
+                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
+                        uid,
+                    )
+                else:
+                    cur = await db.execute(
+                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
+                        (uid,)
+                    )
+                    unread_row = await cur.fetchone()
+                unread = unread_row["c"]
 
-                cur = await db.execute(
-                    self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
-                    *( [uid] if self.use_postgres else (uid,))
-                )
-                last_agent = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["t"] or "1970-01-01"
+                if self.use_postgres:
+                    last_agent_row = await db.fetchrow(
+                        self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
+                        uid,
+                    )
+                else:
+                    cur = await db.execute(
+                        self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
+                        (uid,)
+                    )
+                    last_agent_row = await cur.fetchone()
+                last_agent = last_agent_row["t"] or "1970-01-01"
 
-                cur = await db.execute(
-                    self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
-                    *( [uid, last_agent] if self.use_postgres else (uid, last_agent))
-                )
-                unresponded = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["c"]
+                if self.use_postgres:
+                    unr_row = await db.fetchrow(
+                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
+                        uid,
+                        last_agent,
+                    )
+                else:
+                    cur = await db.execute(
+                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
+                        (uid, last_agent),
+                    )
+                    unr_row = await cur.fetchone()
+                unresponded = unr_row["c"]
 
                 conversations.append({
                     "user_id": uid,
@@ -679,16 +748,24 @@ class DatabaseManager:
         """Return orders currently awaiting payout."""
         async with self._conn() as db:
             query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
-            cur = await db.execute(query, *( [ORDER_STATUS_PAYOUT] if self.use_postgres else (ORDER_STATUS_PAYOUT,) ))
-            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
+            params = [ORDER_STATUS_PAYOUT]
+            if self.use_postgres:
+                rows = await db.fetch(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
     async def get_archived_orders(self) -> List[dict]:
         """Return archived (paid) orders."""
         async with self._conn() as db:
             query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
-            cur = await db.execute(query, *( [ORDER_STATUS_ARCHIVED] if self.use_postgres else (ORDER_STATUS_ARCHIVED,) ))
-            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
+            params = [ORDER_STATUS_ARCHIVED]
+            if self.use_postgres:
+                rows = await db.fetch(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
 # Message Processor with Complete Optimistic UI
