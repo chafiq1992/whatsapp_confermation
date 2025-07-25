@@ -1039,19 +1039,19 @@ class MessageProcessor:
         if msg_type == "text":
             message_obj["message"] = message["text"]["body"]
         elif msg_type == "image":
-            image_path = await self._download_media(message["image"]["id"], "image")
+            image_path, bucket_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
-            message_obj["url"] = f"{BASE_URL}/media/{Path(image_path).name}"
+            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(image_path).name}"
             message_obj["caption"] = message["image"].get("caption", "")
         elif msg_type == "audio":
-            audio_path = await self._download_media(message["audio"]["id"], "audio")
+            audio_path, bucket_url = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
-            message_obj["url"] = f"{BASE_URL}/media/{Path(audio_path).name}"
+            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(audio_path).name}"
             message_obj["transcription"] = ""
         elif msg_type == "video":
-            video_path = await self._download_media(message["video"]["id"], "video")
+            video_path, bucket_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
-            message_obj["url"] = f"{BASE_URL}/media/{Path(video_path).name}"
+            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(video_path).name}"
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
@@ -1074,8 +1074,12 @@ class MessageProcessor:
         await self.redis_manager.cache_message(sender, db_data)
         await self.db_manager.upsert_message(db_data)
     
-    async def _download_media(self, media_id: str, media_type: str) -> str:
-        """Download media from WhatsApp"""
+    async def _download_media(self, media_id: str, media_type: str) -> tuple[str, Optional[str]]:
+        """Download media from WhatsApp.
+
+        Returns a tuple ``(local_path, bucket_url)``. ``bucket_url`` will be
+        ``None`` when ``MEDIA_BUCKET`` is not configured.
+        """
         try:
             media_content = await self.whatsapp_messenger.download_media(media_id)
             
@@ -1087,17 +1091,19 @@ class MessageProcessor:
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
+            bucket_url = None
             if MEDIA_BUCKET:
                 s3 = boto3.client('s3')
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
                 )
+                bucket_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
 
-            return str(file_path)
-            
+            return str(file_path), bucket_url
+
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
-            return ""
+            return "", None
     
     def _get_file_extension(self, media_type: str) -> str:
         """Get file extension based on media type"""
