@@ -15,8 +15,9 @@ import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
 from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
-import asyncio, subprocess, os
-from pathlib import Path
+import subprocess
+import boto3
+import asyncpg
 
 from fastapi.staticfiles import StaticFiles
 
@@ -25,6 +26,8 @@ PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
+DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
+MEDIA_BUCKET = os.getenv("MEDIA_BUCKET")  # optional S3 bucket for media
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -341,12 +344,15 @@ ORDER_STATUS_PAYOUT = "payout"
 ORDER_STATUS_ARCHIVED = "archived"
 
 class DatabaseManager:
-    """Aiosqlite helper with WhatsApp-Web-compatible schema & helpers."""
+    """Database helper supporting SQLite and optional PostgreSQL."""
 
-    def __init__(self, db_path: str | None = None):
+    def __init__(self, db_path: str | None = None, db_url: str | None = None):
+        self.db_url = db_url or DATABASE_URL
         self.db_path = db_path or DB_PATH
-        # Ensure parent directory exists before attempting to connect
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.use_postgres = bool(self.db_url)
+        if not self.use_postgres:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._pool: Optional[asyncpg.pool.Pool] = None
         # Columns allowed in the messages table (except auto-increment id)
         self.message_columns = {
             "wa_message_id",
@@ -362,18 +368,35 @@ class DatabaseManager:
             "timestamp",
         }
 
+    async def _get_pool(self):
+        if not self._pool:
+            self._pool = await asyncpg.create_pool(self.db_url)
+        return self._pool
+
+    def _convert(self, query: str) -> str:
+        if not self.use_postgres:
+            return query
+        cnt = query.count('?')
+        for i in range(1, cnt + 1):
+            query = query.replace('?', f'${i}', 1)
+        return query
+
     # ── basic connection helper ──
     @asynccontextmanager
     async def _conn(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            yield db
+        if self.use_postgres:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                yield conn
+        else:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                yield db
 
     # ── schema ──
     async def init_db(self):
         async with self._conn() as db:
-            await db.executescript(
-                """
+            script = """
                 CREATE TABLE IF NOT EXISTS messages (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
                     wa_message_id  TEXT UNIQUE,
@@ -415,8 +438,14 @@ class DatabaseManager:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
                 """
-            )
-            await db.commit()
+            if self.use_postgres:
+                script = script.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+                statements = [s.strip() for s in script.split(";") if s.strip()]
+                for stmt in statements:
+                    await db.execute(stmt)
+            else:
+                await db.executescript(script)
+                await db.commit()
 
     # ── UPSERT with status-precedence ──
     async def upsert_message(self, data: dict):
@@ -428,21 +457,16 @@ class DatabaseManager:
         data = {k: v for k, v in data.items() if k in self.message_columns}
 
         async with self._conn() as db:
-            # 1) look for an existing row
             row = None
             if data.get("wa_message_id"):
-                cur = await db.execute(
-                    "SELECT * FROM messages WHERE wa_message_id = ?",
-                    (data["wa_message_id"],),
-                )
-                row = await cur.fetchone()
+                query = self._convert("SELECT * FROM messages WHERE wa_message_id = ?")
+                cur = await db.execute(query, *( [data["wa_message_id"]] if self.use_postgres else (data["wa_message_id"],) ))
+                row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
 
             if not row and data.get("temp_id"):
-                cur = await db.execute(
-                    "SELECT * FROM messages WHERE temp_id = ?",
-                    (data["temp_id"],),
-                )
-                row = await cur.fetchone()
+                query = self._convert("SELECT * FROM messages WHERE temp_id = ?")
+                cur = await db.execute(query, *( [data["temp_id"]] if self.use_postgres else (data["temp_id"],) ))
+                row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
 
             # 2) decide insert vs update
             if row:
@@ -454,36 +478,34 @@ class DatabaseManager:
                     return  # ignore downgrade
 
                 merged = {**dict(row), **data}
-                cols   = [k for k in merged.keys() if k != "id"]
-                sets   = ", ".join(f"{c}=:{c}" for c in cols)
+                cols = [k for k in merged.keys() if k != "id"]
+                sets = ", ".join(f"{c}=:{c}" for c in cols)
                 merged["id"] = row["id"]
-                await db.execute(
-                    f"UPDATE messages SET {sets} WHERE id = :id",
-                    merged,
-                )
+                query = self._convert(f"UPDATE messages SET {sets} WHERE id = :id")
+                if self.use_postgres:
+                    await db.execute(query, *[merged[c] for c in cols + ["id"]])
+                else:
+                    await db.execute(query, merged)
             else:
                 cols = ", ".join(data.keys())
                 qs   = ", ".join("?" for _ in data)
-                await db.execute(
-                    f"INSERT INTO messages ({cols}) VALUES ({qs})",
-                    tuple(data.values()),
-                )
-            await db.commit()
+                query = self._convert(f"INSERT INTO messages ({cols}) VALUES ({qs})")
+                if self.use_postgres:
+                    await db.execute(query, *data.values())
+                else:
+                    await db.execute(query, tuple(data.values()))
+            if not self.use_postgres:
+                await db.commit()
 
     # ── wrapper helpers re-used elsewhere ──
     async def get_messages(self, user_id: str, offset=0, limit=50) -> list[dict]:
         """Chronological (oldest➜newest) – just like WhatsApp."""
         async with self._conn() as db:
-            cur = await db.execute(
-                """
-                SELECT * FROM messages
-                WHERE user_id = ?
-                ORDER BY datetime(timestamp) ASC
-                LIMIT ? OFFSET ?
-                """,
-                (user_id, limit, offset),
+            query = self._convert(
+                "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
             )
-            rows = await cur.fetchall()
+            cur = await db.execute(query, *( [user_id, limit, offset] if self.use_postgres else (user_id, limit, offset) ))
+            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
             return [dict(r) for r in rows]
 
     async def update_message_status(self, wa_message_id: str, status: str):
@@ -491,27 +513,44 @@ class DatabaseManager:
 
     async def get_user_for_message(self, wa_message_id: str) -> str | None:
         async with self._conn() as db:
-            cur = await db.execute(
-                "SELECT user_id FROM messages WHERE wa_message_id = ?",
-                (wa_message_id,),
-            )
-            row = await cur.fetchone()
+            query = self._convert("SELECT user_id FROM messages WHERE wa_message_id = ?")
+            cur = await db.execute(query, *( [wa_message_id] if self.use_postgres else (wa_message_id,) ))
+            row = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
             return row["user_id"] if row else None
 
-    async def upsert_user(self, user_id: str, name=None, phone=None):
+    async def upsert_user(self, user_id: str, name=None, phone=None, is_admin: int | None = None):
         async with self._conn() as db:
-            await db.execute(
-                """
-                INSERT INTO users (user_id, name, phone, last_seen)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    name       = COALESCE(excluded.name , name),
-                    phone      = COALESCE(excluded.phone, phone),
-                    last_seen  = CURRENT_TIMESTAMP
-                """,
-                (user_id, name, phone),
-            )
-            await db.commit()
+            if is_admin is None:
+                query = self._convert(
+                    """
+                    INSERT INTO users (user_id, name, phone, last_seen)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        name=COALESCE(excluded.name, name),
+                        phone=COALESCE(excluded.phone, phone),
+                        last_seen=CURRENT_TIMESTAMP
+                    """
+                )
+                params = (user_id, name, phone)
+            else:
+                query = self._convert(
+                    """
+                    INSERT INTO users (user_id, name, phone, is_admin, last_seen)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        name=COALESCE(excluded.name, name),
+                        phone=COALESCE(excluded.phone, phone),
+                        is_admin=excluded.is_admin,
+                        last_seen=CURRENT_TIMESTAMP
+                    """
+                )
+                params = (user_id, name, phone, int(is_admin))
+
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, params)
+                await db.commit()
 
     async def save_message(self, message: dict, wa_message_id: str, status: str):
         """Persist a sent message using the final WhatsApp ID."""
@@ -537,63 +576,66 @@ class DatabaseManager:
         async with self._conn() as db:
             if message_ids:
                 placeholders = ",".join("?" * len(message_ids))
-                await db.execute(
-                    f"UPDATE messages SET status='read' WHERE user_id = ? AND wa_message_id IN ({placeholders})",
-                    (user_id, *message_ids),
+                query = self._convert(
+                    f"UPDATE messages SET status='read' WHERE user_id = ? AND wa_message_id IN ({placeholders})"
                 )
+                params = [user_id, *message_ids]
             else:
-                await db.execute(
-                    "UPDATE messages SET status='read' WHERE user_id = ? AND from_me = 0 AND status != 'read'",
-                    (user_id,),
+                query = self._convert(
+                    "UPDATE messages SET status='read' WHERE user_id = ? AND from_me = 0 AND status != 'read'"
                 )
-            await db.commit()
+                params = [user_id]
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, tuple(params))
+                await db.commit()
 
     async def get_admin_users(self) -> List[str]:
         """Return list of user_ids flagged as admins."""
         async with self._conn() as db:
-            cur = await db.execute(
-                "SELECT user_id FROM users WHERE is_admin = 1"
-            )
-            rows = await cur.fetchall()
+            query = self._convert("SELECT user_id FROM users WHERE is_admin = 1")
+            cur = await db.execute(query)
+            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
             return [r["user_id"] for r in rows]
 
     async def get_conversations_with_stats(self) -> List[dict]:
         """Return conversation summaries for chat list."""
         async with self._conn() as db:
-            cur = await db.execute("SELECT DISTINCT user_id FROM messages")
-            user_rows = await cur.fetchall()
+            cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
+            user_rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
             user_ids = [r["user_id"] for r in user_rows]
 
             conversations = []
             for uid in user_ids:
-                cur = await db.execute("SELECT name, phone FROM users WHERE user_id = ?", (uid,))
-                user = await cur.fetchone()
+                cur = await db.execute(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), *( [uid] if self.use_postgres else (uid,)))
+                user = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
 
                 cur = await db.execute(
-                    "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1",
-                    (uid,),
+                    self._convert("SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"),
+                    *( [uid] if self.use_postgres else (uid,))
                 )
-                last = await cur.fetchone()
+                last = await (cur.fetchrow() if self.use_postgres else cur.fetchone())
                 last_msg = last["message"] if last else None
                 last_time = last["timestamp"] if last else None
 
                 cur = await db.execute(
-                    "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'",
-                    (uid,),
+                    self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
+                    *( [uid] if self.use_postgres else (uid,))
                 )
-                unread = (await cur.fetchone())["c"]
+                unread = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["c"]
 
                 cur = await db.execute(
-                    "SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1",
-                    (uid,),
+                    self._convert("SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"),
+                    *( [uid] if self.use_postgres else (uid,))
                 )
-                last_agent = (await cur.fetchone())["t"] or "1970-01-01"
+                last_agent = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["t"] or "1970-01-01"
 
                 cur = await db.execute(
-                    "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?",
-                    (uid, last_agent),
+                    self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"),
+                    *( [uid, last_agent] if self.use_postgres else (uid, last_agent))
                 )
-                unresponded = (await cur.fetchone())["c"]
+                unresponded = (await (cur.fetchrow() if self.use_postgres else cur.fetchone()))["c"]
 
                 conversations.append({
                     "user_id": uid,
@@ -625,30 +667,28 @@ class DatabaseManager:
     async def mark_payout_paid(self, order_id: str):
         """Archive an order once its payout has been processed."""
         async with self._conn() as db:
-            await db.execute(
-                "UPDATE orders SET status=? WHERE order_id = ?",
-                (ORDER_STATUS_ARCHIVED, order_id),
-            )
-            await db.commit()
+            query = self._convert("UPDATE orders SET status=? WHERE order_id = ?")
+            params = [ORDER_STATUS_ARCHIVED, order_id]
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, tuple(params))
+                await db.commit()
 
     async def get_payouts(self) -> List[dict]:
         """Return orders currently awaiting payout."""
         async with self._conn() as db:
-            cur = await db.execute(
-                "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC",
-                (ORDER_STATUS_PAYOUT,),
-            )
-            rows = await cur.fetchall()
+            query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
+            cur = await db.execute(query, *( [ORDER_STATUS_PAYOUT] if self.use_postgres else (ORDER_STATUS_PAYOUT,) ))
+            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
             return [dict(r) for r in rows]
 
     async def get_archived_orders(self) -> List[dict]:
         """Return archived (paid) orders."""
         async with self._conn() as db:
-            cur = await db.execute(
-                "SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC",
-                (ORDER_STATUS_ARCHIVED,),
-            )
-            rows = await cur.fetchall()
+            query = self._convert("SELECT * FROM orders WHERE status=? ORDER BY datetime(created_at) DESC")
+            cur = await db.execute(query, *( [ORDER_STATUS_ARCHIVED] if self.use_postgres else (ORDER_STATUS_ARCHIVED,) ))
+            rows = await (cur.fetch() if self.use_postgres else cur.fetchall())
             return [dict(r) for r in rows]
 
 # Message Processor with Complete Optimistic UI
@@ -969,7 +1009,13 @@ class MessageProcessor:
             
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
-            
+
+            if MEDIA_BUCKET:
+                s3 = boto3.client('s3')
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
+                )
+
             return str(file_path)
             
         except Exception as e:
@@ -1047,6 +1093,8 @@ async def startup():
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """WebSocket endpoint for real-time communication"""
     await connection_manager.connect(websocket, user_id)
+    if user_id == "admin":
+        await db_manager.upsert_user(user_id, is_admin=1)
     
     try:
         # Send recent messages on connection
@@ -1376,7 +1424,14 @@ async def send_media(
                     return {"error": f"Audio conversion failed: {exc}", "status": "failed"}
 
             # ---------- build metadata ----------
-            media_url = f"{BASE_URL}/media/{filename}"
+            if MEDIA_BUCKET:
+                s3 = boto3.client('s3')
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
+                )
+                media_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
+            else:
+                media_url = f"{BASE_URL}/media/{filename}"
 
             message_data = {
                 "user_id": user_id,
