@@ -372,6 +372,24 @@ class DatabaseManager:
             "url",  # store public URL for media
         }
 
+    async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
+        """Add a column to a table if it doesn't already exist."""
+        exists = False
+        if self.use_postgres:
+            q = (
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name=$1 AND column_name=$2"
+            )
+            exists = bool(await db.fetchrow(q, table, column))
+        else:
+            cur = await db.execute(f"PRAGMA table_info({table})")
+            cols = [r[1] for r in await cur.fetchall()]
+            exists = column in cols
+        if not exists:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            if not self.use_postgres:
+                await db.commit()
+
     async def _get_pool(self):
         if not self._pool:
             self._pool = await asyncpg.create_pool(self.db_url)
@@ -470,6 +488,9 @@ class DatabaseManager:
             else:
                 await db.executescript(script)
                 await db.commit()
+
+            # Ensure newer columns exist for deployments created before they were added
+            await self._add_column_if_missing(db, "messages", "url", "TEXT")
 
     # ── UPSERT with status-precedence ──
     async def upsert_message(self, data: dict):
