@@ -8,6 +8,8 @@ RUN npm run build
 
 FROM python:3.12-slim
 
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY . .
 COPY --from=frontend-builder /app/frontend/build ./frontend/build
