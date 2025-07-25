@@ -202,7 +202,7 @@ class WhatsAppMessenger:
     def __init__(self):
         self.access_token = ACCESS_TOKEN
         self.phone_number_id = PHONE_NUMBER_ID
-        self.base_url = f"https://graph.facebook.com/v18.0/{self.phone_number_id}"
+        self.base_url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{self.phone_number_id}"
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
@@ -309,7 +309,7 @@ class WhatsAppMessenger:
     
     async def download_media(self, media_id: str) -> bytes:
         """Download media from WhatsApp"""
-        url = f"https://graph.facebook.com/v18.0/{media_id}"
+        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{media_id}"
         
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=self.headers)
@@ -781,7 +781,7 @@ class MessageProcessor:
         if not Path(file_path).exists():
             raise Exception(f"Media file not found: {file_path}")
         
-        upload_url = f"https://graph.facebook.com/v18.0/{self.whatsapp_messenger.phone_number_id}/media"
+        upload_url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{self.whatsapp_messenger.phone_number_id}/media"
         
         try:
             # Read file content
