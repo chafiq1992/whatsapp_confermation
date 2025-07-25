@@ -2,10 +2,11 @@ from fastapi.testclient import TestClient
 from backend import main
 
 
-def test_send_media_uses_s3_endpoint(tmp_path, monkeypatch):
+def test_send_media_uses_media_public_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(main, "MEDIA_BUCKET", "testbucket")
-    monkeypatch.setattr(main, "S3_ENDPOINT_URL", "https://endpoint.test")
+    monkeypatch.setattr(main, "S3_ENDPOINT_URL", "https://s3.api.test")
+    monkeypatch.setattr(main, "MEDIA_PUBLIC_URL", "https://public.test")
 
     class DummyS3:
         def upload_file(self, src, bucket, key):
@@ -30,7 +31,7 @@ def test_send_media_uses_s3_endpoint(tmp_path, monkeypatch):
 
     assert resp.status_code == 200
     result = resp.json()["messages"][0]
-    expected_url = f"https://endpoint.test/testbucket/{result['filename']}"
+    expected_url = f"https://public.test/testbucket/{result['filename']}"
     assert result["media_url"] == expected_url
 
 
