@@ -58,7 +58,7 @@ credentials either through `GOOGLE_DRIVE_CREDENTIALS_FILE` or
 otherwise the JSON string is read. The backend uploads files using these
 credentials and shares them publicly so anyone with the link can view the
 file. The returned URLs use the standard
-`https://drive.google.com/uc?export=download&id=<file_id>` format.
+`https://drive.google.com/uc?id=<file_id>` format.
 
 Create a service account in your Google Cloud project and enable the Drive API.
 Download the JSON key for this account and either mount it on disk and set
