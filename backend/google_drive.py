@@ -1,5 +1,6 @@
 import asyncio
 import os
+import json
 from pathlib import Path
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -7,16 +8,27 @@ from googleapiclient.http import MediaFileUpload
 
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 GOOGLE_DRIVE_CREDENTIALS_FILE = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE")
+GOOGLE_DRIVE_CREDENTIALS_JSON = os.getenv("GOOGLE_DRIVE_CREDENTIALS_JSON")
 
 _SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def _get_service():
-    if not GOOGLE_DRIVE_CREDENTIALS_FILE:
-        raise RuntimeError("GOOGLE_DRIVE_CREDENTIALS_FILE is not set")
-    creds = service_account.Credentials.from_service_account_file(
-        GOOGLE_DRIVE_CREDENTIALS_FILE, scopes=_SCOPES
-    )
+    creds_file = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE", GOOGLE_DRIVE_CREDENTIALS_FILE)
+    creds_json = os.getenv("GOOGLE_DRIVE_CREDENTIALS_JSON", GOOGLE_DRIVE_CREDENTIALS_JSON)
+
+    if creds_file and Path(creds_file).exists():
+        creds = service_account.Credentials.from_service_account_file(
+            creds_file, scopes=_SCOPES
+        )
+    elif creds_json:
+        creds_info = json.loads(creds_json)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info, scopes=_SCOPES
+        )
+    else:
+        raise RuntimeError("Google Drive credentials not provided")
+
     return build("drive", "v3", credentials=creds)
 
 

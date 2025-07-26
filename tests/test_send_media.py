@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
 from backend import main
+from backend import google_drive
+import json
 
 
 def test_send_media_returns_drive_url(tmp_path, monkeypatch):
@@ -75,3 +77,58 @@ def test_send_media_conversion_error(tmp_path, monkeypatch):
 
     assert resp.status_code == 500
     assert "Audio conversion failed" in resp.json()["detail"]
+
+
+def test_drive_json_credentials(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setenv("GOOGLE_DRIVE_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("GOOGLE_DRIVE_CREDENTIALS_JSON", json.dumps({"foo": "bar"}))
+
+    captured = {}
+
+    def fake_from_info(info, scopes=None):
+        captured["info"] = info
+        return "creds"
+
+    monkeypatch.setattr(google_drive.service_account.Credentials, "from_service_account_info", fake_from_info)
+
+    class DummyFiles:
+        def create(self, body=None, media_body=None, fields=None):
+            captured["body"] = body
+            return self
+
+        def execute(self):
+            return {"id": "abc"}
+
+    class DummyPermissions:
+        def create(self, fileId=None, body=None):
+            captured["perm"] = (fileId, body)
+            return self
+
+        def execute(self):
+            pass
+
+    class DummyService:
+        def files(self):
+            return DummyFiles()
+
+        def permissions(self):
+            return DummyPermissions()
+
+    def fake_build(*args, **kwargs):
+        captured["build"] = True
+        return DummyService()
+
+    monkeypatch.setattr(google_drive, "build", fake_build)
+    monkeypatch.setattr(google_drive, "MediaFileUpload", lambda *a, **k: None)
+
+    file_path = tmp_path / "x.txt"
+    file_path.write_text("data")
+
+    url = google_drive._upload_sync(str(file_path))
+
+    assert url == "https://drive.google.com/uc?id=abc"
+    assert captured["info"]["foo"] == "bar"
+    assert captured["build"]
+

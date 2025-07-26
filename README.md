@@ -52,17 +52,20 @@ to a valid connection string. When this variable is present the backend will use
 `asyncpg` to communicate with PostgreSQL.
 
 Uploaded media files are sent to Google Drive instead of S3. Set
-`GOOGLE_DRIVE_FOLDER_ID` to the target Drive folder and provide a service
-account JSON key via `GOOGLE_DRIVE_CREDENTIALS_FILE`. The backend will upload
-files using these credentials and share them publicly so anyone with the link
-can view the file. The returned URLs use the standard
+`GOOGLE_DRIVE_FOLDER_ID` to the target Drive folder and provide service account
+credentials either through `GOOGLE_DRIVE_CREDENTIALS_FILE` or
+`GOOGLE_DRIVE_CREDENTIALS_JSON`. If the file path exists it will be used,
+otherwise the JSON string is read. The backend uploads files using these
+credentials and shares them publicly so anyone with the link can view the
+file. The returned URLs use the standard
 `https://drive.google.com/uc?id=<file_id>` format.
 
 Create a service account in your Google Cloud project and enable the Drive API.
-Download the JSON key for this account and set `GOOGLE_DRIVE_CREDENTIALS_FILE`
-to its path. Share the destination folder with the service account's email so it
-can upload files. The backend will set each uploaded file to be accessible by
-anyone who has the link.
+Download the JSON key for this account and either mount it on disk and set
+`GOOGLE_DRIVE_CREDENTIALS_FILE` to its path or paste the contents into the
+`GOOGLE_DRIVE_CREDENTIALS_JSON` variable. Share the destination folder with the
+service account's email so it can upload files. The backend will set each
+uploaded file to be accessible by anyone who has the link.
 
 When deploying to providers with ephemeral filesystems, point the `DB_PATH`
 environment variable at a location backed by a persistent volume so that chat
