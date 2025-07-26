@@ -1,21 +1,15 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 from backend import main
 
 
-def test_send_media_uses_media_public_url(tmp_path, monkeypatch):
+def test_send_media_returns_drive_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(main, "MEDIA_BUCKET", "testbucket")
-    monkeypatch.setattr(main, "S3_ENDPOINT_URL", "https://s3.api.test")
-    monkeypatch.setattr(main, "MEDIA_PUBLIC_URL", "https://public.test")
 
-    class DummyS3:
-        def upload_file(self, src, bucket, key):
-            self.src = src
-            self.bucket = bucket
-            self.key = key
+    async def fake_upload(path: str):
+        return f"https://drive.test/{Path(path).name}"
 
-    dummy = DummyS3()
-    monkeypatch.setattr(main.boto3, "client", lambda *a, **k: dummy)
+    monkeypatch.setattr(main, "upload_file_to_drive", fake_upload)
 
     async def fake_process(data):
         return {"ok": True}
@@ -31,13 +25,12 @@ def test_send_media_uses_media_public_url(tmp_path, monkeypatch):
 
     assert resp.status_code == 200
     result = resp.json()["messages"][0]
-    expected_url = f"https://public.test/testbucket/{result['filename']}"
+    expected_url = f"https://drive.test/{result['filename']}"
     assert result["media_url"] == expected_url
 
 
 def test_send_media_save_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(main, "MEDIA_BUCKET", None)
 
     async def fake_open(*a, **k):
         raise OSError("disk full")
@@ -62,7 +55,6 @@ def test_send_media_save_error(tmp_path, monkeypatch):
 
 def test_send_media_conversion_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(main, "MEDIA_BUCKET", None)
 
     async def fake_convert(path):
         raise RuntimeError("bad format")

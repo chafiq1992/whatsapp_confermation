@@ -51,4 +51,3 @@ aiosqlite
 aiofiles
 redis
 asyncpg
-boto3
