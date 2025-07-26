@@ -51,15 +51,18 @@ To use PostgreSQL instead of SQLite, set the `DATABASE_URL` environment variable
 to a valid connection string. When this variable is present the backend will use
 `asyncpg` to communicate with PostgreSQL.
 
-Uploaded media files can be stored in an S3 bucket by setting the `MEDIA_BUCKET`
-variable to your bucket name. `S3_ENDPOINT_URL` should point to the S3 API
-endpoint (for example `https://<account-id>.r2.cloudflarestorage.com`). When
-configured, uploaded media will be copied to the bucket and served from that
-endpoint using path-style URLs. If the public URL for your bucket differs from
-the API endpoint you can set `MEDIA_PUBLIC_URL` to that domain (e.g.
-`https://pub-<account-id>.r2.dev` or your own host). When defined the backend
-returns URLs based on `MEDIA_PUBLIC_URL` while still using `S3_ENDPOINT_URL` to
-interact with the bucket.
+Uploaded media files are sent to Google Drive instead of S3. Set
+`GOOGLE_DRIVE_FOLDER_ID` to the target Drive folder and provide a service
+account JSON key via `GOOGLE_DRIVE_CREDENTIALS_FILE`. The backend will upload
+files using these credentials and share them publicly so anyone with the link
+can view the file. The returned URLs use the standard
+`https://drive.google.com/uc?id=<file_id>` format.
+
+Create a service account in your Google Cloud project and enable the Drive API.
+Download the JSON key for this account and set `GOOGLE_DRIVE_CREDENTIALS_FILE`
+to its path. Share the destination folder with the service account's email so it
+can upload files. The backend will set each uploaded file to be accessible by
+anyone who has the link.
 
 When deploying to providers with ephemeral filesystems, point the `DB_PATH`
 environment variable at a location backed by a persistent volume so that chat

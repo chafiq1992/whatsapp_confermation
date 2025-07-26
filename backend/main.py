@@ -17,8 +17,8 @@ from fastapi.responses import PlainTextResponse
 from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import subprocess
-import boto3
 import asyncpg
+from .google_drive import upload_file_to_drive
 
 from fastapi.staticfiles import StaticFiles
 
@@ -28,11 +28,8 @@ BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
-MEDIA_BUCKET = os.getenv("MEDIA_BUCKET")  # optional S3 bucket for media
-# Custom S3 endpoint for providers like Cloudflare R2
-S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL")
-# Public base URL for accessing uploaded media. Defaults to the S3 endpoint.
-MEDIA_PUBLIC_URL = os.getenv("MEDIA_PUBLIC_URL", S3_ENDPOINT_URL)
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+GOOGLE_DRIVE_CREDENTIALS_FILE = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE")
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1107,19 +1104,19 @@ class MessageProcessor:
         if msg_type == "text":
             message_obj["message"] = message["text"]["body"]
         elif msg_type == "image":
-            image_path, bucket_url = await self._download_media(message["image"]["id"], "image")
+            image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
-            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(image_path).name}"
+            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(image_path).name}"
             message_obj["caption"] = message["image"].get("caption", "")
         elif msg_type == "audio":
-            audio_path, bucket_url = await self._download_media(message["audio"]["id"], "audio")
+            audio_path, drive_url = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
-            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(audio_path).name}"
+            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(audio_path).name}"
             message_obj["transcription"] = ""
         elif msg_type == "video":
-            video_path, bucket_url = await self._download_media(message["video"]["id"], "video")
+            video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
-            message_obj["url"] = bucket_url or f"{BASE_URL}/media/{Path(video_path).name}"
+            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(video_path).name}"
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
@@ -1143,10 +1140,10 @@ class MessageProcessor:
         await self.db_manager.upsert_message(db_data)
     
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, Optional[str]]:
-        """Download media from WhatsApp.
+        """Download media from WhatsApp and upload it to Google Drive.
 
-        Returns a tuple ``(local_path, bucket_url)``. ``bucket_url`` will be
-        ``None`` when ``MEDIA_BUCKET`` is not configured.
+        Returns a tuple ``(local_path, drive_url)`` where ``drive_url`` is the
+        public link to the uploaded file.
         """
         try:
             media_content = await self.whatsapp_messenger.download_media(media_id)
@@ -1159,20 +1156,9 @@ class MessageProcessor:
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
-            bucket_url = None
-            if MEDIA_BUCKET:
-                s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT_URL) if S3_ENDPOINT_URL else boto3.client('s3')
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
-                )
-                if MEDIA_PUBLIC_URL:
-                    bucket_url = f"{MEDIA_PUBLIC_URL}/{MEDIA_BUCKET}/{filename}"
-                elif S3_ENDPOINT_URL:
-                    bucket_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
-                else:
-                    bucket_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
+            drive_url = await upload_file_to_drive(str(file_path))
 
-            return str(file_path), bucket_url
+            return str(file_path), drive_url
 
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
@@ -1579,20 +1565,8 @@ async def send_media(
                 except Exception as exc:
                     raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
-            # ---------- build metadata ----------
-            if MEDIA_BUCKET:
-                s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT_URL) if S3_ENDPOINT_URL else boto3.client('s3')
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: s3.upload_file(str(file_path), MEDIA_BUCKET, filename)
-                )
-                if MEDIA_PUBLIC_URL:
-                    media_url = f"{MEDIA_PUBLIC_URL}/{MEDIA_BUCKET}/{filename}"
-                elif S3_ENDPOINT_URL:
-                    media_url = f"{S3_ENDPOINT_URL}/{MEDIA_BUCKET}/{filename}"
-                else:
-                    media_url = f"https://{MEDIA_BUCKET}.s3.amazonaws.com/{filename}"
-            else:
-                media_url = f"{BASE_URL}/media/{filename}"
+            # ---------- upload to Google Drive ----------
+            media_url = await upload_file_to_drive(str(file_path))
 
             message_data = {
                 "user_id": user_id,
