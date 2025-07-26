@@ -1593,7 +1593,8 @@ async def send_media(
         raise
     except Exception as exc:
         print(f"❌ Error in /send-media: {exc}")
-        return {"error": f"Internal server error: {exc}", "status": "failed"}
+        raise HTTPException(status_code=500,
+                            detail=f"Internal server error: {exc}")
 
 
 @app.post("/send-catalog-set")

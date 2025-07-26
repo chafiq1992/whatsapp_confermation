@@ -75,3 +75,28 @@ def test_send_media_conversion_error(tmp_path, monkeypatch):
 
     assert resp.status_code == 500
     assert "Audio conversion failed" in resp.json()["detail"]
+
+
+def test_send_media_unhandled_error(tmp_path, monkeypatch):
+    """Unhandled exceptions should result in a 500 status code."""
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_upload(path: str):
+        return f"https://drive.test/{Path(path).name}"
+
+    monkeypatch.setattr(main, "upload_file_to_drive", fake_upload)
+
+    async def fail_process(data):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main.message_processor, "process_outgoing_message", fail_process)
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/send-media",
+            data={"user_id": "u1", "media_type": "image", "caption": "", "price": ""},
+            files={"files": ("x.jpg", b"data", "image/jpeg")},
+        )
+
+    assert resp.status_code == 500
+    assert "Internal server error" in resp.json()["detail"]
