@@ -47,7 +47,7 @@ def _upload_sync(file_path: str) -> str:
     service.permissions().create(
         fileId=file_id, body={"role": "reader", "type": "anyone"}
     ).execute()
-    return f"https://drive.google.com/uc?id={file_id}"
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
 async def upload_file_to_drive(file_path: str) -> str:

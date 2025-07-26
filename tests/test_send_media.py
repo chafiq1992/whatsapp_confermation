@@ -128,7 +128,7 @@ def test_drive_json_credentials(tmp_path, monkeypatch):
 
     url = google_drive._upload_sync(str(file_path))
 
-    assert url == "https://drive.google.com/uc?id=abc"
+    assert url == "https://drive.google.com/uc?export=download&id=abc"
     assert captured["info"]["foo"] == "bar"
     assert captured["build"]
 
