@@ -22,6 +22,11 @@ from .google_cloud_storage import upload_file_to_gcs
 
 from fastapi.staticfiles import StaticFiles
 
+# Absolute paths
+ROOT_DIR = Path(__file__).resolve().parent.parent
+MEDIA_DIR = ROOT_DIR / "media"
+MEDIA_DIR.mkdir(exist_ok=True)
+
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
@@ -838,7 +843,7 @@ class MessageProcessor:
         self.redis_manager = redis_manager
         self.db_manager = db_manager
         self.whatsapp_messenger = WhatsAppMessenger()
-        self.media_dir = Path("media")
+        self.media_dir = MEDIA_DIR
         self.media_dir.mkdir(exist_ok=True)
     
     # Fix the method that was duplicated at the bottom of the file
@@ -1204,7 +1209,7 @@ app.include_router(shopify_router)
 
 
 # Mount the media directory to serve uploaded files
-app.mount("/media", StaticFiles(directory="media"), name="media")
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1530,7 +1535,7 @@ async def send_media(
             return {"error": "No files uploaded", "status": "failed"}
 
         # ---------- ensure media folder ----------
-        media_dir = Path("media")
+        media_dir = MEDIA_DIR
         media_dir.mkdir(exist_ok=True)
 
         saved_results = []
