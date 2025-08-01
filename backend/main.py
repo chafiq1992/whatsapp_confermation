@@ -18,7 +18,7 @@ from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
-from .google_drive import upload_file_to_drive
+from .google_cloud_storage import upload_file_to_gcs
 
 from fastapi.staticfiles import StaticFiles
 
@@ -28,8 +28,6 @@ BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
-GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-GOOGLE_DRIVE_CREDENTIALS_FILE = os.getenv("GOOGLE_DRIVE_CREDENTIALS_FILE")
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1156,7 +1154,7 @@ class MessageProcessor:
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
-            drive_url = await upload_file_to_drive(str(file_path))
+            drive_url = await upload_file_to_gcs(str(file_path))
 
             return str(file_path), drive_url
 
@@ -1566,7 +1564,7 @@ async def send_media(
                     raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
             # ---------- upload to Google Drive ----------
-            media_url = await upload_file_to_drive(str(file_path))
+            media_url = await upload_file_to_gcs(str(file_path))
 
             message_data = {
                 "user_id": user_id,
