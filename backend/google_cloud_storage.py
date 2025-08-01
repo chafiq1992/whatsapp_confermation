@@ -50,3 +50,25 @@ async def upload_file_to_gcs(file_path: str) -> str:
     """Upload a file to Google Cloud Storage and return a public URL."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _upload_sync, file_path)
+
+
+def _download_sync(blob_name: str, destination: str) -> None:
+    bucket_name = os.getenv("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
+    if not bucket_name:
+        raise RuntimeError("GCS_BUCKET_NAME is not set")
+
+    client = _get_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.download_to_filename(destination)
+
+
+def download_file_from_gcs(blob_name: str, destination: str) -> None:
+    """Download a file from Google Cloud Storage to a local destination."""
+    _download_sync(blob_name, destination)
+
+
+async def download_file_from_gcs_async(blob_name: str, destination: str) -> None:
+    """Asynchronously download a file from Google Cloud Storage."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _download_sync, blob_name, destination)
