@@ -51,21 +51,20 @@ To use PostgreSQL instead of SQLite, set the `DATABASE_URL` environment variable
 to a valid connection string. When this variable is present the backend will use
 `asyncpg` to communicate with PostgreSQL.
 
-Uploaded media files are sent to Google Drive instead of S3. Set
-`GOOGLE_DRIVE_FOLDER_ID` to the target Drive folder and provide service account
-credentials either through `GOOGLE_DRIVE_CREDENTIALS_FILE` or
-`GOOGLE_DRIVE_CREDENTIALS_JSON`. If the file path exists it will be used,
-otherwise the JSON string is read. The backend uploads files using these
-credentials and shares them publicly so anyone with the link can view the
-file. The returned URLs use the standard
-`https://drive.google.com/uc?id=<file_id>` format.
+Uploaded media files are stored in **Google Cloud Storage**. Set
+`GCS_BUCKET_NAME` to your target bucket and provide service account credentials
+via `GCS_CREDENTIALS_FILE` or `GCS_CREDENTIALS_JSON`. If the file path exists it
+will be used, otherwise the JSON string is read. The backend uploads files to
+this bucket and makes each object publicly accessible so it can be previewed in
+the frontend. The returned URLs follow the
+`https://storage.googleapis.com/<bucket>/<filename>` format.
 
-Create a service account in your Google Cloud project and enable the Drive API.
-Download the JSON key for this account and either mount it on disk and set
-`GOOGLE_DRIVE_CREDENTIALS_FILE` to its path or paste the contents into the
-`GOOGLE_DRIVE_CREDENTIALS_JSON` variable. Share the destination folder with the
-service account's email so it can upload files. The backend will set each
-uploaded file to be accessible by anyone who has the link.
+Create a service account in your Google Cloud project and grant it write access
+to the bucket. Download the JSON key for this account and either mount it on
+disk and set `GCS_CREDENTIALS_FILE` to its path or paste the contents into the
+`GCS_CREDENTIALS_JSON` variable. The backend calls `make_public()` on every
+uploaded object, so ensure the bucket allows public access or configure
+Uniform bucket-level access accordingly.
 
 When deploying to providers with ephemeral filesystems, point the `DB_PATH`
 environment variable at a location backed by a persistent volume so that chat

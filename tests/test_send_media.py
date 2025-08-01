@@ -1,17 +1,17 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
 from backend import main
-from backend import google_drive
+from backend import google_cloud_storage
 import json
 
 
-def test_send_media_returns_drive_url(tmp_path, monkeypatch):
+def test_send_media_returns_gcs_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     async def fake_upload(path: str):
-        return f"https://drive.test/{Path(path).name}"
+        return f"https://storage.test/{Path(path).name}"
 
-    monkeypatch.setattr(main, "upload_file_to_drive", fake_upload)
+    monkeypatch.setattr(main, "upload_file_to_gcs", fake_upload)
 
     async def fake_process(data):
         return {"ok": True}
@@ -27,7 +27,7 @@ def test_send_media_returns_drive_url(tmp_path, monkeypatch):
 
     assert resp.status_code == 200
     result = resp.json()["messages"][0]
-    expected_url = f"https://drive.test/{result['filename']}"
+    expected_url = f"https://storage.test/{result['filename']}"
     assert result["media_url"] == expected_url
 
 
@@ -79,56 +79,59 @@ def test_send_media_conversion_error(tmp_path, monkeypatch):
     assert "Audio conversion failed" in resp.json()["detail"]
 
 
-def test_drive_json_credentials(tmp_path, monkeypatch):
+def test_gcs_json_credentials(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    monkeypatch.setenv("GOOGLE_DRIVE_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
-    monkeypatch.setenv("GOOGLE_DRIVE_CREDENTIALS_JSON", json.dumps({"foo": "bar"}))
+    monkeypatch.setenv("GCS_CREDENTIALS_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setenv("GCS_CREDENTIALS_JSON", json.dumps({"foo": "bar"}))
 
     captured = {}
 
-    def fake_from_info(info, scopes=None):
+    def fake_from_info(info):
         captured["info"] = info
         return "creds"
 
-    monkeypatch.setattr(google_drive.service_account.Credentials, "from_service_account_info", fake_from_info)
+    monkeypatch.setattr(
+        google_cloud_storage.service_account.Credentials,
+        "from_service_account_info",
+        fake_from_info,
+    )
 
-    class DummyFiles:
-        def create(self, body=None, media_body=None, fields=None):
-            captured["body"] = body
-            return self
+    class DummyBlob:
+        public_url = "https://storage.googleapis.com/bucket/x.txt"
 
-        def execute(self):
-            return {"id": "abc"}
+        def upload_from_filename(self, filename, content_type=None):
+            captured["uploaded"] = filename
 
-    class DummyPermissions:
-        def create(self, fileId=None, body=None):
-            captured["perm"] = (fileId, body)
-            return self
+        def make_public(self):
+            captured["public"] = True
 
-        def execute(self):
-            pass
+    class DummyBucket:
+        def blob(self, name):
+            captured["blob_name"] = name
+            return DummyBlob()
 
-    class DummyService:
-        def files(self):
-            return DummyFiles()
+    class DummyClient:
+        def bucket(self, name):
+            captured["bucket"] = name
+            return DummyBucket()
 
-        def permissions(self):
-            return DummyPermissions()
+    monkeypatch.setattr(
+        google_cloud_storage,
+        "storage",
+        type("DummyStorage", (), {"Client": lambda *a, **k: DummyClient()}),
+    )
 
-    def fake_build(*args, **kwargs):
-        captured["build"] = True
-        return DummyService()
-
-    monkeypatch.setattr(google_drive, "build", fake_build)
-    monkeypatch.setattr(google_drive, "MediaFileUpload", lambda *a, **k: None)
+    monkeypatch.setenv("GCS_BUCKET_NAME", "bucket")
 
     file_path = tmp_path / "x.txt"
     file_path.write_text("data")
 
-    url = google_drive._upload_sync(str(file_path))
+    url = google_cloud_storage._upload_sync(str(file_path))
 
-    assert url == "https://drive.google.com/uc?id=abc"
+    assert url == "https://storage.googleapis.com/bucket/x.txt"
     assert captured["info"]["foo"] == "bar"
-    assert captured["build"]
+    assert captured["bucket"] == "bucket"
+    assert captured["blob_name"] == "x.txt"
+    assert captured["public"]
 
