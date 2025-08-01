@@ -18,7 +18,7 @@ from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
-from .google_cloud_storage import upload_file_to_gcs
+from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
 
 from fastapi.staticfiles import StaticFiles
 
@@ -1225,6 +1225,18 @@ async def startup():
     await redis_manager.connect()
 
     if not os.path.exists(config.CATALOG_CACHE_FILE):
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                download_file_from_gcs,
+                config.CATALOG_CACHE_FILE,
+                config.CATALOG_CACHE_FILE,
+            )
+        except Exception:
+            pass
+
+    if not os.path.exists(config.CATALOG_CACHE_FILE):
         async def _refresh_cache_bg():
             try:
                 count = await catalog_manager.refresh_catalog_cache()
@@ -1744,12 +1756,21 @@ class CatalogManager:
         products = await CatalogManager.get_catalog_products()
         with open(config.CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
             json.dump(products, f, ensure_ascii=False)
+        try:
+            await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+        except Exception as exc:
+            print(f"GCS upload failed: {exc}")
         return len(products)
 
     @staticmethod
     def get_cached_products() -> List[Dict[str, Any]]:
         if not os.path.exists(config.CATALOG_CACHE_FILE):
-            return []
+            try:
+                download_file_from_gcs(
+                    config.CATALOG_CACHE_FILE, config.CATALOG_CACHE_FILE
+                )
+            except Exception:
+                return []
         with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
             products = json.load(f)
         return [p for p in products if CatalogManager._is_product_available(p)]
