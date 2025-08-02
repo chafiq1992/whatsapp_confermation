@@ -1109,17 +1109,17 @@ class MessageProcessor:
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(image_path).name}"
+            message_obj["url"] = drive_url
             message_obj["caption"] = message["image"].get("caption", "")
         elif msg_type == "audio":
             audio_path, drive_url = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(audio_path).name}"
+            message_obj["url"] = drive_url
             message_obj["transcription"] = ""
         elif msg_type == "video":
             video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(video_path).name}"
+            message_obj["url"] = drive_url
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
@@ -1142,30 +1142,33 @@ class MessageProcessor:
         await self.redis_manager.cache_message(sender, db_data)
         await self.db_manager.upsert_message(db_data)
     
-    async def _download_media(self, media_id: str, media_type: str) -> tuple[str, Optional[str]]:
-        """Download media from WhatsApp and upload it to Google Drive.
+    async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
+        """Download media from WhatsApp and upload it to Google Cloud Storage.
 
         Returns a tuple ``(local_path, drive_url)`` where ``drive_url`` is the
-        public link to the uploaded file.
+        public link to the uploaded file. Raises an exception if the upload
+        fails so callers don't fall back to local paths.
         """
         try:
             media_content = await self.whatsapp_messenger.download_media(media_id)
-            
+
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             file_extension = self._get_file_extension(media_type)
             filename = f"{media_type}_{timestamp}_{media_id[:8]}{file_extension}"
             file_path = self.media_dir / filename
-            
+
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
             drive_url = await upload_file_to_gcs(str(file_path))
+            if not drive_url:
+                raise RuntimeError("GCS upload failed")
 
             return str(file_path), drive_url
 
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
-            return "", None
+            raise
     
     def _get_file_extension(self, media_type: str) -> str:
         """Get file extension based on media type"""
