@@ -1,4 +1,4 @@
-import axios from "axios";
+import api from "./api";
 import React, { useEffect, useState, useCallback } from "react";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "";
@@ -22,7 +22,7 @@ export default function CatalogPanel({
   const fetchSets = async () => {
     setLoadingSets(true);
     try {
-      const res = await axios.get(`${API_BASE}/catalog-sets`);
+      const res = await api.get(`${API_BASE}/catalog-sets`);
       setSets(res.data || []);
     } catch (err) {
       console.error('Error fetching sets:', err);
@@ -36,7 +36,7 @@ export default function CatalogPanel({
     setSelectedSet(setId);
     setLoadingSetProducts(true);
     try {
-      const res = await axios.get(`${API_BASE}/catalog-set-products`, {
+      const res = await api.get(`${API_BASE}/catalog-set-products`, {
         params: { set_id: setId } 
       });
       setSetProducts(res.data || []);
@@ -109,7 +109,7 @@ export default function CatalogPanel({
 
     try {
       // Background HTTP call to actually send via WhatsApp
-      await axios.post(
+      await api.post(
         `${API_BASE}/send-catalog-item`,
         new URLSearchParams({
           user_id: activeUser.user_id,
@@ -151,7 +151,7 @@ export default function CatalogPanel({
     }
 
     try {
-      await axios.post(
+      await api.post(
         `${API_BASE}/send-catalog-set`,
         new URLSearchParams({
           user_id: activeUser.user_id,
@@ -196,7 +196,7 @@ export default function CatalogPanel({
     }
 
     try {
-      await axios.post(
+      await api.post(
         `${API_BASE}/send-set-images`,
         new URLSearchParams({
           user_id: activeUser.user_id,
@@ -262,7 +262,7 @@ export default function CatalogPanel({
       setLoading(true);
       setResult("");
       try {
-        const res = await axios.post(`${API_BASE}/refresh-catalog-cache`);
+        const res = await api.post(`${API_BASE}/refresh-catalog-cache`);
         setResult(`✅ Catalog refreshed: ${res.data.count} products`);
         if (onRefresh) onRefresh();
       } catch (err) {

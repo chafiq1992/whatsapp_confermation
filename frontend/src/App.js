@@ -3,7 +3,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import ChatList from './ChatList';
 import ChatWindow from './ChatWindow';
 import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
-import axios from 'axios';
+import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
 
 // Read API base from env for production/dev compatibility
@@ -23,7 +23,7 @@ export default function App() {
   // Fetch all conversations for chat list
   const fetchConversations = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/conversations`);
+      const res = await api.get(`${API_BASE}/conversations`);
       setConversations(res.data);
       saveConversations(res.data);
     } catch (err) {
@@ -38,7 +38,7 @@ export default function App() {
   // Fetch ALL products in catalog and build a lookup for order message rendering
   const fetchCatalogProducts = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/catalog-all-products`);
+      const res = await api.get(`${API_BASE}/catalog-all-products`);
       const allProducts = res.data || [];
 
       // Only keep in-stock items
