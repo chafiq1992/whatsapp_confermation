@@ -11,4 +11,20 @@ const api = axios.create({
   baseURL: baseUrl
 });
 
+// Redirect to login on auth errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const detail = error?.response?.data?.detail;
+    if (status === 401 || detail === 'Merchant login required') {
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+// expose axios utility helpers on the instance
+api.isCancel = axios.isCancel;
+
 export default api;

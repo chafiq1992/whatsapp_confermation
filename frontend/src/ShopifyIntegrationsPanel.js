@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { FaShopify } from "react-icons/fa";
-import axios from "axios";
+import api from "./api";
 
 export default function ShopifyIntegrationsPanel({ activeUser }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
@@ -51,7 +51,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
   // Fetch shipping methods on mount
   useEffect(() => {
-    axios.get(`${API_BASE}/shopify-shipping-options`)
+    api.get(`${API_BASE}/shopify-shipping-options`)
       .then(res => {
         setShippingOptions(res.data);
         if (res.data.length) setDeliveryOption(res.data[0].name);
@@ -74,7 +74,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       return;
     }
     setLoading(true);
-    axios
+    api
       .get(`${API_BASE}/search-customer?phone_number=${encodeURIComponent(activeUser.phone)}`)
       .then((res) => {
         setCustomer(res.data);
@@ -111,7 +111,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
     const timeoutId = setTimeout(async () => {
       try {
-        const res = await axios.get(`${API_BASE}/shopify-products?q=${encodeURIComponent(productSearch)}`);
+        const res = await api.get(`${API_BASE}/shopify-products?q=${encodeURIComponent(productSearch)}`);
         setProducts(res.data || []);
       } catch {
         setProducts([]);
@@ -124,7 +124,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const handleAddByVariantId = async () => {
     if (!variantIdInput) return;
     try {
-      const res = await axios.get(`${API_BASE}/shopify-variant/${variantIdInput}`);
+      const res = await api.get(`${API_BASE}/shopify-variant/${variantIdInput}`);
       if (res.data) {
         setSelectedItems(items => [...items, { variant: res.data, quantity: 1, discount: 0 }]);
       }
@@ -183,7 +183,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     setIsCreating(true);
     try {
-      await axios.post(`${API_BASE}/create-shopify-order`, orderPayload);
+      await api.post(`${API_BASE}/create-shopify-order`, orderPayload);
       setSelectedItems([]);
       setErrorMsg("");
       alert("Order created successfully!");

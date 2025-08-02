@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import fetchWithAuth from './fetchWithAuth';
 
 export default function ImageUploader({ userId, onImagesSent, ws }) {
   const [isUploading, setIsUploading] = useState(false);
@@ -25,7 +26,7 @@ export default function ImageUploader({ userId, onImagesSent, ws }) {
         // Send via WebSocket if available (like ChatWindow does)
         if (ws && ws.readyState === WebSocket.OPEN) {
           // For WebSocket, we still use HTTP upload but let WS handle real-time updates
-          const response = await fetch(`${API_BASE}/send-media`, {
+          const response = await fetchWithAuth(`${API_BASE}/send-media`, {
             method: 'POST',
             body: formData,
           });
@@ -39,7 +40,7 @@ export default function ImageUploader({ userId, onImagesSent, ws }) {
           // WebSocket will handle the UI update automatically
         } else {
           // Fallback to HTTP-only approach
-          const response = await fetch(`${API_BASE}/send-media`, {
+          const response = await fetchWithAuth(`${API_BASE}/send-media`, {
             method: 'POST',
             body: formData,
           });
