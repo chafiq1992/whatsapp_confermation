@@ -1756,18 +1756,37 @@ class CatalogManager:
     @staticmethod
     def _format_product(product: Dict[str, Any]) -> Dict[str, Any]:
         images = product.get("images", [])
+        # Facebook can return images as an array, or as an object with a data array
         if isinstance(images, dict) and "data" in images:
             images = images["data"]
 
-        formatted_images = []
+        formatted_images: list[dict] = []
         for img in images:
+            # Normalize to dict form
             if isinstance(img, str):
+                # Some APIs return a bare URL string
+                url_string = img
                 try:
-                    img = json.loads(img)
+                    # Rarely images are JSON-encoded strings
+                    possible = json.loads(img)
+                    if isinstance(possible, dict):
+                        img = possible
+                    else:
+                        img = {"url": url_string}
                 except Exception:
-                    continue
+                    img = {"url": url_string}
+
             if isinstance(img, dict):
-                formatted_images.append(img)
+                # Normalize common keys to `url`
+                url = (
+                    img.get("url")
+                    or img.get("src")
+                    or img.get("image_url")
+                    or img.get("original_url")
+                    or img.get("href")
+                )
+                if url:
+                    formatted_images.append({"url": url})
 
         return {
             "retailer_id": product.get("retailer_id", product.get("id")),
@@ -1798,9 +1817,28 @@ class CatalogManager:
                 )
             except Exception:
                 return []
-        with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
-            products = json.load(f)
-        return [p for p in products if CatalogManager._is_product_available(p)]
+        # If file exists but is empty or invalid, return empty list gracefully
+        try:
+            if os.path.getsize(config.CATALOG_CACHE_FILE) == 0:
+                return []
+        except Exception:
+            return []
+
+        try:
+            with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
+                products = json.load(f)
+        except Exception:
+            return []
+
+        # Ensure images normalized on cached entries as well
+        normalized: list[dict] = []
+        for prod in products:
+            try:
+                normalized.append(CatalogManager._format_product(prod))
+            except Exception:
+                # If formatting fails, skip that product
+                continue
+        return [p for p in normalized if CatalogManager._is_product_available(p)]
 
 
 catalog_manager = CatalogManager()
