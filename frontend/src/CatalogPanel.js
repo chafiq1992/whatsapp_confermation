@@ -469,4 +469,5 @@ export default function CatalogPanel({
         </div>
       )}
     </div>
+  );
 }
