@@ -554,15 +554,22 @@ class DatabaseManager:
 
     # ── wrapper helpers re-used elsewhere ──
     async def get_messages(self, user_id: str, offset=0, limit=50) -> list[dict]:
-        """Chronological (oldest➜newest) – just like WhatsApp."""
+        """Return the last N messages for a conversation, in chronological order (oldest→newest).
+
+        Pagination is based on newest-first windows on the DB side (DESC with OFFSET),
+        then reversed in-memory to chronological order for the UI.
+        """
         async with self._conn() as db:
             if self.use_postgres:
+                # In Postgres the column is TEXT, but ISO-8601 strings sort correctly lexicographically
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp ASC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
                 )
             else:
+                # SQLite: avoid datetime() wrapper because our timestamps are ISO-8601 with 'T'
+                # which sort correctly as TEXT
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
                 )
             params = [user_id, limit, offset]
             if self.use_postgres:
@@ -570,7 +577,9 @@ class DatabaseManager:
             else:
                 cur = await db.execute(query, tuple(params))
                 rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            # Reverse to chronological order for display
+            ordered = [dict(r) for r in rows][::-1]
+            return ordered
 
     async def update_message_status(self, wa_message_id: str, status: str):
         await self.upsert_message({"wa_message_id": wa_message_id, "status": status})
@@ -677,6 +686,7 @@ class DatabaseManager:
             if self.use_postgres:
                 user_rows = await db.fetch(self._convert("SELECT DISTINCT user_id FROM messages"))
             else:
+                # SQLite: DISTINCT user_id is fine
                 cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
                 user_rows = await cur.fetchall()
             user_ids = [r["user_id"] for r in user_rows]
@@ -700,7 +710,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"
+                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1"
                         ),
                         (uid,)
                     )
@@ -731,7 +741,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                            "SELECT MAX(timestamp) as t FROM messages WHERE user_id = ? AND from_me = 1"
                         ),
                         (uid,)
                     )
@@ -749,7 +759,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND timestamp > ?"
                         ),
                         (uid, last_agent),
                     )
@@ -940,8 +950,7 @@ class MessageProcessor:
                 "data": {
                     "temp_id": temp_id,
                     "wa_message_id": wa_message_id,
-                    "status": "sent",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "status": "sent"
                 }
             }
             
@@ -961,8 +970,7 @@ class MessageProcessor:
                 "data": {
                     "temp_id": temp_id,
                     "status": "failed",
-                    "error": str(e),
-                    "timestamp": datetime.utcnow().isoformat()
+                    "error": str(e)
                 }
             }
             await self.connection_manager.send_to_user(user_id, error_update)
@@ -1262,6 +1270,22 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         if not recent_messages:
             recent_messages = await db_manager.get_messages(user_id, limit=20)
         if recent_messages:
+            # Ensure chronological order for the client
+            try:
+                # Detect if Redis returned newest-first due to LPUSH usage
+                def to_ms(t):
+                    if not t: return 0
+                    s = str(t)
+                    if s.isdigit():
+                        return int(s) * (1000 if len(s) <= 10 else 1)
+                    from datetime import datetime as _dt
+                    try:
+                        return int(_dt.fromisoformat(s).timestamp() * 1000)
+                    except Exception:
+                        return 0
+                recent_messages = sorted(recent_messages, key=lambda m: to_ms(m.get("timestamp")))
+            except Exception:
+                pass
             await websocket.send_json({
                 "type": "recent_messages",
                 "data": recent_messages

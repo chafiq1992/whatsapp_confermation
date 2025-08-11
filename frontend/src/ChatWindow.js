@@ -12,8 +12,18 @@ const WS_BASE =
   process.env.REACT_APP_WS_URL ||
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
-const sortByTime = (list = []) =>
-  [...list].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+const sortByTime = (list = []) => {
+  // Normalize timestamps so ISO strings and numeric/Date are both handled
+  const toMs = (t) => {
+    if (!t) return 0;
+    if (t instanceof Date) return t.getTime();
+    if (typeof t === 'number') return t;
+    // some payloads may carry seconds since epoch as string
+    if (/^\d+$/.test(String(t))) return Number(t) * (String(t).length <= 10 ? 1000 : 1);
+    return new Date(t).getTime();
+  };
+  return [...list].sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));
+};
 
 // Helper: format seconds as mm:ss for audio recording timer
 function formatTime(sec) {
@@ -159,14 +169,14 @@ export default function ChatWindow({ activeUser }) {
        }
       
       if (data.type === "message_status_update") {
-        setMessages(prev =>
+        setMessages(prev => sortByTime(
           prev.map(msg =>
             msg.temp_id === data.data.temp_id ||
             msg.wa_message_id === data.data.wa_message_id
               ? { ...msg, ...data.data }
               : msg
           )
-        );
+        ));
       }
 
       if (data.type === "messages_marked_read") {
@@ -255,7 +265,7 @@ export default function ChatWindow({ activeUser }) {
         return cached;
       }
       setMessages(prev =>
-        append ? sortByTime([...data, ...prev]) : sortByTime(data)
+        append ? sortByTime([...prev, ...data]) : sortByTime(data)
       );
       const firstUnreadIndex = data.findIndex(msg => !msg.from_me && !msg.read);
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
