@@ -3,7 +3,7 @@ import api from './api';
 import MessageBubble from './MessageBubble';
 import useAudioRecorder from './useAudioRecorder';
 import EmojiPicker from 'emoji-picker-react';
-import CatalogPanel from "./CatalogPanel";
+// import CatalogPanel from "./CatalogPanel";
 import { saveMessages, loadMessages } from './chatStorage';
 
 // API and WebSocket endpoints
@@ -224,25 +224,26 @@ export default function ChatWindow({ activeUser }) {
   }, [activeUser?.user_id]);
 
   // Load catalog products
-  useEffect(() => {
-    async function fetchAllProducts() {
-      try {
-        const res = await api.get(`${API_BASE}/all-catalog-products`);
-        const lookup = {};
-        res.data.forEach(prod => {
-          lookup[String(prod.retailer_id)] = {
-            name: prod.name,
-            image: prod.images?.[0]?.url,
-            price: prod.price,
-          };
-        });
-        setCatalogProducts(lookup);
-      } catch (error) {
-        console.error('Failed to fetch catalog products:', error);
-      }
-    }
-    fetchAllProducts();
-  }, []);
+  // Catalog is hidden. Optionally keep this off to avoid fetching meta catalog.
+  // useEffect(() => {
+  //   async function fetchAllProducts() {
+  //     try {
+  //       const res = await api.get(`${API_BASE}/all-catalog-products`);
+  //       const lookup = {};
+  //       res.data.forEach(prod => {
+  //         lookup[String(prod.retailer_id)] = {
+  //           name: prod.name,
+  //           image: prod.images?.[0]?.url,
+  //           price: prod.price,
+  //         };
+  //       });
+  //       setCatalogProducts(lookup);
+  //     } catch (error) {
+  //       console.error('Failed to fetch catalog products:', error);
+  //     }
+  //   }
+  //   fetchAllProducts();
+  // }, []);
 
   // Fallback: fetch messages via HTTP if WebSocket fails
   const fetchMessages = async ({ offset: off = 0, append = false } = {}, signal) => {
@@ -798,11 +799,7 @@ export default function ChatWindow({ activeUser }) {
         </div>
       )}
       
-      <CatalogPanel
-        activeUser={activeUser}
-        fetchMessages={fetchMessages}
-        setCatalogProducts={setCatalogProducts}
-      />
+      {/* Catalog panel hidden */}
     </div>
   );
 }

@@ -1809,3 +1809,67 @@ catalog_manager = CatalogManager()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
+
+
+# ------------------------- Cash-in endpoint -------------------------
+@app.post("/cashin")
+async def cashin(
+    user_id: str = Form(...),
+    amount: str = Form(...),
+    file: UploadFile | None = File(None),
+):
+    """Record a cash-in receipt and notify the UI immediately.
+
+    - If an image file is provided, it is saved locally and uploaded to GCS.
+    - A message is created as an image with caption 'cashin' and price set to the amount.
+    - The message is sent via the existing real-time flow (optimistic update + WhatsApp send).
+    """
+    try:
+        media_url: str | None = None
+        media_path: str | None = None
+
+        if file and file.filename:
+            # Ensure media folder exists
+            media_dir = MEDIA_DIR
+            media_dir.mkdir(exist_ok=True)
+
+            # Persist upload
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_extension = Path(file.filename).suffix or ".bin"
+            filename = f"cashin_{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
+            file_path = media_dir / filename
+
+            content = await file.read()
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(content)
+
+            # Upload to Google Cloud Storage
+            media_url = await upload_file_to_gcs(str(file_path))
+            media_path = str(file_path)
+
+        # Build message payload
+        message_data = {
+            "user_id": user_id,
+            # Use image type so WhatsApp accepts it as media. Use caption to mark as cashin.
+            "type": "image" if media_url else "text",
+            "from_me": True,
+            "timestamp": datetime.utcnow().isoformat(),
+            "price": amount,              # store amount in price field
+            "caption": "cashin",         # marker for UI rendering
+        }
+        if media_url:
+            message_data["message"] = media_path  # local path for internal handling
+            message_data["url"] = media_url       # public URL for UI
+            message_data["media_path"] = media_path
+        else:
+            message_data["message"] = f"Cash-in: {amount}"
+
+        # Send through the normal pipeline (triggers immediate WS update)
+        result = await message_processor.process_outgoing_message(message_data)
+        return {"status": "success", "message": result}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Error in /cashin: {exc}")
+        return {"error": f"Internal server error: {exc}", "status": "failed"}

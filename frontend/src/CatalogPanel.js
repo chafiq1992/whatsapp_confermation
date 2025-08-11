@@ -290,8 +290,10 @@ export default function CatalogPanel({
   // Check if WebSocket is connected
   const isWebSocketConnected = websocket && websocket.readyState === WebSocket.OPEN;
 
-  return (
-    <div className="bg-white border-t border-gray-300 p-4 w-full max-h-[320px] overflow-y-auto rounded-b-xl shadow-sm">
+  // Hide the CatalogPanel UI entirely as requested
+  return null;
+  /*
+    <div className="bg-white border-t border-gray-300 p-4 w/full max-h-[320px] overflow-y-auto rounded-b-xl shadow-sm">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-lg font-bold text-blue-700">Product Catalog Sets</h2>
         <div className="flex items-center gap-2">
@@ -469,5 +471,5 @@ export default function CatalogPanel({
         </div>
       )}
     </div>
-  );
+  */
 }
