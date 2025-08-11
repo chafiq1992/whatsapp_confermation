@@ -149,10 +149,9 @@ export default function App() {
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}
-      {/* Hide meta catalog panel as requested */}
-      {/* <div className="w-96 border-l border-gray-800 bg-gray-900">
+      <div className="w-96 border-l border-gray-800 bg-gray-900">
         <ShopifyIntegrationsPanel activeUser={activeUser} />
-      </div> */}
+      </div>
     </div>
   );
 }
