@@ -1682,6 +1682,10 @@ async def get_catalog_set_products(set_id: str):
     # Fetch fresh from Meta to ensure images are present even if cache is empty.
     try:
         products = await CatalogManager.get_catalog_products()
+        try:
+            print(f"Catalog: returning {len(products)} products for set_id={set_id}")
+        except Exception:
+            pass
         return products
     except Exception as exc:
         print(f"Error fetching catalog products live: {exc}")
