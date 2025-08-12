@@ -239,7 +239,7 @@ export default function CatalogPanel({
   };
 
   return (
-    <div className="bg-white border-t border-gray-300 p-2 w-full max-h-[72px] rounded-b-xl shadow-sm">
+    <div className="bg-white border-t border-gray-300 p-2 w-full max-h-[56px] overflow-hidden rounded-b-xl shadow-sm flex-none">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
@@ -250,7 +250,7 @@ export default function CatalogPanel({
       </div>
 
       {/* Sets row (compact) */}
-      <div className="flex gap-2 overflow-x-auto">
+      <div className="flex gap-2 overflow-x-auto no-scrollbar">
         {loadingSets ? (
           <div className="text-xs text-gray-500">Loading sets…</div>
         ) : (
