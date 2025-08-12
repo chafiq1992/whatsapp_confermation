@@ -1678,8 +1678,15 @@ async def get_catalog_products_endpoint():
 @app.get("/catalog-set-products")
 async def get_catalog_set_products(set_id: str):
     """Return products for the requested set."""
-    # Currently only a single catalog exists, so ignore set_id
-    return catalog_manager.get_cached_products()
+    # Currently only a single catalog exists, so ignore set_id.
+    # Fetch fresh from Meta to ensure images are present even if cache is empty.
+    try:
+        products = await CatalogManager.get_catalog_products()
+        return products
+    except Exception as exc:
+        print(f"Error fetching catalog products live: {exc}")
+        # Fallback to cache if live fetch fails
+        return catalog_manager.get_cached_products()
 
 @app.api_route("/refresh-catalog-cache", methods=["GET", "POST"])
 async def refresh_catalog_cache_endpoint():
