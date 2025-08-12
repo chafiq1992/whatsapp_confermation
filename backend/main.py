@@ -21,6 +21,8 @@ import asyncpg
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
 
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
 
 # Absolute paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -258,16 +260,15 @@ class WhatsAppMessenger:
             await asyncio.sleep(config.RATE_LIMIT_DELAY)
         return results
 
-    async def send_single_catalog_item(self, user_id: str, product_retailer_id: str) -> Dict[str, Any]:
-        """Send a single catalog item"""
+    async def send_single_catalog_item(self, user_id: str, product_retailer_id: str, caption: str = "") -> Dict[str, Any]:
+        """Send a single catalog item (interactive) with optional caption."""
         data = {
             "messaging_product": "whatsapp",
             "to": user_id,
             "type": "interactive",
             "interactive": {
                 "type": "product",
-                "body": {"text": "Check out this product!"},
-                "footer": {"text": "Irrakids"},
+                "body": {"text": caption or "Check out this product!"},
                 "action": {
                     "catalog_id": config.CATALOG_ID,
                     "product_retailer_id": product_retailer_id
@@ -1235,6 +1236,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Reduce aggressive caching for HTML to ensure frontend updates are visible after deploys
+@app.middleware("http")
+async def no_cache_html(request: StarletteRequest, call_next):
+    response: StarletteResponse = await call_next(request)
+    path = request.url.path or "/"
+    if path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 @app.on_event("startup")
 async def startup():
     await db_manager.init_db()
@@ -1660,10 +1671,11 @@ async def send_catalog_set_endpoint(
 @app.post("/send-catalog-item")
 async def send_catalog_item_endpoint(
     user_id: str = Form(...),
-    product_retailer_id: str = Form(...)
+    product_retailer_id: str = Form(...),
+    caption: str = Form("")
 ):
     customer_phone = await lookup_phone(user_id) or user_id
-    response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id)
+    response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id, caption)
     return {"status": "ok", "response": response}
 
 
