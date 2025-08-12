@@ -925,16 +925,21 @@ class MessageProcessor:
                     user_id, message["message"]
                 )
             else:
-                # For media messages, handle file upload first
+                # For media messages: support either local path upload or direct link
                 media_path = message.get("media_path")
-                if media_path and Path(media_path).exists():
+                media_url = message.get("url")
+                if media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
+                    wa_response = await self.whatsapp_messenger.send_media_message(
+                        user_id, message["type"], media_url, message.get("caption", "")
+                    )
+                elif media_path and Path(media_path).exists():
                     print(f"📤 Uploading media: {media_path}")
                     media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
                     wa_response = await self.whatsapp_messenger.send_media_message(
                         user_id, message["type"], media_id, message.get("caption", "")
                     )
                 else:
-                    raise Exception(f"Media file not found: {media_path}")
+                    raise Exception("No media found: require url http(s) or valid media_path")
             
             # Extract WhatsApp message ID
             wa_message_id = None
@@ -1679,10 +1684,10 @@ async def get_catalog_products_endpoint():
 
 
 @app.get("/catalog-set-products")
-async def get_catalog_set_products(set_id: str):
+async def get_catalog_set_products(set_id: str, limit: int = 60):
     """Return products for the requested set (or full catalog)."""
     try:
-        products = await CatalogManager.get_products_for_set(set_id)
+        products = await CatalogManager.get_products_for_set(set_id, limit=limit)
         print(f"Catalog: returning {len(products)} products for set_id={set_id}")
         return products
     except Exception as exc:
@@ -1774,7 +1779,7 @@ class CatalogManager:
         return products
 
     @staticmethod
-    async def get_products_for_set(set_id: str) -> List[Dict[str, Any]]:
+    async def get_products_for_set(set_id: str, limit: int = 60) -> List[Dict[str, Any]]:
         """Return products for a specific product set.
 
         Graph API: /{product_set_id}/products
@@ -1798,6 +1803,8 @@ class CatalogManager:
                 for product in data.get("data", []):
                     if CatalogManager._is_product_available(product):
                         products.append(CatalogManager._format_product(product))
+                        if len(products) >= max(1, int(limit)):
+                            return products
                 url = data.get("paging", {}).get("next")
                 params = None
         return products
