@@ -1735,7 +1735,8 @@ class CatalogManager:
         products: List[Dict[str, Any]] = []
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/products"
         params = {
-            "fields": "retailer_id,name,price,images,availability,quantity",
+            # Ask Graph for image URLs explicitly to ensure we receive usable links
+            "fields": "retailer_id,name,price,images{url},availability,quantity",
             "limit": 25,
         }
         headers = await get_whatsapp_headers()
