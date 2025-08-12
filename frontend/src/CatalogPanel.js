@@ -27,9 +27,9 @@ export default function CatalogPanel({
   // Pending ops indicator (for optimistic sends)
   const [pendingOperations, setPendingOperations] = useState(new Set());
 
-  // Modal preview state
-  const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [lightboxIndex, setLightboxIndex] = useState(0);
+  // Modal state (grid popup)
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
 
   // Fetch sets list
   const fetchSets = async () => {
@@ -182,12 +182,6 @@ export default function CatalogPanel({
   // Initial load of sets
   useEffect(() => { fetchSets(); }, []);
 
-  // Load products when set or limit changes
-  useEffect(() => {
-    if (!selectedSet) return;
-    fetchProducts(selectedSet, fetchLimit);
-  }, [selectedSet, fetchLimit]);
-
   // Refresh Catalog Button Component
   function RefreshCatalogButton({ onRefresh }) {
     const [loading, setLoading] = useState(false);
@@ -235,16 +229,17 @@ export default function CatalogPanel({
   };
   const clearSelection = () => setSelectedImages([]);
 
-  const openLightbox = (index) => {
-    setLightboxIndex(index);
-    setLightboxOpen(true);
+  const openSetModal = async (setObj) => {
+    setSelectedSet(setObj.id);
+    setModalTitle(setObj.name || setObj.id);
+    setFetchLimit(PAGE_SIZE);
+    setSelectedImages([]);
+    setModalOpen(true);
+    await fetchProducts(setObj.id, PAGE_SIZE);
   };
-  const closeLightbox = () => setLightboxOpen(false);
-  const nextLightbox = () => setLightboxIndex(i => (i + 1) % Math.max(1, products.length));
-  const prevLightbox = () => setLightboxIndex(i => (i - 1 + Math.max(1, products.length)) % Math.max(1, products.length));
 
   return (
-    <div className="bg-white border-t border-gray-300 p-3 w-full max-h-[360px] rounded-b-xl shadow-sm flex flex-col">
+    <div className="bg-white border-t border-gray-300 p-2 w-full max-h-[72px] rounded-b-xl shadow-sm">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
@@ -254,16 +249,16 @@ export default function CatalogPanel({
         </div>
       </div>
 
-      {/* Sets row */}
-      <div className="flex gap-2 overflow-x-auto pb-2 mb-2 border-b border-gray-200">
+      {/* Sets row (compact) */}
+      <div className="flex gap-2 overflow-x-auto">
         {loadingSets ? (
           <div className="text-xs text-gray-500">Loading sets…</div>
         ) : (
           sets.map(s => (
             <button
               key={s.id}
-              className={`px-3 py-1 text-xs rounded-full whitespace-nowrap ${selectedSet === s.id ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800 hover:bg-gray-300'}`}
-              onClick={() => { setSelectedSet(s.id); setFetchLimit(PAGE_SIZE); setSelectedImages([]); }}
+              className="px-3 py-1 text-xs rounded-full whitespace-nowrap bg-gray-200 hover:bg-gray-300"
+              onClick={() => openSetModal(s)}
               type="button"
             >
               {s.name || s.id}
@@ -272,83 +267,59 @@ export default function CatalogPanel({
         )}
       </div>
 
-      {/* Product grid */}
-      <div className="flex-1 overflow-y-auto">
-        {loadingProducts && products.length === 0 ? (
-          <div className="grid grid-cols-3 gap-2">
-            {Array.from({ length: 9 }).map((_, i) => (
-              <div key={i} className="h-20 bg-gray-100 animate-pulse rounded" />
-            ))}
-          </div>
-        ) : products.length === 0 ? (
-          <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
-        ) : (
-          <div className="grid grid-cols-3 gap-2">
-            {products.map((p, idx) => {
-              const url = p.images?.[0]?.url;
-              const checked = url && selectedImages.includes(url);
-              return (
-                <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
-                  {/* Checkbox */}
-                  {url && (
-                    <input
-                      type="checkbox"
-                      className="absolute top-1 right-1 z-10 scale-110"
-                      checked={checked}
-                      onChange={() => toggleSelect(url)}
-                    />
-                  )}
-                  {/* Thumbnail */}
-                  <button type="button" className="w-full h-20 bg-gray-100 flex items-center justify-center" onClick={() => openLightbox(idx)}>
-                    {url ? (
-                      <img src={url} alt={p.name} className="w-full h-20 object-cover" loading="lazy" />
-                    ) : (
-                      <span className="text-xs text-gray-400">No Image</span>
-                    )}
+      {/* Modal popup with grid and actions */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
+          <div className="relative bg-white rounded-xl p-3 w-[92vw] max-w-5xl max-h-[88vh] flex flex-col">
+            {/* Modal header */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className="font-semibold text-gray-800 text-sm flex-1 truncate">{modalTitle}</div>
+              <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
+              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
+              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
+              <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
+              <button className="px-2 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+              <button className="ml-2 px-2 py-1 text-xs rounded bg-red-600 text-white" onClick={() => setModalOpen(false)}>Close</button>
+            </div>
+
+            {/* Grid */}
+            <div className="flex-1 overflow-y-auto">
+              {loadingProducts && products.length === 0 ? (
+                <div className="grid grid-cols-4 gap-2">
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <div key={i} className="h-24 bg-gray-100 animate-pulse rounded" />
+                  ))}
+                </div>
+              ) : products.length === 0 ? (
+                <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
+              ) : (
+                <div className="grid grid-cols-4 gap-2">
+                  {products.map((p, idx) => {
+                    const url = p.images?.[0]?.url;
+                    const checked = url && selectedImages.includes(url);
+                    return (
+                      <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
+                        {url && (
+                          <input type="checkbox" className="absolute top-1 right-1 z-10 scale-110" checked={checked} onChange={() => toggleSelect(url)} />
+                        )}
+                        <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+                          {url ? (
+                            <img src={url} alt={p.name} className="w-full h-24 object-cover" loading="lazy" />
+                          ) : (
+                            <span className="text-xs text-gray-400">No Image</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {hasMore && (
+                <div className="flex justify-center py-2">
+                  <button className="px-3 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" disabled={loadingProducts} onClick={() => setFetchLimit(l => l + PAGE_SIZE)}>
+                    {loadingProducts ? 'Loading…' : 'Load more'}
                   </button>
                 </div>
-              );
-            })}
-          </div>
-        )}
-        {hasMore && (
-          <div className="flex justify-center py-2">
-            <button className="px-3 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" disabled={loadingProducts} onClick={() => setFetchLimit(l => l + PAGE_SIZE)}>
-              {loadingProducts ? 'Loading…' : 'Load more'}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Sticky action bar */}
-      <div className="mt-2 pt-2 border-t border-gray-200 flex items-center gap-2">
-        <span className="text-xs text-gray-500">Selected: {selectedCount}</span>
-        <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
-        <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
-        <div className="flex-1" />
-        <button className="px-3 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={sendSelectedImages}>Send selected</button>
-        <button className="px-3 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={sendWholeSet}>Send whole set</button>
-      </div>
-
-      {/* Lightbox */}
-      {lightboxOpen && products[lightboxIndex] && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center">
-          <div className="relative bg-gray-900 rounded-xl p-3 max-w-[90vw] max-h-[90vh] flex flex-col items-center">
-            <button className="absolute top-2 right-2 bg-red-600 text-white rounded px-2 text-xs" onClick={closeLightbox}>Close</button>
-            <div className="flex items-center gap-3 mb-2">
-              <button className="bg-gray-700 text-white rounded px-2 text-xs" onClick={prevLightbox}>Prev</button>
-              <button className="bg-gray-700 text-white rounded px-2 text-xs" onClick={nextLightbox}>Next</button>
-              {products[lightboxIndex]?.images?.[0]?.url && (
-                <button className="bg-blue-600 text-white rounded px-2 text-xs" onClick={() => toggleSelect(products[lightboxIndex].images[0].url)}>
-                  {selectedImages.includes(products[lightboxIndex].images[0].url) ? 'Unselect' : 'Select'}
-                </button>
-              )}
-            </div>
-            <div className="max-w-[85vw] max-h-[75vh]">
-              {products[lightboxIndex]?.images?.[0]?.url ? (
-                <img src={products[lightboxIndex].images[0].url} alt={products[lightboxIndex]?.name} className="max-h-[75vh] max-w-[85vw] object-contain rounded" />
-              ) : (
-                <div className="text-gray-300 text-sm">No Image</div>
               )}
             </div>
           </div>
