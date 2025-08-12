@@ -1750,15 +1750,9 @@ class CatalogManager:
     @staticmethod
     def _is_product_available(product: Dict[str, Any]) -> bool:
         availability = str(product.get("availability", "")).lower()
-
-        # FB sometimes returns null or an empty string ➜ treat as 0
-        raw_qty = product.get("quantity", 0)
-        try:
-            quantity = int(raw_qty) if raw_qty not in (None, "") else 0
-        except (ValueError, TypeError):
-            quantity = 0
-
-        return availability != "out_of_stock" and quantity > 0
+        # Be permissive: include everything except explicit out_of_stock.
+        # Many catalogs omit quantity; filtering by quantity hides valid items.
+        return availability != "out_of_stock"
 
     @staticmethod
     def _format_product(product: Dict[str, Any]) -> Dict[str, Any]:
