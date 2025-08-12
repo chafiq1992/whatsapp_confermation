@@ -1664,10 +1664,13 @@ async def send_catalog_item_endpoint(
 
 @app.get("/catalog-sets")
 async def get_catalog_sets():
-    sets = [
-        {"id": CATALOG_ID, "name": "All Products"}
-    ]
-    return sets
+    try:
+        sets = await CatalogManager.get_catalog_sets()
+        return sets
+    except Exception as exc:
+        print(f"Error fetching catalog sets: {exc}")
+        # Fallback to All Products
+        return [{"id": CATALOG_ID, "name": "All Products"}]
 
 
 @app.get("/catalog-all-products")
@@ -1677,20 +1680,14 @@ async def get_catalog_products_endpoint():
 
 @app.get("/catalog-set-products")
 async def get_catalog_set_products(set_id: str):
-    """Return products for the requested set."""
-    # Currently only a single catalog exists, so ignore set_id.
-    # Fetch fresh from Meta to ensure images are present even if cache is empty.
+    """Return products for the requested set (or full catalog)."""
     try:
-        products = await CatalogManager.get_catalog_products()
-        try:
-            print(f"Catalog: returning {len(products)} products for set_id={set_id}")
-        except Exception:
-            pass
+        products = await CatalogManager.get_products_for_set(set_id)
+        print(f"Catalog: returning {len(products)} products for set_id={set_id}")
         return products
     except Exception as exc:
-        print(f"Error fetching catalog products live: {exc}")
-        # Fallback to cache if live fetch fails
-        return catalog_manager.get_cached_products()
+        print(f"Error fetching set products: {exc}")
+        return []
 
 @app.api_route("/refresh-catalog-cache", methods=["GET", "POST"])
 async def refresh_catalog_cache_endpoint():
@@ -1731,11 +1728,64 @@ async def get_whatsapp_headers() -> Dict[str, str]:
 
 class CatalogManager:
     @staticmethod
+    async def get_catalog_sets() -> List[Dict[str, Any]]:
+        """Return available product sets (collections) for the configured catalog.
+
+        Graph API: /{catalog_id}/product_sets?fields=id,name
+        """
+        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/product_sets"
+        params = {"fields": "id,name", "limit": 50}
+        headers = await get_whatsapp_headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers, params=params)
+            data = response.json()
+            sets = data.get("data", [])
+            # Always include the whole catalog as a fallback option
+            all_set = {"id": CATALOG_ID, "name": "All Products"}
+            result = [all_set]
+            # Avoid duplicates if API already returns the full catalog
+            for s in sets:
+                if s and s.get("id") and s.get("name"):
+                    if s["id"] != CATALOG_ID:
+                        result.append({"id": s["id"], "name": s["name"]})
+            return result
+
+    @staticmethod
     async def get_catalog_products() -> List[Dict[str, Any]]:
         products: List[Dict[str, Any]] = []
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/products"
         params = {
             # Ask Graph for image URLs explicitly to ensure we receive usable links
+            "fields": "retailer_id,name,price,images{url},availability,quantity",
+            "limit": 25,
+        }
+        headers = await get_whatsapp_headers()
+
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            while url:
+                response = await client.get(url, headers=headers, params=params if params else None)
+                data = response.json()
+                for product in data.get("data", []):
+                    if CatalogManager._is_product_available(product):
+                        products.append(CatalogManager._format_product(product))
+                url = data.get("paging", {}).get("next")
+                params = None
+        return products
+
+    @staticmethod
+    async def get_products_for_set(set_id: str) -> List[Dict[str, Any]]:
+        """Return products for a specific product set.
+
+        Graph API: /{product_set_id}/products
+        Fallback: fetch entire catalog if set_id equals the catalog id.
+        """
+        if not set_id or set_id == CATALOG_ID:
+            return await CatalogManager.get_catalog_products()
+
+        products: List[Dict[str, Any]] = []
+        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{set_id}/products"
+        params = {
             "fields": "retailer_id,name,price,images{url},availability,quantity",
             "limit": 25,
         }
