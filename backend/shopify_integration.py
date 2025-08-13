@@ -1,11 +1,11 @@
 import httpx
 import logging
 import os
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, HTTPException
 
 # ================= CONFIG ==================
 
-def _load_store_config() -> tuple[str, str, str]:
+def _load_store_config() -> tuple[str, str | None, str, str | None]:
     """Return the first set of Shopify credentials found in the environment.
 
     Environment variables are checked using the prefixes ``SHOPIFY``,
@@ -22,27 +22,45 @@ def _load_store_config() -> tuple[str, str, str]:
     for prefix in prefixes:
         api_key = os.getenv(f"{prefix}_API_KEY")
         password = os.getenv(f"{prefix}_PASSWORD")
+        access_token = os.getenv(f"{prefix}_ACCESS_TOKEN")
         store_url = os.getenv(f"{prefix}_STORE_URL")
         if not store_url:
             domain = os.getenv(f"{prefix}_STORE_DOMAIN")
             if domain:
                 store_url = domain if domain.startswith("http") else f"https://{domain}"
-        if all([api_key, password, store_url]):
+        # Prefer token-based auth if provided, else basic auth
+        if all([api_key, store_url]) and (password or access_token):
             logging.getLogger(__name__).info("Using Shopify prefix %s", prefix)
-            return api_key, password, store_url
+            return api_key, password, store_url, access_token
 
     raise RuntimeError("\u274c\u00a0Missing Shopify environment variables")
 
 
-API_KEY, PASSWORD, STORE_URL = _load_store_config()
+API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN = _load_store_config()
 API_VERSION = "2023-04"
 
 SEARCH_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers/search.json"
 ORDERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/orders.json"
 ORDER_COUNT_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/orders/count.json"
+def _client_args(headers: dict | None = None) -> dict:
+    args: dict = {}
+    hdrs = dict(headers or {})
+    # Prefer Admin API access token. If not provided explicitly, detect token in PASSWORD (shpat_...)
+    effective_token = ACCESS_TOKEN or (PASSWORD if isinstance(PASSWORD, str) and PASSWORD.startswith("shpat_") else None)
+    if effective_token:
+        hdrs["X-Shopify-Access-Token"] = effective_token
+        args["headers"] = hdrs
+    elif API_KEY and PASSWORD:
+        args["auth"] = (API_KEY, PASSWORD)
+        if hdrs:
+            args["headers"] = hdrs
+    return args
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+_auth_mode = "token" if (ACCESS_TOKEN or (PASSWORD and str(PASSWORD).startswith("shpat_"))) else "basic"
+logger.info("Shopify auth mode: %s", _auth_mode)
 
 def normalize_phone(phone):
     if not phone:
@@ -65,7 +83,7 @@ async def shopify_products(q: str = Query("", description="Search product titles
     params = {"title": q} if q else {}
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint, auth=(API_KEY, PASSWORD), params=params)
+        resp = await client.get(endpoint, params=params, **_client_args())
         resp.raise_for_status()
         products = resp.json().get("products", [])
         # Optionally include product_title for variant for UI display
@@ -79,14 +97,14 @@ async def shopify_products(q: str = Query("", description="Search product titles
 async def shopify_variant(variant_id: str):
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/variants/{variant_id}.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint, auth=(API_KEY, PASSWORD))
+        resp = await client.get(endpoint, **_client_args())
         resp.raise_for_status()
         variant = resp.json().get("variant")
         # Try to fetch product title for display
         if variant:
             product_id = variant.get("product_id")
             prod_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products/{product_id}.json"
-            p_resp = await client.get(prod_endpoint, auth=(API_KEY, PASSWORD))
+            p_resp = await client.get(prod_endpoint, **_client_args())
             if p_resp.status_code == 200:
                 prod = p_resp.json().get("product")
                 variant["product_title"] = prod.get("title", "")
@@ -99,12 +117,10 @@ async def fetch_customer_by_phone(phone_number: str):
         params = {'query': f'phone:{phone_number}'}
         async with httpx.AsyncClient() as client:
             # Search customer
-            resp = await client.get(
-                SEARCH_ENDPOINT,
-                auth=(API_KEY, PASSWORD),
-                params=params,
-                timeout=10
-            )
+            resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+            if resp.status_code == 403:
+                logger.error("Shopify API 403 on customers/search. Missing read_customers scope for token or app not installed.")
+                return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
             data = resp.json()
             customers = data.get('customers', [])
 
@@ -112,12 +128,10 @@ async def fetch_customer_by_phone(phone_number: str):
             if not customers and phone_number.startswith("+212"):
                 alt_phone = "0" + phone_number[4:]
                 params = {'query': f'phone:{alt_phone}'}
-                resp = await client.get(
-                    SEARCH_ENDPOINT,
-                    auth=(API_KEY, PASSWORD),
-                    params=params,
-                    timeout=10
-                )
+                resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+                if resp.status_code == 403:
+                    logger.error("Shopify API 403 on customers/search (fallback). Missing read_customers scope.")
+                    return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
                 data = resp.json()
                 customers = data.get('customers', [])
 
@@ -135,12 +149,7 @@ async def fetch_customer_by_phone(phone_number: str):
                 "limit": 1,
                 "order": "created_at desc"
             }
-            orders_resp = await client.get(
-                ORDERS_ENDPOINT,
-                auth=(API_KEY, PASSWORD),
-                params=order_params,
-                timeout=10
-            )
+            orders_resp = await client.get(ORDERS_ENDPOINT, params=order_params, timeout=10, **_client_args())
             orders_data = orders_resp.json()
             orders_list = orders_data.get('orders', [])
 
@@ -174,9 +183,12 @@ async def fetch_customer_by_phone(phone_number: str):
                 "total_orders": total_orders,
                 "last_order": last_order
             }
+    except httpx.HTTPStatusError as e:
+        logger.exception("HTTP error from Shopify: %s", e)
+        return {"error": "HTTP error", "detail": str(e), "status": e.response.status_code if e.response else 500}
     except Exception as e:
         logger.exception(f"Exception occurred: {e}")
-        return {"error": str(e)}
+        return {"error": str(e), "status": 500}
 
 # =========== FASTAPI ENDPOINT: SEARCH CUSTOMER ============
 @router.get("/search-customer")
@@ -185,16 +197,19 @@ async def search_customer(phone_number: str):
     Fetch customer and order info by phone.
     """
     data = await fetch_customer_by_phone(phone_number)
-    if data:
-        return data
-    else:
-        return {"message": "Customer not found"}, 404
+    if not data:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if isinstance(data, dict) and data.get("status") == 403:
+        raise HTTPException(status_code=403, detail=data.get("detail") or "Forbidden")
+    if isinstance(data, dict) and data.get("error"):
+        raise HTTPException(status_code=int(data.get("status", 500)), detail=data.get("detail") or data.get("error"))
+    return data
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/shipping_zones.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint, auth=(API_KEY, PASSWORD))
+        resp = await client.get(endpoint, **_client_args())
         resp.raise_for_status()
         data = resp.json()
         shipping_methods = []
@@ -282,11 +297,7 @@ async def create_shopify_order(data: dict = Body(...)):
     }
     DRAFT_ORDERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/draft_orders.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            DRAFT_ORDERS_ENDPOINT,
-            json=draft_order_payload,
-            auth=(API_KEY, PASSWORD)
-        )
+        resp = await client.post(DRAFT_ORDERS_ENDPOINT, json=draft_order_payload, **_client_args())
         resp.raise_for_status()
         draft_data = resp.json()
         draft_id = draft_data["draft_order"]["id"]

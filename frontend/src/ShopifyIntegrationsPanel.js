@@ -74,6 +74,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       return;
     }
     setLoading(true);
+    setErrorMsg("");
     api
       .get(`${API_BASE}/search-customer?phone_number=${encodeURIComponent(activeUser.phone)}`)
       .then((res) => {
@@ -88,8 +89,16 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           zip: res.data.zip || "",
         });
       })
-      .catch(() => {
+      .catch((err) => {
         setCustomer(null);
+        const detail = err?.response?.data?.detail || err?.message || "";
+        if (err?.response?.status === 403) {
+          setErrorMsg("Shopify permissions error: token lacks read_customers scope or app not installed.");
+        } else if (err?.response?.status === 404) {
+          setErrorMsg(""); // normal: no customer found
+        } else if (detail) {
+          setErrorMsg(String(detail));
+        }
         setOrderData({
           name: "",
           email: "",
@@ -252,7 +261,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               </>
             )}
             {activeUser?.phone && !loading && !customer && (
-              <p className="text-red-400">No customer found.</p>
+              <>
+                {errorMsg ? (
+                  <p className="text-yellow-300">{errorMsg}</p>
+                ) : (
+                  <p className="text-red-400">No customer found.</p>
+                )}
+              </>
             )}
           </div>
         )}
