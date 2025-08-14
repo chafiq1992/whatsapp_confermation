@@ -14,7 +14,7 @@ export default function CatalogPanel({
   const [selectedSet, setSelectedSet] = useState(null);
 
   // Products and pagination
-  const PAGE_SIZE = 24;
+  const PAGE_SIZE = 48;
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -295,6 +295,13 @@ export default function CatalogPanel({
     setModalOpen(true);
     await fetchProducts(setObj.id, PAGE_SIZE);
   };
+
+  // When fetchLimit changes, refetch the current set with the new limit
+  useEffect(() => {
+    if (!modalOpen || !selectedSet) return;
+    fetchProducts(selectedSet, fetchLimit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchLimit]);
 
   return (
     <div className="bg-white text-black border-t border-gray-300 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
