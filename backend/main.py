@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
-from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
@@ -1222,7 +1221,14 @@ messenger = message_processor.whatsapp_messenger
 
 # FastAPI app
 app = FastAPI()
-app.include_router(shopify_router)
+
+# Enable Shopify integration only if it can be imported/configured.
+try:
+    from .shopify_integration import router as shopify_router  # type: ignore
+    app.include_router(shopify_router)
+    print("✅ Shopify integration routes enabled")
+except Exception as exc:
+    print(f"⚠️ Shopify integration disabled: {exc}")
 
 
 # Mount the media directory to serve uploaded files
