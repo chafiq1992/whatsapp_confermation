@@ -5,6 +5,7 @@ import ChatWindow from './ChatWindow';
 import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
 import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
+import './App.css';
 
 // Read API base from env for production/dev compatibility
 // Default to relative paths if not provided
@@ -130,9 +131,9 @@ export default function App() {
   }, [activeUser?.user_id]);
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white">
+    <div className="app-shell">
       {/* LEFT: Chat list */}
-      <div className="w-1/3 border-r border-gray-700 overflow-y-auto">
+      <div className="app-left overflow-y-auto">
         <ChatList
           conversations={conversations}
           setActiveUser={setActiveUser}
@@ -140,7 +141,7 @@ export default function App() {
         />
       </div>
       {/* MIDDLE: Chat window */}
-      <div className="flex-1">
+      <div className="app-center">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
         <ChatWindow
           activeUser={activeUser}
@@ -148,8 +149,8 @@ export default function App() {
           ws={wsRef.current}
         />
       </div>
-      {/* RIGHT: Shopify "contact info" panel, always visible */}
-      <div className="w-96 border-l border-gray-800 bg-gray-900">
+      {/* RIGHT: Shopify "contact info" panel */}
+      <div className="app-right overflow-y-auto">
         <ShopifyIntegrationsPanel activeUser={activeUser} />
       </div>
     </div>
