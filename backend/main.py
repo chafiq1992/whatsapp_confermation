@@ -1777,7 +1777,7 @@ class CatalogManager:
             return result
 
     @staticmethod
-    async def get_catalog_products(limit: int | None = None) -> List[Dict[str, Any]]:
+    async def get_catalog_products() -> List[Dict[str, Any]]:
         products: List[Dict[str, Any]] = []
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/products"
         params = {
@@ -1794,8 +1794,6 @@ class CatalogManager:
                 for product in data.get("data", []):
                     if CatalogManager._is_product_available(product):
                         products.append(CatalogManager._format_product(product))
-                        if limit and len(products) >= limit:
-                            return products
                 url = data.get("paging", {}).get("next")
                 params = None
         return products
@@ -1813,7 +1811,7 @@ class CatalogManager:
             if cached:
                 return cached[: max(1, int(limit))]
             # Fallback to live fetch if cache empty
-            return await CatalogManager.get_catalog_products(limit=limit)
+            return await CatalogManager.get_catalog_products()
 
         # Serve from in-memory cache if fresh
         import time as _time
