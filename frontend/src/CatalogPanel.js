@@ -19,6 +19,7 @@ export default function CatalogPanel({
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [fetchLimit, setFetchLimit] = useState(PAGE_SIZE);
+  const gridRef = useRef(null);
   const abortRef = useRef(null);
 
   // Selected images (URLs)
@@ -30,6 +31,9 @@ export default function CatalogPanel({
   // Modal state (grid popup)
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
+
+  // Send mode: 'product' (interactive) or 'image'
+  const [sendMode, setSendMode] = useState('product');
 
   // Fetch sets list
   const fetchSets = async () => {
@@ -73,6 +77,22 @@ export default function CatalogPanel({
       setLoadingProducts(false);
     }
   };
+
+  // Infinite scroll handler
+  useEffect(() => {
+    if (!modalOpen) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (loadingProducts || !hasMore) return;
+      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      if (nearBottom) {
+        setFetchLimit((l) => l + PAGE_SIZE);
+      }
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [modalOpen, loadingProducts, hasMore]);
 
   const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -122,14 +142,37 @@ export default function CatalogPanel({
     });
   };
 
+  // Send interactive catalog product (with price/title) via backend
+  const sendInteractiveProduct = async (product) => {
+    if (!activeUser?.user_id || !product?.retailer_id) return;
+    const caption = product?.name && product?.price ? `${product.name} • ${product.price}` : (product?.name || "");
+    // Optimistic bubble (text) while interactive sends
+    sendOptimisticMessage({ type: 'text', message: caption || 'Product' });
+    const body = new URLSearchParams({ user_id: activeUser.user_id, product_retailer_id: String(product.retailer_id), caption });
+    try { await api.post(`${API_BASE}/send-catalog-item`, body, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch {}
+  };
+
   // Send whole set: send first N thumbnails as separate image messages
   const sendWholeSet = async () => {
     if (!activeUser?.user_id || products.length === 0) return;
-    const MAX_SEND = 12;
-    const list = products.slice(0, MAX_SEND).map(p => p.images?.[0]?.url).filter(Boolean);
-    for (const url of list) {
-      sendImageUrl(url);
-      await new Promise(r => setTimeout(r, 150));
+    if (sendMode === 'product') {
+      // Use interactive multi_product message for fast official send
+      const ids = products.map(p => p.retailer_id).filter(Boolean);
+      // Optimistic note
+      sendOptimisticMessage({ type: 'text', message: `Sending ${ids.length} products…` });
+      try {
+        await api.post(`${API_BASE}/send-catalog-set`, new URLSearchParams({
+          user_id: activeUser.user_id,
+          product_ids: JSON.stringify(ids)
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      } catch {}
+    } else {
+      const MAX_SEND = 12;
+      const list = products.slice(0, MAX_SEND).map(p => p.images?.[0]?.url).filter(Boolean);
+      for (const url of list) {
+        sendImageUrl(url);
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
   };
 
@@ -139,9 +182,24 @@ export default function CatalogPanel({
       alert("Please select at least one image.");
       return;
     }
-    for (const url of selectedImages) {
-      sendImageUrl(url);
-      await new Promise(r => setTimeout(r, 150));
+    if (sendMode === 'product') {
+      // Map URLs back to products by first image URL
+      const urlToProduct = new Map();
+      for (const p of products) {
+        const u = p.images?.[0]?.url;
+        if (u) urlToProduct.set(u, p);
+      }
+      const items = selectedImages.map(u => urlToProduct.get(u)).filter(Boolean);
+      // Send each as interactive product (fast)
+      for (const p of items) {
+        await sendInteractiveProduct(p);
+        await new Promise(r => setTimeout(r, 120));
+      }
+    } else {
+      for (const url of selectedImages) {
+        sendImageUrl(url);
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
   };
 
@@ -239,7 +297,7 @@ export default function CatalogPanel({
   };
 
   return (
-    <div className="bg-white border-t border-gray-300 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
+    <div className="bg-white text-black border-t border-gray-300 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
@@ -250,19 +308,19 @@ export default function CatalogPanel({
       </div>
 
       {/* Sets grid (2-3 rows, wraps within panel) */}
-      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-[84px] overflow-auto">
+      <div className="catalog-sets grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-[84px] overflow-auto">
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
         ) : (
           sets.map(s => (
             <button
               key={s.id}
-              className="px-2 py-1 text-[11px] rounded-full bg-gray-200 hover:bg-gray-300 truncate"
+              className="px-2.5 py-1 text-[12px] font-medium rounded border border-gray-300 bg-gray-100 hover:bg-gray-200 text-black truncate shadow-sm"
               title={s.name || s.id}
               onClick={() => openSetModal(s)}
               type="button"
             >
-              <span className="truncate inline-block max-w-full">{s.name || s.id}</span>
+              <span className="truncate inline-block max-w-full text-black">{s.name || s.id}</span>
             </button>
           ))
         )}
@@ -276,6 +334,11 @@ export default function CatalogPanel({
             <div className="flex items-center gap-2 mb-2">
               <div className="font-semibold text-gray-800 text-sm flex-1 truncate">{modalTitle}</div>
               <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
+              <div className="flex items-center gap-1 mr-2">
+                <span className="text-[11px] text-gray-600">Send as:</span>
+                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
+                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
+              </div>
               <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
               <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
               <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
@@ -284,7 +347,7 @@ export default function CatalogPanel({
             </div>
 
             {/* Grid */}
-            <div className="flex-1 overflow-y-auto">
+            <div ref={gridRef} className="flex-1 overflow-y-auto">
               {loadingProducts && products.length === 0 ? (
                 <div className="grid grid-cols-4 gap-2">
                   {Array.from({ length: 12 }).map((_, i) => (
@@ -310,17 +373,17 @@ export default function CatalogPanel({
                             <span className="text-xs text-gray-400">No Image</span>
                           )}
                         </div>
+                        {/* Inline send product button */}
+                        <div className="absolute left-1 bottom-1 flex gap-1">
+                          <button className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               )}
-              {hasMore && (
-                <div className="flex justify-center py-2">
-                  <button className="px-3 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" disabled={loadingProducts} onClick={() => setFetchLimit(l => l + PAGE_SIZE)}>
-                    {loadingProducts ? 'Loading…' : 'Load more'}
-                  </button>
-                </div>
+              {loadingProducts && products.length > 0 && (
+                <div className="text-center text-gray-500 text-xs py-2">Loading…</div>
               )}
             </div>
           </div>

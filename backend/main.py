@@ -1244,6 +1244,9 @@ async def no_cache_html(request: StarletteRequest, call_next):
     if path == "/" or path.endswith(".html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
+    # Also prevent aggressive caching for JS/CSS bundles so UI updates appear immediately
+    if path.endswith((".js", ".css", ".map")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
 @app.on_event("startup")
@@ -1744,6 +1747,11 @@ async def get_whatsapp_headers() -> Dict[str, str]:
 
 
 class CatalogManager:
+    # Simple in-memory cache for set products to speed up responses
+    _SET_CACHE: dict[str, list[Dict[str, Any]]] = {}
+    _SET_CACHE_TS: dict[str, float] = {}
+    _SET_CACHE_TTL_SEC: int = 15 * 60
+
     @staticmethod
     async def get_catalog_sets() -> List[Dict[str, Any]]:
         """Return available product sets (collections) for the configured catalog.
@@ -1797,8 +1805,21 @@ class CatalogManager:
         Graph API: /{product_set_id}/products
         Fallback: fetch entire catalog if set_id equals the catalog id.
         """
+        # If requesting the full catalog, serve from on-disk cache instantly
         if not set_id or set_id == CATALOG_ID:
+            cached = catalog_manager.get_cached_products()
+            if cached:
+                return cached[: max(1, int(limit))]
+            # Fallback to live fetch if cache empty
             return await CatalogManager.get_catalog_products()
+
+        # Serve from in-memory cache if fresh
+        import time as _time
+        ts = CatalogManager._SET_CACHE_TS.get(set_id)
+        if ts and (_time.time() - ts) < CatalogManager._SET_CACHE_TTL_SEC:
+            cached_list = CatalogManager._SET_CACHE.get(set_id, [])
+            if cached_list:
+                return cached_list[: max(1, int(limit))]
 
         products: List[Dict[str, Any]] = []
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{set_id}/products"
@@ -1819,6 +1840,12 @@ class CatalogManager:
                             return products
                 url = data.get("paging", {}).get("next")
                 params = None
+        # Store in cache for fast subsequent responses
+        try:
+            CatalogManager._SET_CACHE[set_id] = products
+            CatalogManager._SET_CACHE_TS[set_id] = _time.time()
+        except Exception:
+            pass
         return products
 
     @staticmethod
