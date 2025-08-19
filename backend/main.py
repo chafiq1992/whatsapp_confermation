@@ -14,13 +14,19 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
-from .shopify_integration import router as shopify_router
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
-from .google_cloud_storage import upload_file_to_gcs
+from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
 
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response as StarletteResponse
+
+# Absolute paths
+ROOT_DIR = Path(__file__).resolve().parent.parent
+MEDIA_DIR = ROOT_DIR / "media"
+MEDIA_DIR.mkdir(exist_ok=True)
 
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
@@ -253,16 +259,15 @@ class WhatsAppMessenger:
             await asyncio.sleep(config.RATE_LIMIT_DELAY)
         return results
 
-    async def send_single_catalog_item(self, user_id: str, product_retailer_id: str) -> Dict[str, Any]:
-        """Send a single catalog item"""
+    async def send_single_catalog_item(self, user_id: str, product_retailer_id: str, caption: str = "") -> Dict[str, Any]:
+        """Send a single catalog item (interactive) with optional caption."""
         data = {
             "messaging_product": "whatsapp",
             "to": user_id,
             "type": "interactive",
             "interactive": {
                 "type": "product",
-                "body": {"text": "Check out this product!"},
-                "footer": {"text": "Irrakids"},
+                "body": {"text": caption or "Check out this product!"},
                 "action": {
                     "catalog_id": config.CATALOG_ID,
                     "product_retailer_id": product_retailer_id
@@ -549,15 +554,22 @@ class DatabaseManager:
 
     # ── wrapper helpers re-used elsewhere ──
     async def get_messages(self, user_id: str, offset=0, limit=50) -> list[dict]:
-        """Chronological (oldest➜newest) – just like WhatsApp."""
+        """Return the last N messages for a conversation, in chronological order (oldest→newest).
+
+        Pagination is based on newest-first windows on the DB side (DESC with OFFSET),
+        then reversed in-memory to chronological order for the UI.
+        """
         async with self._conn() as db:
             if self.use_postgres:
+                # In Postgres the column is TEXT, but ISO-8601 strings sort correctly lexicographically
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp ASC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
                 )
             else:
+                # SQLite: avoid datetime() wrapper because our timestamps are ISO-8601 with 'T'
+                # which sort correctly as TEXT
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) ASC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
                 )
             params = [user_id, limit, offset]
             if self.use_postgres:
@@ -565,7 +577,9 @@ class DatabaseManager:
             else:
                 cur = await db.execute(query, tuple(params))
                 rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            # Reverse to chronological order for display
+            ordered = [dict(r) for r in rows][::-1]
+            return ordered
 
     async def update_message_status(self, wa_message_id: str, status: str):
         await self.upsert_message({"wa_message_id": wa_message_id, "status": status})
@@ -672,6 +686,7 @@ class DatabaseManager:
             if self.use_postgres:
                 user_rows = await db.fetch(self._convert("SELECT DISTINCT user_id FROM messages"))
             else:
+                # SQLite: DISTINCT user_id is fine
                 cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
                 user_rows = await cur.fetchall()
             user_ids = [r["user_id"] for r in user_rows]
@@ -695,7 +710,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY datetime(timestamp) DESC LIMIT 1"
+                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1"
                         ),
                         (uid,)
                     )
@@ -726,7 +741,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT MAX(datetime(timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                            "SELECT MAX(timestamp) as t FROM messages WHERE user_id = ? AND from_me = 1"
                         ),
                         (uid,)
                     )
@@ -744,7 +759,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND datetime(timestamp) > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND timestamp > ?"
                         ),
                         (uid, last_agent),
                     )
@@ -838,7 +853,7 @@ class MessageProcessor:
         self.redis_manager = redis_manager
         self.db_manager = db_manager
         self.whatsapp_messenger = WhatsAppMessenger()
-        self.media_dir = Path("media")
+        self.media_dir = MEDIA_DIR
         self.media_dir.mkdir(exist_ok=True)
     
     # Fix the method that was duplicated at the bottom of the file
@@ -910,16 +925,21 @@ class MessageProcessor:
                     user_id, message["message"]
                 )
             else:
-                # For media messages, handle file upload first
+                # For media messages: support either local path upload or direct link
                 media_path = message.get("media_path")
-                if media_path and Path(media_path).exists():
+                media_url = message.get("url")
+                if media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
+                    wa_response = await self.whatsapp_messenger.send_media_message(
+                        user_id, message["type"], media_url, message.get("caption", "")
+                    )
+                elif media_path and Path(media_path).exists():
                     print(f"📤 Uploading media: {media_path}")
                     media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
                     wa_response = await self.whatsapp_messenger.send_media_message(
                         user_id, message["type"], media_id, message.get("caption", "")
                     )
                 else:
-                    raise Exception(f"Media file not found: {media_path}")
+                    raise Exception("No media found: require url http(s) or valid media_path")
             
             # Extract WhatsApp message ID
             wa_message_id = None
@@ -935,8 +955,7 @@ class MessageProcessor:
                 "data": {
                     "temp_id": temp_id,
                     "wa_message_id": wa_message_id,
-                    "status": "sent",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "status": "sent"
                 }
             }
             
@@ -956,8 +975,7 @@ class MessageProcessor:
                 "data": {
                     "temp_id": temp_id,
                     "status": "failed",
-                    "error": str(e),
-                    "timestamp": datetime.utcnow().isoformat()
+                    "error": str(e)
                 }
             }
             await self.connection_manager.send_to_user(user_id, error_update)
@@ -1104,17 +1122,17 @@ class MessageProcessor:
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(image_path).name}"
+            message_obj["url"] = drive_url
             message_obj["caption"] = message["image"].get("caption", "")
         elif msg_type == "audio":
             audio_path, drive_url = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(audio_path).name}"
+            message_obj["url"] = drive_url
             message_obj["transcription"] = ""
         elif msg_type == "video":
             video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
-            message_obj["url"] = drive_url or f"{BASE_URL}/media/{Path(video_path).name}"
+            message_obj["url"] = drive_url
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
@@ -1137,30 +1155,33 @@ class MessageProcessor:
         await self.redis_manager.cache_message(sender, db_data)
         await self.db_manager.upsert_message(db_data)
     
-    async def _download_media(self, media_id: str, media_type: str) -> tuple[str, Optional[str]]:
-        """Download media from WhatsApp and upload it to Google Drive.
+    async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
+        """Download media from WhatsApp and upload it to Google Cloud Storage.
 
         Returns a tuple ``(local_path, drive_url)`` where ``drive_url`` is the
-        public link to the uploaded file.
+        public link to the uploaded file. Raises an exception if the upload
+        fails so callers don't fall back to local paths.
         """
         try:
             media_content = await self.whatsapp_messenger.download_media(media_id)
-            
+
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             file_extension = self._get_file_extension(media_type)
             filename = f"{media_type}_{timestamp}_{media_id[:8]}{file_extension}"
             file_path = self.media_dir / filename
-            
+
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
             drive_url = await upload_file_to_gcs(str(file_path))
+            if not drive_url:
+                raise RuntimeError("GCS upload failed")
 
             return str(file_path), drive_url
 
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
-            return "", None
+            raise
     
     def _get_file_extension(self, media_type: str) -> str:
         """Get file extension based on media type"""
@@ -1200,11 +1221,18 @@ messenger = message_processor.whatsapp_messenger
 
 # FastAPI app
 app = FastAPI()
-app.include_router(shopify_router)
+
+# Enable Shopify integration only if it can be imported/configured.
+try:
+    from .shopify_integration import router as shopify_router  # type: ignore
+    app.include_router(shopify_router)
+    print("✅ Shopify integration routes enabled")
+except Exception as exc:
+    print(f"⚠️ Shopify integration disabled: {exc}")
 
 
 # Mount the media directory to serve uploaded files
-app.mount("/media", StaticFiles(directory="media"), name="media")
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1214,10 +1242,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Reduce aggressive caching for HTML to ensure frontend updates are visible after deploys
+@app.middleware("http")
+async def no_cache_html(request: StarletteRequest, call_next):
+    response: StarletteResponse = await call_next(request)
+    path = request.url.path or "/"
+    if path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    # Also prevent aggressive caching for JS/CSS bundles so UI updates appear immediately
+    if path.endswith((".js", ".css", ".map")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
 @app.on_event("startup")
 async def startup():
     await db_manager.init_db()
     await redis_manager.connect()
+
+    if not os.path.exists(config.CATALOG_CACHE_FILE):
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                download_file_from_gcs,
+                config.CATALOG_CACHE_FILE,
+                config.CATALOG_CACHE_FILE,
+            )
+        except Exception:
+            pass
 
     if not os.path.exists(config.CATALOG_CACHE_FILE):
         async def _refresh_cache_bg():
@@ -1242,6 +1295,22 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         if not recent_messages:
             recent_messages = await db_manager.get_messages(user_id, limit=20)
         if recent_messages:
+            # Ensure chronological order for the client
+            try:
+                # Detect if Redis returned newest-first due to LPUSH usage
+                def to_ms(t):
+                    if not t: return 0
+                    s = str(t)
+                    if s.isdigit():
+                        return int(s) * (1000 if len(s) <= 10 else 1)
+                    from datetime import datetime as _dt
+                    try:
+                        return int(_dt.fromisoformat(s).timestamp() * 1000)
+                    except Exception:
+                        return 0
+                recent_messages = sorted(recent_messages, key=lambda m: to_ms(m.get("timestamp")))
+            except Exception:
+                pass
             await websocket.send_json({
                 "type": "recent_messages",
                 "data": recent_messages
@@ -1530,7 +1599,7 @@ async def send_media(
             return {"error": "No files uploaded", "status": "failed"}
 
         # ---------- ensure media folder ----------
-        media_dir = Path("media")
+        media_dir = MEDIA_DIR
         media_dir.mkdir(exist_ok=True)
 
         saved_results = []
@@ -1611,19 +1680,23 @@ async def send_catalog_set_endpoint(
 @app.post("/send-catalog-item")
 async def send_catalog_item_endpoint(
     user_id: str = Form(...),
-    product_retailer_id: str = Form(...)
+    product_retailer_id: str = Form(...),
+    caption: str = Form("")
 ):
     customer_phone = await lookup_phone(user_id) or user_id
-    response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id)
+    response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id, caption)
     return {"status": "ok", "response": response}
 
 
 @app.get("/catalog-sets")
 async def get_catalog_sets():
-    sets = [
-        {"id": CATALOG_ID, "name": "All Products"}
-    ]
-    return sets
+    try:
+        sets = await CatalogManager.get_catalog_sets()
+        return sets
+    except Exception as exc:
+        print(f"Error fetching catalog sets: {exc}")
+        # Fallback to All Products
+        return [{"id": CATALOG_ID, "name": "All Products"}]
 
 
 @app.get("/catalog-all-products")
@@ -1632,10 +1705,15 @@ async def get_catalog_products_endpoint():
 
 
 @app.get("/catalog-set-products")
-async def get_catalog_set_products(set_id: str):
-    """Return products for the requested set."""
-    # Currently only a single catalog exists, so ignore set_id
-    return catalog_manager.get_cached_products()
+async def get_catalog_set_products(set_id: str, limit: int = 60):
+    """Return products for the requested set (or full catalog)."""
+    try:
+        products = await CatalogManager.get_products_for_set(set_id, limit=limit)
+        print(f"Catalog: returning {len(products)} products for set_id={set_id}")
+        return products
+    except Exception as exc:
+        print(f"Error fetching set products: {exc}")
+        return []
 
 @app.api_route("/refresh-catalog-cache", methods=["GET", "POST"])
 async def refresh_catalog_cache_endpoint():
@@ -1675,12 +1753,42 @@ async def get_whatsapp_headers() -> Dict[str, str]:
 
 
 class CatalogManager:
+    # Simple in-memory cache for set products to speed up responses
+    _SET_CACHE: dict[str, list[Dict[str, Any]]] = {}
+    _SET_CACHE_TS: dict[str, float] = {}
+    _SET_CACHE_TTL_SEC: int = 15 * 60
+
+    @staticmethod
+    async def get_catalog_sets() -> List[Dict[str, Any]]:
+        """Return available product sets (collections) for the configured catalog.
+
+        Graph API: /{catalog_id}/product_sets?fields=id,name
+        """
+        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/product_sets"
+        params = {"fields": "id,name", "limit": 50}
+        headers = await get_whatsapp_headers()
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers, params=params)
+            data = response.json()
+            sets = data.get("data", [])
+            # Always include the whole catalog as a fallback option
+            all_set = {"id": CATALOG_ID, "name": "All Products"}
+            result = [all_set]
+            # Avoid duplicates if API already returns the full catalog
+            for s in sets:
+                if s and s.get("id") and s.get("name"):
+                    if s["id"] != CATALOG_ID:
+                        result.append({"id": s["id"], "name": s["name"]})
+            return result
+
     @staticmethod
     async def get_catalog_products() -> List[Dict[str, Any]]:
         products: List[Dict[str, Any]] = []
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/products"
         params = {
-            "fields": "retailer_id,name,price,images,availability,quantity",
+            # Ask Graph for image URLs explicitly to ensure we receive usable links
+            "fields": "retailer_id,name,price,images{url},availability,quantity",
             "limit": 25,
         }
         headers = await get_whatsapp_headers()
@@ -1697,33 +1805,96 @@ class CatalogManager:
         return products
 
     @staticmethod
+    async def get_products_for_set(set_id: str, limit: int = 60) -> List[Dict[str, Any]]:
+        """Return products for a specific product set.
+
+        Graph API: /{product_set_id}/products
+        Fallback: fetch entire catalog if set_id equals the catalog id.
+        """
+        # If requesting the full catalog, serve from on-disk cache instantly
+        if not set_id or set_id == CATALOG_ID:
+            cached = catalog_manager.get_cached_products()
+            if cached:
+                return cached[: max(1, int(limit))]
+            # Fallback to live fetch if cache empty
+            return await CatalogManager.get_catalog_products()
+
+        # Serve from in-memory cache if fresh
+        import time as _time
+        ts = CatalogManager._SET_CACHE_TS.get(set_id)
+        if ts and (_time.time() - ts) < CatalogManager._SET_CACHE_TTL_SEC:
+            cached_list = CatalogManager._SET_CACHE.get(set_id, [])
+            if cached_list:
+                return cached_list[: max(1, int(limit))]
+
+        products: List[Dict[str, Any]] = []
+        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{set_id}/products"
+        params = {
+            "fields": "retailer_id,name,price,images{url},availability,quantity",
+            "limit": 25,
+        }
+        headers = await get_whatsapp_headers()
+
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            while url:
+                response = await client.get(url, headers=headers, params=params if params else None)
+                data = response.json()
+                for product in data.get("data", []):
+                    if CatalogManager._is_product_available(product):
+                        products.append(CatalogManager._format_product(product))
+                        if len(products) >= max(1, int(limit)):
+                            return products
+                url = data.get("paging", {}).get("next")
+                params = None
+        # Store in cache for fast subsequent responses
+        try:
+            CatalogManager._SET_CACHE[set_id] = products
+            CatalogManager._SET_CACHE_TS[set_id] = _time.time()
+        except Exception:
+            pass
+        return products
+
+    @staticmethod
     def _is_product_available(product: Dict[str, Any]) -> bool:
         availability = str(product.get("availability", "")).lower()
-
-        # FB sometimes returns null or an empty string ➜ treat as 0
-        raw_qty = product.get("quantity", 0)
-        try:
-            quantity = int(raw_qty) if raw_qty not in (None, "") else 0
-        except (ValueError, TypeError):
-            quantity = 0
-
-        return availability != "out_of_stock" and quantity > 0
+        # Be permissive: include everything except explicit out_of_stock.
+        # Many catalogs omit quantity; filtering by quantity hides valid items.
+        return availability != "out_of_stock"
 
     @staticmethod
     def _format_product(product: Dict[str, Any]) -> Dict[str, Any]:
         images = product.get("images", [])
+        # Facebook can return images as an array, or as an object with a data array
         if isinstance(images, dict) and "data" in images:
             images = images["data"]
 
-        formatted_images = []
+        formatted_images: list[dict] = []
         for img in images:
+            # Normalize to dict form
             if isinstance(img, str):
+                # Some APIs return a bare URL string
+                url_string = img
                 try:
-                    img = json.loads(img)
+                    # Rarely images are JSON-encoded strings
+                    possible = json.loads(img)
+                    if isinstance(possible, dict):
+                        img = possible
+                    else:
+                        img = {"url": url_string}
                 except Exception:
-                    continue
+                    img = {"url": url_string}
+
             if isinstance(img, dict):
-                formatted_images.append(img)
+                # Normalize common keys to `url`
+                url = (
+                    img.get("url")
+                    or img.get("src")
+                    or img.get("image_url")
+                    or img.get("original_url")
+                    or img.get("href")
+                )
+                if url:
+                    formatted_images.append({"url": url})
 
         return {
             "retailer_id": product.get("retailer_id", product.get("id")),
@@ -1739,15 +1910,43 @@ class CatalogManager:
         products = await CatalogManager.get_catalog_products()
         with open(config.CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
             json.dump(products, f, ensure_ascii=False)
+        try:
+            await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+        except Exception as exc:
+            print(f"GCS upload failed: {exc}")
         return len(products)
 
     @staticmethod
     def get_cached_products() -> List[Dict[str, Any]]:
         if not os.path.exists(config.CATALOG_CACHE_FILE):
+            try:
+                download_file_from_gcs(
+                    config.CATALOG_CACHE_FILE, config.CATALOG_CACHE_FILE
+                )
+            except Exception:
+                return []
+        # If file exists but is empty or invalid, return empty list gracefully
+        try:
+            if os.path.getsize(config.CATALOG_CACHE_FILE) == 0:
+                return []
+        except Exception:
             return []
-        with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
-            products = json.load(f)
-        return [p for p in products if CatalogManager._is_product_available(p)]
+
+        try:
+            with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
+                products = json.load(f)
+        except Exception:
+            return []
+
+        # Ensure images normalized on cached entries as well
+        normalized: list[dict] = []
+        for prod in products:
+            try:
+                normalized.append(CatalogManager._format_product(prod))
+            except Exception:
+                # If formatting fails, skip that product
+                continue
+        return [p for p in normalized if CatalogManager._is_product_available(p)]
 
 
 catalog_manager = CatalogManager()
@@ -1756,3 +1955,67 @@ catalog_manager = CatalogManager()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
+
+
+# ------------------------- Cash-in endpoint -------------------------
+@app.post("/cashin")
+async def cashin(
+    user_id: str = Form(...),
+    amount: str = Form(...),
+    file: UploadFile | None = File(None),
+):
+    """Record a cash-in receipt and notify the UI immediately.
+
+    - If an image file is provided, it is saved locally and uploaded to GCS.
+    - A message is created as an image with caption 'cashin' and price set to the amount.
+    - The message is sent via the existing real-time flow (optimistic update + WhatsApp send).
+    """
+    try:
+        media_url: str | None = None
+        media_path: str | None = None
+
+        if file and file.filename:
+            # Ensure media folder exists
+            media_dir = MEDIA_DIR
+            media_dir.mkdir(exist_ok=True)
+
+            # Persist upload
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_extension = Path(file.filename).suffix or ".bin"
+            filename = f"cashin_{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
+            file_path = media_dir / filename
+
+            content = await file.read()
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(content)
+
+            # Upload to Google Cloud Storage
+            media_url = await upload_file_to_gcs(str(file_path))
+            media_path = str(file_path)
+
+        # Build message payload
+        message_data = {
+            "user_id": user_id,
+            # Use image type so WhatsApp accepts it as media. Use caption to mark as cashin.
+            "type": "image" if media_url else "text",
+            "from_me": True,
+            "timestamp": datetime.utcnow().isoformat(),
+            "price": amount,              # store amount in price field
+            "caption": "cashin",         # marker for UI rendering
+        }
+        if media_url:
+            message_data["message"] = media_path  # local path for internal handling
+            message_data["url"] = media_url       # public URL for UI
+            message_data["media_path"] = media_path
+        else:
+            message_data["message"] = f"Cash-in: {amount}"
+
+        # Send through the normal pipeline (triggers immediate WS update)
+        result = await message_processor.process_outgoing_message(message_data)
+        return {"status": "success", "message": result}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Error in /cashin: {exc}")
+        return {"error": f"Internal server error: {exc}", "status": "failed"}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import axios from 'axios';
+import api from './api';
 import MessageBubble from './MessageBubble';
 import useAudioRecorder from './useAudioRecorder';
 import EmojiPicker from 'emoji-picker-react';
@@ -12,8 +12,18 @@ const WS_BASE =
   process.env.REACT_APP_WS_URL ||
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
-const sortByTime = (list = []) =>
-  [...list].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+const sortByTime = (list = []) => {
+  // Normalize timestamps so ISO strings and numeric/Date are both handled
+  const toMs = (t) => {
+    if (!t) return 0;
+    if (t instanceof Date) return t.getTime();
+    if (typeof t === 'number') return t;
+    // some payloads may carry seconds since epoch as string
+    if (/^\d+$/.test(String(t))) return Number(t) * (String(t).length <= 10 ? 1000 : 1);
+    return new Date(t).getTime();
+  };
+  return [...list].sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));
+};
 
 // Helper: format seconds as mm:ss for audio recording timer
 function formatTime(sec) {
@@ -159,14 +169,14 @@ export default function ChatWindow({ activeUser }) {
        }
       
       if (data.type === "message_status_update") {
-        setMessages(prev =>
+        setMessages(prev => sortByTime(
           prev.map(msg =>
             msg.temp_id === data.data.temp_id ||
             msg.wa_message_id === data.data.wa_message_id
               ? { ...msg, ...data.data }
               : msg
           )
-        );
+        ));
       }
 
       if (data.type === "messages_marked_read") {
@@ -217,9 +227,9 @@ export default function ChatWindow({ activeUser }) {
   useEffect(() => {
     async function fetchAllProducts() {
       try {
-        const res = await axios.get(`${API_BASE}/all-catalog-products`);
+        const res = await api.get(`${API_BASE}/all-catalog-products`);
         const lookup = {};
-        res.data.forEach(prod => {
+        (res.data || []).forEach(prod => {
           lookup[String(prod.retailer_id)] = {
             name: prod.name,
             image: prod.images?.[0]?.url,
@@ -238,7 +248,7 @@ export default function ChatWindow({ activeUser }) {
   const fetchMessages = async ({ offset: off = 0, append = false } = {}, signal) => {
     if (!activeUser?.user_id) return [];
     try {
-      const res = await axios.get(
+      const res = await api.get(
         `${API_BASE}/messages/${activeUser.user_id}?offset=${off}&limit=${MESSAGE_LIMIT}`,
         { signal }
       );
@@ -255,7 +265,7 @@ export default function ChatWindow({ activeUser }) {
         return cached;
       }
       setMessages(prev =>
-        append ? sortByTime([...data, ...prev]) : sortByTime(data)
+        append ? sortByTime([...prev, ...data]) : sortByTime(data)
       );
       const firstUnreadIndex = data.findIndex(msg => !msg.from_me && !msg.read);
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
@@ -267,7 +277,7 @@ export default function ChatWindow({ activeUser }) {
       setHasMore(data.length >= MESSAGE_LIMIT);
       return data;
     } catch (err) {
-      if (axios.isCancel(err) || err.name === 'CanceledError') return [];
+      if (api.isCancel(err) || err.name === 'CanceledError') return [];
       console.error("Failed to fetch messages", err);
       // Error while fetching, fall back to cached messages
       const cached = await loadMessages(activeUser.user_id);
@@ -340,7 +350,7 @@ export default function ChatWindow({ activeUser }) {
     } else {
       // Fallback to HTTP
       try {
-        await axios.post(`${API_BASE}/send-message`, {
+        await api.post(`${API_BASE}/send-message`, {
           user_id: activeUser.user_id,
           type: 'text',
           message: text,
@@ -367,7 +377,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append('user_id', activeUser.user_id);
       formData.append('media_type', 'audio');
       try {
-        await axios.post(`${API_BASE}/send-media`, formData);
+        await api.post(`${API_BASE}/send-media`, formData);
         // WebSocket will handle the real-time update
       } catch (err) {
         console.error("Audio upload error:", err);
@@ -380,7 +390,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append('user_id', activeUser.user_id);
       formData.append('media_type', 'audio');
       try {
-        await axios.post(`${API_BASE}/send-media`, formData);
+        await api.post(`${API_BASE}/send-media`, formData);
         fetchMessages();
       } catch (err) {
         console.error("Audio upload error:", err);
@@ -439,7 +449,7 @@ export default function ChatWindow({ activeUser }) {
         JSON.stringify({ type: 'mark_as_read', message_ids: unreadIds })
       );
     } else {
-      axios.post(
+      api.post(
         `${API_BASE}/conversations/${activeUser.user_id}/mark-read`,
         { message_ids: unreadIds }
       ).catch(() => {});
@@ -524,7 +534,7 @@ export default function ChatWindow({ activeUser }) {
       formData.append("media_type", "image");
       
       try {
-        const response = await axios.post(`${API_BASE}/send-media`, formData, {
+        const response = await api.post(`${API_BASE}/send-media`, formData, {
           onUploadProgress: (e) => {
             setPendingImages(images => {
               let copy = [...images];
@@ -790,8 +800,10 @@ export default function ChatWindow({ activeUser }) {
       
       <CatalogPanel
         activeUser={activeUser}
-        fetchMessages={fetchMessages}
-        setCatalogProducts={setCatalogProducts}
+        websocket={ws}
+        onMessageSent={(optimistic) => {
+          setMessages(prev => sortByTime([...prev, optimistic]));
+        }}
       />
     </div>
   );

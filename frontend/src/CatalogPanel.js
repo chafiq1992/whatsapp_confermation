@@ -1,53 +1,99 @@
-import axios from "axios";
-import React, { useEffect, useState, useCallback } from "react";
+import api from "./api";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "";
 
 export default function CatalogPanel({
   activeUser,
-  websocket, // WebSocket connection from parent
-  onMessageSent, // Callback when message is sent optimistically
+  websocket,
+  onMessageSent,
 }) {
+  // Sets and selection
   const [sets, setSets] = useState([]);
   const [loadingSets, setLoadingSets] = useState(false);
   const [selectedSet, setSelectedSet] = useState(null);
-  const [setProducts, setSetProducts] = useState([]);
-  const [loadingSetProducts, setLoadingSetProducts] = useState(false);
+
+  // Products and pagination
+  const PAGE_SIZE = 24;
+  const [products, setProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [fetchLimit, setFetchLimit] = useState(PAGE_SIZE);
+  const gridRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // Selected images (URLs)
   const [selectedImages, setSelectedImages] = useState([]);
-  
-  // Track pending/optimistic operations
+
+  // Pending ops indicator (for optimistic sends)
   const [pendingOperations, setPendingOperations] = useState(new Set());
 
-  // Fetch sets (still HTTP since this is catalog management, not messaging)
+  // Modal state (grid popup)
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
+
+  // Send mode: 'product' (interactive) or 'image'
+  const [sendMode, setSendMode] = useState('product');
+
+  // Fetch sets list
   const fetchSets = async () => {
     setLoadingSets(true);
     try {
-      const res = await axios.get(`${API_BASE}/catalog-sets`);
-      setSets(res.data || []);
+      const res = await api.get(`${API_BASE}/catalog-sets`);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setSets(list);
+      if (!selectedSet && list.length > 0) {
+        setSelectedSet(list[0].id);
+      }
     } catch (err) {
-      console.error('Error fetching sets:', err);
+      console.error("Error fetching sets:", err);
       setSets([]);
     }
     setLoadingSets(false);
   };
 
-  // Fetch products in selected set
-  const fetchProductsInSet = async (setId) => {
-    setSelectedSet(setId);
-    setLoadingSetProducts(true);
+  // Fetch products for current set with increasing limit (simple pagination)
+  const fetchProducts = async (setId, limit) => {
+    if (!setId) return [];
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoadingProducts(true);
     try {
-      const res = await axios.get(`${API_BASE}/catalog-set-products`, {
-        params: { set_id: setId } 
+      const res = await api.get(`${API_BASE}/catalog-set-products`, {
+        params: { set_id: setId, limit: limit || PAGE_SIZE },
+        signal: controller.signal,
       });
-      setSetProducts(res.data || []);
+      const list = Array.isArray(res.data) ? res.data : [];
+      setProducts(list);
+      setHasMore(list.length >= (limit || PAGE_SIZE));
+      return list;
     } catch (err) {
-      console.error('Error fetching set products:', err);
-      setSetProducts([]);
+      if (err?.name !== "CanceledError") console.error("Error fetching set products:", err);
+      setProducts([]);
+      setHasMore(false);
+      return [];
+    } finally {
+      setLoadingProducts(false);
     }
-    setLoadingSetProducts(false);
   };
 
-  // Generate unique temp ID for optimistic updates
+  // Infinite scroll handler
+  useEffect(() => {
+    if (!modalOpen) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (loadingProducts || !hasMore) return;
+      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
+      if (nearBottom) {
+        setFetchLimit((l) => l + PAGE_SIZE);
+      }
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [modalOpen, loadingProducts, hasMore]);
+
   const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
   // Send optimistic message via WebSocket
@@ -85,133 +131,75 @@ export default function CatalogPanel({
     return tempId;
   }, [websocket, activeUser?.user_id, onMessageSent]);
 
-  // Send catalog item via WebSocket with optimistic UI
-  const sendCatalogItem = async (item) => {
+  // Send a single image (direct link) via WebSocket
+  const sendImageUrl = (url, caption = "") => {
     if (!activeUser?.user_id) return;
-
-    const messageData = {
-      type: 'catalog_item',
-      message: `📦 ${item.name || 'Product'}`,
-      catalog_item: {
-        retailer_id: item.retailer_id,
-        name: item.name,
-        price: item.price,
-        image: item.image
-      }
-    };
-
-    const tempId = sendOptimisticMessage(messageData);
-    
-    if (!tempId) {
-      alert('Failed to send: WebSocket not connected');
-      return;
-    }
-
-    try {
-      // Background HTTP call to actually send via WhatsApp
-      await axios.post(
-        `${API_BASE}/send-catalog-item`,
-        new URLSearchParams({
-          user_id: activeUser.user_id,
-          product_retailer_id: item.retailer_id,
-          temp_id: tempId // Include temp_id for status updates
-        }),
-        { 
-          headers: { "Content-Type": "application/x-www-form-urlencoded" } 
-        }
-      );
-    } catch (err) {
-      console.error('Failed to send catalog item:', err);
-      // The WebSocket will receive the error status update from backend
-    }
+    return sendOptimisticMessage({
+      type: 'image',
+      message: url,
+      url,
+      caption,
+    });
   };
 
-  // Send whole set via WebSocket with optimistic UI
+  // Send interactive catalog product (with price/title) via backend
+  const sendInteractiveProduct = async (product) => {
+    if (!activeUser?.user_id || !product?.retailer_id) return;
+    const caption = product?.name && product?.price ? `${product.name} • ${product.price}` : (product?.name || "");
+    // Optimistic bubble (text) while interactive sends
+    sendOptimisticMessage({ type: 'text', message: caption || 'Product' });
+    const body = new URLSearchParams({ user_id: activeUser.user_id, product_retailer_id: String(product.retailer_id), caption });
+    try { await api.post(`${API_BASE}/send-catalog-item`, body, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch {}
+  };
+
+  // Send whole set: send first N thumbnails as separate image messages
   const sendWholeSet = async () => {
-    if (!activeUser?.user_id || setProducts.length === 0) return;
-
-    const messageData = {
-      type: 'catalog_set',
-      message: `📦 Product Set (${setProducts.length} items)`,
-      catalog_set: {
-        products: setProducts.map(item => ({
-          retailer_id: item.retailer_id,
-          name: item.name,
-          price: item.price,
-          image: item.images?.[0]?.url
-        }))
-      }
-    };
-
-    const tempId = sendOptimisticMessage(messageData);
-    
-    if (!tempId) {
-      alert('Failed to send: WebSocket not connected');
-      return;
-    }
-
-    try {
-      await axios.post(
-        `${API_BASE}/send-catalog-set`,
-        new URLSearchParams({
+    if (!activeUser?.user_id || products.length === 0) return;
+    if (sendMode === 'product') {
+      // Use interactive multi_product message for fast official send
+      const ids = products.map(p => p.retailer_id).filter(Boolean);
+      // Optimistic note
+      sendOptimisticMessage({ type: 'text', message: `Sending ${ids.length} products…` });
+      try {
+        await api.post(`${API_BASE}/send-catalog-set`, new URLSearchParams({
           user_id: activeUser.user_id,
-          product_ids: JSON.stringify(setProducts.map(item => item.retailer_id)),
-          temp_id: tempId
-        }),
-        {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" }
-        }
-      );
-    } catch (err) {
-      console.error('Failed to send whole set:', err);
+          product_ids: JSON.stringify(ids)
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      } catch {}
+    } else {
+      const MAX_SEND = 12;
+      const list = products.slice(0, MAX_SEND).map(p => p.images?.[0]?.url).filter(Boolean);
+      for (const url of list) {
+        sendImageUrl(url);
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
   };
 
-  // Send selected images via WebSocket with optimistic UI
+  // Send selected images (direct links)
   const sendSelectedImages = async () => {
     if (!activeUser?.user_id || selectedImages.length === 0) {
       alert("Please select at least one image.");
       return;
     }
-
-    const selectedProducts = setProducts.filter(
-      item => item.images?.[0]?.url && selectedImages.includes(item.images[0].url)
-    );
-
-    const messageData = {
-      type: 'image_set',
-      message: `🖼️ Selected Images (${selectedImages.length} items)`,
-      image_set: {
-        images: selectedImages,
-        prices: selectedProducts.map(item => item.price ? `${item.price} DH` : ''),
-        products: selectedProducts
+    if (sendMode === 'product') {
+      // Map URLs back to products by first image URL
+      const urlToProduct = new Map();
+      for (const p of products) {
+        const u = p.images?.[0]?.url;
+        if (u) urlToProduct.set(u, p);
       }
-    };
-
-    const tempId = sendOptimisticMessage(messageData);
-    
-    if (!tempId) {
-      alert('Failed to send: WebSocket not connected');
-      return;
-    }
-
-    try {
-      await axios.post(
-        `${API_BASE}/send-set-images`,
-        new URLSearchParams({
-          user_id: activeUser.user_id,
-          images: JSON.stringify(selectedImages),
-          prices: JSON.stringify(
-            selectedProducts.map(item => item.price ? `${item.price} DH` : '')
-          ),
-          temp_id: tempId
-        }),
-        {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" }
-        }
-      );
-    } catch (err) {
-      console.error('Failed to send set images:', err);
+      const items = selectedImages.map(u => urlToProduct.get(u)).filter(Boolean);
+      // Send each as interactive product (fast)
+      for (const p of items) {
+        await sendInteractiveProduct(p);
+        await new Promise(r => setTimeout(r, 120));
+      }
+    } else {
+      for (const url of selectedImages) {
+        sendImageUrl(url);
+        await new Promise(r => setTimeout(r, 150));
+      }
     }
   };
 
@@ -249,9 +237,8 @@ export default function CatalogPanel({
     };
   }, [websocket, pendingOperations]);
 
-  useEffect(() => {
-    fetchSets();
-  }, []);
+  // Initial load of sets
+  useEffect(() => { fetchSets(); }, []);
 
   // Refresh Catalog Button Component
   function RefreshCatalogButton({ onRefresh }) {
@@ -262,7 +249,7 @@ export default function CatalogPanel({
       setLoading(true);
       setResult("");
       try {
-        const res = await axios.post(`${API_BASE}/refresh-catalog-cache`);
+        const res = await api.post(`${API_BASE}/refresh-catalog-cache`);
         setResult(`✅ Catalog refreshed: ${res.data.count} products`);
         if (onRefresh) onRefresh();
       } catch (err) {
@@ -287,185 +274,119 @@ export default function CatalogPanel({
     );
   }
 
-  // Check if WebSocket is connected
   const isWebSocketConnected = websocket && websocket.readyState === WebSocket.OPEN;
 
+  // Derived helpers
+  const selectedCount = selectedImages.length;
+  const toggleSelect = (url) => {
+    setSelectedImages(prev => prev.includes(url) ? prev.filter(u => u !== url) : [...prev, url]);
+  };
+  const selectAllVisible = () => {
+    const urls = products.map(p => p.images?.[0]?.url).filter(Boolean);
+    setSelectedImages(urls);
+  };
+  const clearSelection = () => setSelectedImages([]);
+
+  const openSetModal = async (setObj) => {
+    setSelectedSet(setObj.id);
+    setModalTitle(setObj.name || setObj.id);
+    setFetchLimit(PAGE_SIZE);
+    setSelectedImages([]);
+    setModalOpen(true);
+    await fetchProducts(setObj.id, PAGE_SIZE);
+  };
+
   return (
-    <div className="bg-white border-t border-gray-300 p-4 w-full max-h-[320px] overflow-y-auto rounded-b-xl shadow-sm">
+    <div className="bg-white text-black border-t border-gray-300 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
+      {/* Header */}
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-lg font-bold text-blue-700">Product Catalog Sets</h2>
+        <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
         <div className="flex items-center gap-2">
           <RefreshCatalogButton onRefresh={fetchSets} />
-          {/* WebSocket Status Indicator */}
-          <div className={`w-3 h-3 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} 
-               title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
+          <div className={`w-2.5 h-2.5 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
         </div>
       </div>
 
-      {/* Show warning if WebSocket is not connected */}
-      {!isWebSocketConnected && (
-        <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-3 py-2 rounded mb-4">
-          ⚠️ WebSocket disconnected. Messages may not send properly.
-        </div>
-      )}
-
-      {loadingSets ? (
-        <div className="text-center py-4">Loading sets...</div>
-      ) : (
-        <div className="flex flex-wrap gap-2 mb-4">
-          {sets.map(set => (
+      {/* Sets grid (2-3 rows, wraps within panel) */}
+      <div className="catalog-sets grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-[84px] overflow-auto">
+        {loadingSets ? (
+          <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
+        ) : (
+          sets.map(s => (
             <button
-              key={set.id}
-              className={`px-3 py-1 rounded transition-colors ${
-                selectedSet === set.id 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-              }`}
-              onClick={() => {
-                fetchProductsInSet(set.id);
-                setSelectedImages([]);
-              }}
+              key={s.id}
+              className="px-2.5 py-1 text-[12px] font-medium rounded border border-gray-300 bg-gray-100 hover:bg-gray-200 text-black truncate shadow-sm"
+              title={s.name || s.id}
+              onClick={() => openSetModal(s)}
               type="button"
             >
-              {set.name || set.id}
+              <span className="truncate inline-block max-w-full text-black">{s.name || s.id}</span>
             </button>
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
 
-      {/* Products in Set */}
-      {selectedSet && (
-        <>
-          <h3 className="font-semibold mb-2">Products in Set:</h3>
-          {setProducts.length > 0 && (
-            <div className="sticky top-0 z-10 bg-white pb-2 flex flex-col gap-2">
-              <div className="flex gap-2 mb-2">
-                <button
-                  className="px-2 py-1 bg-blue-200 rounded hover:bg-blue-300 transition-colors"
-                  onClick={() => {
-                    setSelectedImages(
-                      setProducts
-                        .map(item => item.images?.[0]?.url)
-                        .filter(Boolean)
-                    );
-                  }}
-                  type="button"
-                >
-                  Select All
-                </button>
-                <button
-                  className="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 transition-colors"
-                  onClick={() => setSelectedImages([])}
-                  type="button"
-                >
-                  Deselect All
-                </button>
+      {/* Modal popup with grid and actions */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
+          <div className="relative bg-white rounded-xl p-3 w-[92vw] max-w-5xl max-h-[88vh] flex flex-col">
+            {/* Modal header */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className="font-semibold text-gray-800 text-sm flex-1 truncate">{modalTitle}</div>
+              <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
+              <div className="flex items-center gap-1 mr-2">
+                <span className="text-[11px] text-gray-600">Send as:</span>
+                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
+                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
               </div>
-              
-              <button
-                className="w-full px-4 py-2 bg-green-600 text-white rounded font-semibold hover:bg-green-700 disabled:opacity-50 transition-colors"
-                onClick={sendWholeSet}
-                disabled={!isWebSocketConnected}
-                type="button"
-              >
-                🚀 Send Whole Set
-                {pendingOperations.size > 0 && (
-                  <span className="ml-2 text-xs">({pendingOperations.size} pending)</span>
-                )}
-              </button>
-              
-              <button
-                className="w-full px-4 py-2 bg-blue-600 text-white rounded font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                onClick={sendSelectedImages}
-                disabled={!isWebSocketConnected || selectedImages.length === 0}
-                type="button"
-              >
-                📸 Send Selected Images ({selectedImages.length})
-              </button>
+              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
+              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
+              <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
+              <button className="px-2 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+              <button className="ml-2 px-2 py-1 text-xs rounded bg-red-600 text-white" onClick={() => setModalOpen(false)}>Close</button>
             </div>
-          )}
-          
-          <div className="overflow-y-auto" style={{ maxHeight: "160px" }}>
-            {loadingSetProducts ? (
-              <div className="text-center py-4">Loading products...</div>
-            ) : (
-              <div className="grid grid-cols-2 gap-4">
-                {setProducts.length === 0 ? (
-                  <div className="col-span-2 text-center text-gray-500 py-4">
-                    No products in this set.
-                  </div>
-                ) : (
-                  setProducts.map(item => (
-                    <div
-                      key={item.retailer_id}
-                      className="border rounded-lg p-2 flex flex-col items-center relative hover:shadow-md transition-shadow"
-                    >
-                      {item.images?.[0]?.url && (
-                        <input
-                          type="checkbox"
-                          checked={selectedImages.includes(item.images[0].url)}
-                          onChange={e => {
-                            const url = item.images[0].url;
-                            setSelectedImages(prev =>
-                              e.target.checked
-                                ? [...prev, url]
-                                : prev.filter(imgUrl => imgUrl !== url)
-                            );
-                          }}
-                          className="absolute top-2 right-2 z-10"
-                        />
-                      )}
-                      
-                      {item.images?.[0]?.url ? (
-                        <img
-                          src={item.images[0].url}
-                          alt={item.name}
-                          className="w-20 h-20 object-cover rounded"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-20 h-20 bg-gray-100 flex items-center justify-center rounded text-xs text-gray-400">
-                          No Image
+
+            {/* Grid */}
+            <div ref={gridRef} className="flex-1 overflow-y-auto">
+              {loadingProducts && products.length === 0 ? (
+                <div className="grid grid-cols-4 gap-2">
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <div key={i} className="h-24 bg-gray-100 animate-pulse rounded" />
+                  ))}
+                </div>
+              ) : products.length === 0 ? (
+                <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
+              ) : (
+                <div className="grid grid-cols-4 gap-2">
+                  {products.map((p, idx) => {
+                    const url = p.images?.[0]?.url;
+                    const checked = url && selectedImages.includes(url);
+                    return (
+                      <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
+                        {url && (
+                          <input type="checkbox" className="absolute top-1 right-1 z-10 scale-110" checked={checked} onChange={() => toggleSelect(url)} />
+                        )}
+                        <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+                          {url ? (
+                            <img src={url} alt={p.name} className="w-full h-24 object-cover" loading="lazy" />
+                          ) : (
+                            <span className="text-xs text-gray-400">No Image</span>
+                          )}
                         </div>
-                      )}
-                      
-                      <div className="font-semibold mt-2 text-center text-sm">
-                        {item.name || item.retailer_id}
+                        {/* Inline send product button */}
+                        <div className="absolute left-1 bottom-1 flex gap-1">
+                          <button className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
+                        </div>
                       </div>
-                      
-                      {item.price && (
-                        <div className="text-blue-700 font-medium">
-                          {item.price} DH
-                        </div>
-                      )}
-                      
-                      <button
-                        className="mt-2 px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors text-sm"
-                        onClick={() =>
-                          sendCatalogItem({
-                            retailer_id: item.retailer_id,
-                            name: item.name,
-                            price: item.price,
-                            image: item.images?.[0]?.url,
-                          })
-                        }
-                        disabled={!isWebSocketConnected}
-                        type="button"
-                      >
-                        Send
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+              {loadingProducts && products.length > 0 && (
+                <div className="text-center text-gray-500 text-xs py-2">Loading…</div>
+              )}
+            </div>
           </div>
-        </>
-      )}
-      
-      {!selectedSet && !loadingSets && (
-        <div className="text-gray-500 mt-4 text-center py-8">
-          Select a set above to view its products.
         </div>
       )}
     </div>
