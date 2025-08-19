@@ -96,8 +96,6 @@ export default function ChatWindow({ activeUser }) {
     loadMessages(activeUser.user_id).then((msgs) => {
       if (Array.isArray(msgs) && msgs.length > 0) {
         setMessages(sortByTime(msgs));
-      } else {
-        setMessages([]);
       }
     });
   }, [activeUser?.user_id]);
