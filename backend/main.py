@@ -1763,15 +1763,26 @@ async def send_catalog_set_all_endpoint(
     caption: str = Form("")
 ):
     customer_phone = await lookup_phone(user_id) or user_id
+    job_id = str(uuid.uuid4())
 
     async def run_send_full_set():
         try:
             await messenger.send_full_set(customer_phone, set_id, caption)
+            print(f"Successfully sent catalog set {set_id} to {customer_phone}")
         except Exception as exc:
-            print(f"Error sending catalog set {set_id} to {customer_phone}: {exc}")
+            error_message = f"Error sending catalog set {set_id} to {customer_phone}: {exc}"
+            print(error_message)
+            await connection_manager.send_to_user(
+                user_id,
+                {
+                    "type": "catalog_set_send_error",
+                    "job_id": job_id,
+                    "error": str(exc),
+                },
+            )
 
     background_tasks.add_task(run_send_full_set)
-    return {"status": "queued"}
+    return {"status": "started", "job_id": job_id}
 
 
 @app.get("/catalog-sets")
