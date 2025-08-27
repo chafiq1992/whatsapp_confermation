@@ -126,19 +126,21 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           responsive: true,
           interact: true,
           normalize: true,
-          backend: 'WebAudio',
+          backend: "MediaElement",
+          mediaType: "audio",
         });
 
-        wavesurfer.load(mediaUrl);
-        
+        setAudioError(false);
+        wavesurfer.load(mediaUrl, { crossOrigin: "anonymous" });
+
+        wavesurfer.on("ready", () => setAudioError(false));
         wavesurfer.on("finish", () => setPlaying(false));
         wavesurfer.on("error", (error) => {
           console.error("WaveSurfer error:", error);
           setAudioError(true);
         });
-        
+
         wavesurferRef.current = wavesurfer;
-        setAudioError(false);
       } catch (err) {
         console.error("WaveSurfer initialization error:", err);
         setAudioError(true);
@@ -259,9 +261,20 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         </button>
         
         {audioError ? (
-          <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
-            Audio file missing or failed to load
-          </div>
+          mediaUrl ? (
+            <audio
+              controls
+              src={mediaUrl}
+              crossOrigin="anonymous"
+              className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
+            >
+              Your browser does not support the audio element.
+            </audio>
+          ) : (
+            <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
+              Audio file missing or failed to load
+            </div>
+          )
         ) : (
           <div
             ref={waveformRef}
