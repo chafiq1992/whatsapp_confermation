@@ -1775,6 +1775,27 @@ async def send_catalog_set_all_endpoint(
         try:
             await messenger.send_full_set(customer_phone, set_id, caption)
             print(f"Successfully sent catalog set {set_id} to {customer_phone}")
+
+            # Build a message record so UI/DB cache stay in sync
+            temp_id = f"temp_{uuid.uuid4().hex}"
+            timestamp = datetime.utcnow().isoformat()
+            record = {
+                "id": temp_id,
+                "temp_id": temp_id,
+                "user_id": user_id,
+                "message": caption or f"Catalog set {set_id}",
+                "type": "catalog_set",
+                "from_me": True,
+                "status": "sent",
+                "timestamp": timestamp,
+                "caption": caption,
+            }
+
+            await db_manager.upsert_message(record)
+            await redis_manager.cache_message(user_id, record)
+            await connection_manager.send_to_user(
+                user_id, {"type": "message_sent", "data": record}
+            )
         except Exception as exc:
             error_message = f"Error sending catalog set {set_id} to {customer_phone}: {exc}"
             print(error_message)
