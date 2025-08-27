@@ -33,6 +33,41 @@ def test_send_media_returns_gcs_url(tmp_path, monkeypatch):
     assert result["media_url"] == expected_url
 
 
+def test_send_media_uses_relative_path_and_static_serving(tmp_path, monkeypatch):
+    """Audio uploads should expose a relative /media path and be served by FastAPI."""
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_upload(path: str, content_type=None):
+        return f"https://storage.test/{Path(path).name}"
+
+    captured = {}
+
+    async def fake_process(data):
+        captured.update(data)
+        return {"ok": True}
+
+    monkeypatch.setattr(main, "upload_file_to_gcs", fake_upload)
+    monkeypatch.setattr(main.message_processor, "process_outgoing_message", fake_process)
+
+    with TestClient(main.app) as client:
+        resp = client.post(
+            "/send-media",
+            data={"user_id": "u1", "media_type": "audio", "caption": "", "price": ""},
+            files={"files": ("x.ogg", b"sounddata", "audio/ogg")},
+        )
+
+        assert resp.status_code == 200
+        filename = resp.json()["messages"][0]["filename"]
+
+        # The message passed to the processor should contain a relative path
+        assert captured["message"] == f"/media/{filename}"
+
+        # And the file should be served from the /media static mount
+        media_resp = client.get(f"/media/{filename}")
+        assert media_resp.status_code == 200
+        assert media_resp.content == b"sounddata"
+
+
 def test_send_media_save_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

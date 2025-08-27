@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import pytest
 from backend import main
 
@@ -59,3 +60,22 @@ def test_download_media_raises_on_gcs_failure(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError):
         asyncio.run(mp._download_media("mid", "image"))
+
+
+def test_download_media_returns_relative_path(tmp_path, monkeypatch):
+    mp = main.message_processor
+    mp.media_dir = tmp_path
+
+    async def fake_download(media_id):
+        return b"data", "audio/ogg"
+
+    async def fake_upload(path, content_type=None):
+        return f"https://storage.test/{Path(path).name}"
+
+    monkeypatch.setattr(mp.whatsapp_messenger, "download_media", fake_download, raising=False)
+    monkeypatch.setattr(main, "upload_file_to_gcs", fake_upload, raising=False)
+
+    relative_path, drive_url = asyncio.run(mp._download_media("mid123", "audio"))
+    assert relative_path.startswith("/media/")
+    assert "mid123"[:8] in relative_path
+    assert drive_url.startswith("https://storage.test/")
