@@ -1222,9 +1222,12 @@ class MessageProcessor:
         """
         try:
             media_content, mime_type = await self.whatsapp_messenger.download_media(media_id)
+            mime_type = mime_type.split(';', 1)[0].strip()
 
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
             file_extension = mimetypes.guess_extension(mime_type) or ""
+            if not file_extension and mime_type.startswith("audio/"):
+                file_extension = ".ogg"
             filename = f"{media_type}_{timestamp}_{media_id[:8]}{file_extension}"
             file_path = self.media_dir / filename
 
