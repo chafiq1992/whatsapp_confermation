@@ -1390,6 +1390,9 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
 
     elif message_type == "mark_as_read":
         message_ids = data.get("message_ids", [])
+        if message_ids:
+            message_ids = list(set(message_ids))
+        print(f"Marking messages as read: {message_ids}")
         await db_manager.mark_messages_as_read(user_id, message_ids or None)
         for mid in message_ids:
             try:
@@ -1532,6 +1535,9 @@ async def get_online_users():
 async def mark_conversation_read(user_id: str, message_ids: List[str] = Body(None)):
     """Mark messages as read"""
     try:
+        if message_ids:
+            message_ids = list(set(message_ids))
+        print(f"Marking messages as read: {message_ids}")
         await db_manager.mark_messages_as_read(user_id, message_ids)
         if message_ids:
             for mid in message_ids:
