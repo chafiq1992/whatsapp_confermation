@@ -35,6 +35,9 @@ export default function CatalogPanel({
   // Send mode: 'product' (interactive) or 'image'
   const [sendMode, setSendMode] = useState('product');
 
+  // Temporary status for sending an entire set
+  const [sendingSet, setSendingSet] = useState(false);
+
   // Fetch sets list
   const fetchSets = async () => {
     setLoadingSets(true);
@@ -155,8 +158,7 @@ export default function CatalogPanel({
   // Send whole set by requesting backend to deliver the selected set
   const sendWholeSet = async () => {
     if (!activeUser?.user_id || !selectedSet) return;
-    // Optimistic bubble while the request is processed
-    sendOptimisticMessage({ type: 'text', message: 'Sending full set…' });
+    setSendingSet(true);
     try {
       await api.post(
         `${API_BASE}/send-catalog-set-all`,
@@ -168,6 +170,8 @@ export default function CatalogPanel({
       );
     } catch (err) {
       console.error('Error sending full set:', err);
+    } finally {
+      setSendingSet(false);
     }
   };
 
@@ -333,6 +337,13 @@ export default function CatalogPanel({
           <div className={`w-2.5 h-2.5 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
         </div>
       </div>
+
+      {sendingSet && (
+        <div className="flex items-center mb-2 text-xs text-gray-500">
+          <span className="inline-block w-3 h-3 mr-1 border-2 border-gray-300 border-t-transparent rounded-full animate-spin"></span>
+          Sending full set…
+        </div>
+      )}
 
       {/* Sets grid (2-3 rows, wraps within panel) */}
       <div className="catalog-sets grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-[84px] overflow-auto">
