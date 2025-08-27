@@ -248,11 +248,23 @@ class WhatsAppMessenger:
             data = {
                 "messaging_product": "whatsapp",
                 "to": user_id,
-                "type": "multi_product",
-                "multi_product": {
-                    "catalog_id": config.CATALOG_ID,
-                    "products": [{"product_retailer_id": rid} for rid in chunk]
-                }
+                "type": "interactive",
+                "interactive": {
+                    "type": "product_list",
+                    "header": {"type": "text", "text": "Products"},
+                    "body": {"text": "Check out these products!"},
+                    "action": {
+                        "catalog_id": config.CATALOG_ID,
+                        "sections": [
+                            {
+                                "title": "Default",
+                                "product_items": [
+                                    {"product_retailer_id": rid} for rid in chunk
+                                ],
+                            }
+                        ],
+                    },
+                },
             }
             result = await self._make_request("messages", data)
             results.append(result)
