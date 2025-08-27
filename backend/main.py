@@ -461,19 +461,14 @@ class DatabaseManager:
 
         idx = 1
 
-        # Replace positional "?" placeholders
-        while "?" in query:
-            query = query.replace("?", f"${idx}", 1)
-            idx += 1
-
-        # Replace named ":name" parameters
+        # Replace positional and named placeholders in the order they appear
         def repl(match):
             nonlocal idx
             rep = f"${idx}"
             idx += 1
             return rep
 
-        query = re.sub(r":\w+", repl, query)
+        query = re.sub(r"\?|:\w+", repl, query)
         return query
 
     # ── basic connection helper ──
@@ -1036,6 +1031,13 @@ class MessageProcessor:
                 }
             }
             await self.connection_manager.send_to_user(user_id, error_update)
+        finally:
+            media_path = message.get("media_path")
+            if media_path and Path(media_path).exists():
+                try:
+                    Path(media_path).unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"⚠️ Cleanup failed for {media_path}: {e}")
 
     async def _upload_media_to_whatsapp(self, file_path: str, media_type: str) -> str:
         """Upload media file to WhatsApp and return media_id"""
@@ -1692,12 +1694,10 @@ async def send_media(
             # ---------- upload to Google Drive ----------
             media_url = await upload_file_to_gcs(str(file_path))
 
-            # Build a message payload that uses a relative URL for the client
-            relative_path = f"/media/{filename}"
+            # Build message payload using the public GCS URL instead of a local path
             message_data = {
                 "user_id": user_id,
-                "message": relative_path,
-                # URL is kept for UI display; WhatsApp will use the uploaded media ID
+                "message": media_url,
                 "url": media_url,
                 "type": media_type,
                 "from_me": True,
