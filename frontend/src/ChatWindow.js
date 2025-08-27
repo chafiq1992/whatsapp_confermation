@@ -90,11 +90,32 @@ export default function ChatWindow({ activeUser }) {
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const conversationIdRef = useRef(null);
 
-  // Load cached messages when switching conversations
+  // Helper to merge and deduplicate messages by stable identifiers
+  const mergeAndDedupe = useCallback((prevList, incomingList) => {
+    const byKey = new Map();
+    const add = (m) => {
+      const key = m.wa_message_id || m.id || m.temp_id || `${m.timestamp}-${m.message}`;
+      // last write wins so newer incoming updates replace older
+      byKey.set(key, m);
+    };
+    (prevList || []).forEach(add);
+    (incomingList || []).forEach(add);
+    return sortByTime([...byKey.values()]);
+  }, []);
+
+  // Reset state immediately on conversation change, then hydrate from cache
   useEffect(() => {
-    if (!activeUser?.user_id) return;
-    loadMessages(activeUser.user_id).then((msgs) => {
+    const uid = activeUser?.user_id;
+    if (!uid) return;
+    conversationIdRef.current = uid;
+    setMessages([]);
+    setOffset(0);
+    setHasMore(true);
+    setUnreadSeparatorIndex(null);
+    loadMessages(uid).then((msgs) => {
+      if (conversationIdRef.current !== uid) return; // ignore stale
       if (Array.isArray(msgs) && msgs.length > 0) {
         setMessages(sortByTime(msgs));
       }
@@ -129,8 +150,8 @@ export default function ChatWindow({ activeUser }) {
   // Simplified WebSocket implementation
   useEffect(() => {
     if (!activeUser?.user_id) return;
-    
-    const websocket = new WebSocket(`${WS_BASE}${activeUser.user_id}`);
+    const uid = activeUser.user_id;
+    const websocket = new WebSocket(`${WS_BASE}${uid}`);
     setWs(websocket); // store in state
     
     websocket.onopen = () => {
@@ -142,9 +163,11 @@ export default function ChatWindow({ activeUser }) {
       console.log("📥 WS received", data);
       
       if (data.type === "recent_messages") {
-        setMessages(sortByTime(data.data));
-        setOffset(data.data.length);
-        setHasMore(data.data.length === MESSAGE_LIMIT);
+        if (conversationIdRef.current !== uid) return; // ignore stale
+        const list = Array.isArray(data.data) ? data.data : [];
+        setMessages(prev => mergeAndDedupe(prev, list));
+        setOffset(list.length);
+        setHasMore(list.length === MESSAGE_LIMIT);
       }
       
       if (data.type === "message_sent") {
@@ -155,7 +178,7 @@ export default function ChatWindow({ activeUser }) {
             updated[idx] = { ...prev[idx], ...data.data };
             return sortByTime(updated);
           }
-          return sortByTime([...prev, data.data]);
+          return mergeAndDedupe(prev, [data.data]);
         });
       }
       if (data.type === "message_received") {
@@ -164,7 +187,7 @@ export default function ChatWindow({ activeUser }) {
         // `message_status_update`.  Just ignore them to avoid duplicates.
         if (data.data.from_me) return;
 
-        setMessages(prev => sortByTime([...prev, data.data]));
+        setMessages(prev => mergeAndDedupe(prev, [data.data]));
        }
       
       if (data.type === "message_status_update") {
@@ -215,10 +238,11 @@ export default function ChatWindow({ activeUser }) {
 
   useEffect(() => {
     if (!activeUser?.user_id) return;
+    const uid = activeUser.user_id;
     const controller = new AbortController();
     setOffset(0);
     setHasMore(true);
-    fetchMessages({ offset: 0 }, controller.signal);
+    fetchMessages({ offset: 0 }, controller.signal, uid);
     return () => controller.abort();
   }, [activeUser?.user_id]);
 
@@ -244,27 +268,30 @@ export default function ChatWindow({ activeUser }) {
   }, []);
 
   // Fallback: fetch messages via HTTP if WebSocket fails
-  const fetchMessages = async ({ offset: off = 0, append = false } = {}, signal) => {
-    if (!activeUser?.user_id) return [];
+  const fetchMessages = async ({ offset: off = 0, append = false } = {}, signal, uidParam) => {
+    const uid = uidParam || activeUser?.user_id;
+    if (!uid) return [];
     try {
       const res = await api.get(
-        `${API_BASE}/messages/${activeUser.user_id}?offset=${off}&limit=${MESSAGE_LIMIT}`,
+        `${API_BASE}/messages/${uid}?offset=${off}&limit=${MESSAGE_LIMIT}`,
         { signal }
       );
       const data = res.data;
       if (!Array.isArray(data) || data.length === 0) {
         // No data from server, fall back to cached messages
-        const cached = await loadMessages(activeUser.user_id);
+        const cached = await loadMessages(uid);
         if (cached.length > 0) {
-          setMessages(prev =>
-            append ? sortByTime([...cached, ...prev]) : sortByTime(cached)
+          setMessages(prev => (conversationIdRef.current !== uid)
+            ? prev
+            : (append ? mergeAndDedupe(prev, cached) : sortByTime(cached))
           );
           setHasMore(false);
         }
         return cached;
       }
-      setMessages(prev =>
-        append ? sortByTime([...prev, ...data]) : sortByTime(data)
+      setMessages(prev => (conversationIdRef.current !== uid)
+        ? prev
+        : (append ? mergeAndDedupe(prev, data) : sortByTime(data))
       );
       const firstUnreadIndex = data.findIndex(msg => !msg.from_me && !msg.read);
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
@@ -279,10 +306,11 @@ export default function ChatWindow({ activeUser }) {
       if (api.isCancel(err) || err.name === 'CanceledError') return [];
       console.error("Failed to fetch messages", err);
       // Error while fetching, fall back to cached messages
-      const cached = await loadMessages(activeUser.user_id);
+      const cached = await loadMessages(uid);
       if (cached.length > 0) {
-        setMessages(prev =>
-          append ? sortByTime([...cached, ...prev]) : sortByTime(cached)
+        setMessages(prev => (conversationIdRef.current !== uid)
+          ? prev
+          : (append ? mergeAndDedupe(prev, cached) : sortByTime(cached))
         );
         setHasMore(false);
       }
@@ -732,7 +760,7 @@ export default function ChatWindow({ activeUser }) {
         </div>
       )}
       
-      <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-900" ref={messagesEndRef}>
+      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-900" ref={messagesEndRef}>
         {groupedMessages.map((msg, index) => (
           <React.Fragment key={msg.id || msg.temp_id || index}>
             {index === unreadSeparatorIndex && (
