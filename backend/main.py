@@ -1237,7 +1237,8 @@ class MessageProcessor:
             if not drive_url:
                 raise RuntimeError("GCS upload failed")
 
-            return str(file_path), drive_url
+            # Return a relative path for clients and the public GCS URL
+            return f"/media/{filename}", drive_url
 
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
@@ -1691,9 +1692,11 @@ async def send_media(
             # ---------- upload to Google Drive ----------
             media_url = await upload_file_to_gcs(str(file_path))
 
+            # Build a message payload that uses a relative URL for the client
+            relative_path = f"/media/{filename}"
             message_data = {
                 "user_id": user_id,
-                "message": str(file_path),
+                "message": relative_path,
                 # URL is kept for UI display; WhatsApp will use the uploaded media ID
                 "url": media_url,
                 "type": media_type,
@@ -1701,6 +1704,7 @@ async def send_media(
                 "caption": caption,
                 "price": price,
                 "timestamp": datetime.utcnow().isoformat(),
+                # Keep absolute path for internal processing/sending to WhatsApp
                 "media_path": str(file_path),
             }
 
