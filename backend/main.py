@@ -1891,6 +1891,43 @@ class CatalogManager:
     _SET_CACHE_TTL_SEC: int = 15 * 60
 
     @staticmethod
+    def _set_cache_filename(set_id: str) -> str:
+        return f"catalog_set_{set_id}.json"
+
+    @staticmethod
+    def _load_persisted_set(set_id: str) -> list[dict]:
+        """Load a persisted set cache from local disk or GCS if present."""
+        filename = CatalogManager._set_cache_filename(set_id)
+        try:
+            if not os.path.exists(filename):
+                try:
+                    download_file_from_gcs(filename, filename)
+                except Exception:
+                    return []
+            if os.path.getsize(filename) == 0:
+                return []
+            with open(filename, "r", encoding="utf8") as f:
+                data = json.load(f)
+            # Normalize
+            return [CatalogManager._format_product(p) for p in data if CatalogManager._is_product_available(p)]
+        except Exception:
+            return []
+
+    @staticmethod
+    async def _persist_set_async(set_id: str, products: list[dict]) -> None:
+        """Persist set products to local disk and upload to GCS (best-effort)."""
+        filename = CatalogManager._set_cache_filename(set_id)
+        try:
+            with open(filename, "w", encoding="utf8") as f:
+                json.dump(products, f, ensure_ascii=False)
+            try:
+                await upload_file_to_gcs(filename)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    @staticmethod
     async def get_catalog_sets() -> List[Dict[str, Any]]:
         """Return available product sets (collections) for the configured catalog.
 
@@ -1961,7 +1998,12 @@ class CatalogManager:
                 print(f"Writing local catalog cache failed: {_exc}")
             return products_live[: max(1, int(limit))]
 
-        # Serve from in-memory cache if fresh
+        # Serve from persisted cache first for cold starts
+        persisted = CatalogManager._load_persisted_set(set_id)
+        if persisted:
+            return persisted[: max(1, int(limit))]
+
+        # Serve from in-memory cache if fresh (warm instance)
         import time as _time
         ts = CatalogManager._SET_CACHE_TS.get(set_id)
         if ts and (_time.time() - ts) < CatalogManager._SET_CACHE_TTL_SEC:
@@ -1988,10 +2030,14 @@ class CatalogManager:
                             return products
                 url = data.get("paging", {}).get("next")
                 params = None
-        # Store in cache for fast subsequent responses
+        # Store in memory and persist for fast subsequent responses across instances
         try:
             CatalogManager._SET_CACHE[set_id] = products
             CatalogManager._SET_CACHE_TS[set_id] = _time.time()
+            try:
+                await CatalogManager._persist_set_async(set_id, products)
+            except Exception:
+                pass
         except Exception:
             pass
         return products

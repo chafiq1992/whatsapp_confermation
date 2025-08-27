@@ -57,6 +57,27 @@ export default function CatalogPanel({
       if (!selectedSet && list.length > 0) {
         setSelectedSet(list[0].id);
       }
+      // Prefetch top sets into IndexedDB to speed up modal open
+      try {
+        const top = list.slice(0, 4);
+        const concurrency = 2;
+        let i = 0;
+        const runNext = async () => {
+          if (i >= top.length) return;
+          const s = top[i++];
+          if (!s?.id) return runNext();
+          const cachedSet = await loadCatalogSetProducts(s.id);
+          if (!cachedSet || cachedSet.length === 0) {
+            try {
+              const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PAGE_SIZE } });
+              const arr = Array.isArray(resp.data) ? resp.data : [];
+              if (arr.length) await saveCatalogSetProducts(s.id, arr);
+            } catch {}
+          }
+          return runNext();
+        };
+        await Promise.all(Array.from({ length: concurrency }, () => runNext()));
+      } catch {}
     } catch (err) {
       console.error("Error fetching sets:", err);
       if (!Array.isArray(sets) || sets.length === 0) setSets([]);
@@ -241,12 +262,12 @@ export default function CatalogPanel({
       // Send each as interactive product (fast)
       for (const p of items) {
         await sendInteractiveProduct(p);
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 30));
       }
     } else {
       for (const url of selectedImages) {
         sendImageUrl(url);
-        await new Promise(r => setTimeout(r, 60));
+        await new Promise(r => setTimeout(r, 40));
       }
     }
   };
@@ -340,6 +361,7 @@ export default function CatalogPanel({
     setModalTitle(setObj.name || setObj.id);
     setFetchLimit(PAGE_SIZE);
     setSelectedImages([]);
+    setLoadingProducts(true);
     setModalOpen(true);
     // Show cached instantly
     try {
