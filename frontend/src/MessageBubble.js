@@ -294,16 +294,26 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         
           {audioError ? (
             primaryUrl ? (
-              <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
-                Audio failed to load.
-                <a
-                  href={primaryUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-1 text-blue-300 underline"
+              <div className="flex-1 min-w-[180px] max-w-[320px]">
+                <audio
+                  controls
+                  src={primaryUrl}
+                  className="w-full"
+                  preload="metadata"
                 >
-                  Download
-                </a>
+                  Your browser does not support the audio element.
+                </audio>
+                <div className="mt-1 text-[11px] text-red-300 italic">
+                  Waveform unavailable. Falling back to basic player.
+                  <a
+                    href={primaryUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-1 text-blue-300 underline"
+                  >
+                    Download
+                  </a>
+                </div>
               </div>
             ) : (
               <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
