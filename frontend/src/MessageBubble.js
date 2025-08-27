@@ -66,15 +66,24 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   const order = getOrderData();
   const isOrder = msg.type === "order" && order;
 
-  // Improved media URL resolution with priority handling
-  const mediaUrl = (() => {
-    // Priority: msg.url > msg.message (if string and not text) > empty
-    if (msg.url) return getSafeMediaUrl(msg.url);
-    if (typeof msg.message === "string" && msg.type !== "text" && msg.type !== "order") {
-      return getSafeMediaUrl(msg.message);
-    }
-    return "";
-  })();
+  // Compute possible media URLs
+  const primaryUrl = msg.url ? getSafeMediaUrl(msg.url) : "";
+  const localUrl =
+    typeof msg.message === "string" &&
+    msg.type !== "text" &&
+    msg.type !== "order"
+      ? getSafeMediaUrl(msg.message)
+      : "";
+
+  // Best available URL for non-audio media
+  const mediaUrl = primaryUrl || localUrl;
+
+  // Track which URL is currently used by the audio player
+  const [activeUrl, setActiveUrl] = useState(mediaUrl);
+
+  useEffect(() => {
+    setActiveUrl(mediaUrl);
+  }, [mediaUrl]);
 
   // Enhanced media type detection
   const isGroupedImages = Array.isArray(msg.message) && 
@@ -103,15 +112,16 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
     e.target.alt = "Image failed to load";
   };
 
-  // WaveSurfer setup with better error handling
+  // WaveSurfer setup with retry logic
   useEffect(() => {
     let wavesurfer = null;
-    
-    if (isAudio && waveformRef.current && mediaUrl) {
+    let triedLocal = false;
+
+    if (isAudio && waveformRef.current && (primaryUrl || localUrl)) {
       // Cleanup existing instance
       if (wavesurferRef.current) {
-        try { 
-          wavesurferRef.current.destroy(); 
+        try {
+          wavesurferRef.current.destroy();
         } catch (e) {
           console.warn("Error destroying previous wavesurfer:", e);
         }
@@ -133,41 +143,78 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           mediaType: "audio",
         });
 
+        const loadUrl = async (url, isPrimary) => {
+          if (!url) return false;
+          try {
+            await fetch(url, { method: "HEAD" });
+          } catch (err) {
+            console.warn(`Fetch failed for ${isPrimary ? "primary" : "local"} URL:`, err);
+            return false;
+          }
+          try {
+            setActiveUrl(url);
+            wavesurfer.load(url, { crossOrigin: "anonymous" });
+            return true;
+          } catch (err) {
+            console.error("WaveSurfer load error:", err);
+            return false;
+          }
+        };
+
+        const tryLocal = async () => {
+          if (localUrl && !triedLocal) {
+            triedLocal = true;
+            const ok = await loadUrl(localUrl, false);
+            if (!ok) {
+              setAudioError(true);
+              setActiveUrl("");
+            }
+          } else {
+            setAudioError(true);
+            setActiveUrl("");
+          }
+        };
+
         setAudioError(false);
-        wavesurfer.load(mediaUrl, { crossOrigin: "anonymous" });
 
         wavesurfer.on("ready", () => setAudioError(false));
         wavesurfer.on("finish", () => setPlaying(false));
-        wavesurfer.on("error", (error) => {
+        wavesurfer.on("error", async (error) => {
           console.error("WaveSurfer error:", error);
-          setAudioError(true);
+          await tryLocal();
         });
+
+        (async () => {
+          const ok = await loadUrl(primaryUrl, true);
+          if (!ok) await tryLocal();
+        })();
 
         wavesurferRef.current = wavesurfer;
       } catch (err) {
         console.error("WaveSurfer initialization error:", err);
         setAudioError(true);
+        setActiveUrl("");
       }
     }
 
     return () => {
       if (wavesurfer) {
-        try { 
-          wavesurfer.destroy(); 
+        try {
+          wavesurfer.destroy();
         } catch (e) {
           console.warn("Error cleaning up wavesurfer:", e);
         }
       }
       if (wavesurferRef.current) {
-        try { 
-          wavesurferRef.current.destroy(); 
+        try {
+          wavesurferRef.current.destroy();
         } catch (e) {
           console.warn("Error cleaning up wavesurfer ref:", e);
         }
         wavesurferRef.current = null;
       }
     };
-  }, [mediaUrl, isAudio]);
+  }, [primaryUrl, localUrl, isAudio]);
 
   // Audio play/pause handler with error handling
   const handlePlayPause = () => {
@@ -264,10 +311,10 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         </button>
         
         {audioError ? (
-          mediaUrl ? (
+          activeUrl ? (
             <audio
               controls
-              src={mediaUrl}
+              src={activeUrl}
               crossOrigin="anonymous"
               className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
             >
