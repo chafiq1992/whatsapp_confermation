@@ -76,8 +76,10 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
       ? getSafeMediaUrl(msg.message)
       : "";
 
+  const isAudio = msg.type === "audio";
+
   // Best available URL for non-audio media
-  const mediaUrl = primaryUrl || localUrl;
+  const mediaUrl = isAudio ? primaryUrl : primaryUrl || localUrl;
 
   // Track which URL is currently used by the audio player
   const [activeUrl, setActiveUrl] = useState(mediaUrl);
@@ -87,12 +89,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   }, [mediaUrl]);
 
   // Enhanced media type detection
-  const isGroupedImages = Array.isArray(msg.message) && 
-    msg.message.length > 0 && 
+  const isGroupedImages = Array.isArray(msg.message) &&
+    msg.message.length > 0 &&
     msg.message.every(item => item && (item.type === "image" || typeof item.message === "string"));
-  
+
   const isImage = msg.type === "image" && !isGroupedImages;
-  const isAudio = msg.type === "audio";
   const isVideo = msg.type === "video";
   const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
 
@@ -113,12 +114,19 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
     e.target.alt = "Image failed to load";
   };
 
-  // WaveSurfer setup with retry logic
+  // WaveSurfer setup relying solely on msg.url
   useEffect(() => {
-    let wavesurfer = null;
-    let attemptedFallback = false;
+    if (!isAudio) return;
 
-    if (isAudio && waveformRef.current && (primaryUrl || localUrl)) {
+    if (!primaryUrl) {
+      setAudioError(true);
+      setActiveUrl("");
+      return;
+    }
+
+    let wavesurfer = null;
+
+    if (waveformRef.current) {
       // Cleanup existing instance
       if (wavesurferRef.current) {
         try {
@@ -145,7 +153,6 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         });
 
         const load = (url) => {
-          if (!url) return;
           try {
             setActiveUrl(url);
             wavesurfer.load(url, { crossOrigin: "anonymous" });
@@ -160,22 +167,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         wavesurfer.on("finish", () => setPlaying(false));
         wavesurfer.on("error", (error) => {
           console.error("WaveSurfer error:", error);
-          if (!attemptedFallback && localUrl) {
-            attemptedFallback = true;
-            load(localUrl);
-          } else {
-            setAudioError(true);
-            setActiveUrl("");
-          }
+          setAudioError(true);
         });
 
-        load(primaryUrl || localUrl);
+        load(primaryUrl);
 
         wavesurferRef.current = wavesurfer;
       } catch (err) {
         console.error("WaveSurfer initialization error:", err);
         setAudioError(true);
-        setActiveUrl("");
       }
     }
 
@@ -196,7 +196,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
         wavesurferRef.current = null;
       }
     };
-  }, [primaryUrl, localUrl, isAudio]);
+  }, [primaryUrl, isAudio]);
 
   // Audio play/pause handler with error handling
   const handlePlayPause = () => {
@@ -292,27 +292,30 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           )}
         </button>
         
-        {audioError ? (
-          activeUrl ? (
-            <audio
-              controls
-              src={activeUrl}
-              crossOrigin="anonymous"
-              className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
-            >
-              Your browser does not support the audio element.
-            </audio>
+          {audioError ? (
+            primaryUrl ? (
+              <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
+                Audio failed to load.
+                <a
+                  href={primaryUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-1 text-blue-300 underline"
+                >
+                  Download
+                </a>
+              </div>
+            ) : (
+              <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
+                Audio URL missing
+              </div>
+            )
           ) : (
-            <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
-              Audio file missing or failed to load
-            </div>
-          )
-        ) : (
-          <div
-            ref={waveformRef}
-            className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
-          />
-        )}
+            <div
+              ref={waveformRef}
+              className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
+            />
+          )}
       </div>
       
       {msg.transcription && (
