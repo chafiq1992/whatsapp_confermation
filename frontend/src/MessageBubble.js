@@ -12,9 +12,12 @@ const ICONS = {
 };
 
 // Enhanced media URL utility with better error handling
-function getSafeMediaUrl(raw) {
+export function getSafeMediaUrl(raw) {
   if (!raw) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith("/app/")) {
+    raw = raw.replace(/^\/app\/(media\/)?/, "/media/");
+  }
   const base = process.env.REACT_APP_API_BASE || "";
   return `${base.replace(/\/$/, "")}/${raw.replace(/^\/+/, "")}`;
 }
