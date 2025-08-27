@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import pytest
+from fastapi.testclient import TestClient
 from backend import main
 
 
@@ -79,3 +80,52 @@ def test_download_media_returns_relative_path(tmp_path, monkeypatch):
     assert relative_path.startswith("/media/")
     assert "mid123"[:8] in relative_path
     assert drive_url.startswith("https://storage.test/")
+
+
+def test_messages_endpoint_includes_audio_url(tmp_path, monkeypatch):
+    db_path = tmp_path / "db.sqlite"
+    dm = main.DatabaseManager(str(db_path))
+    asyncio.run(dm.init_db())
+
+    # point application to temp database
+    main.db_manager = dm
+    main.message_processor.db_manager = dm
+
+    # stub out external dependencies
+    async def fake_cache(*args, **kwargs):
+        return None
+
+    async def fake_get_recent_messages(*args, **kwargs):
+        return []
+
+    async def fake_send_to_user(*args, **kwargs):
+        return None
+
+    async def fake_broadcast(*args, **kwargs):
+        return None
+
+    async def fake_download_media(self, media_id, media_type):
+        return "/media/audio.ogg", "https://storage.test/audio.ogg"
+
+    monkeypatch.setattr(main.redis_manager, "cache_message", fake_cache, raising=False)
+    monkeypatch.setattr(main.redis_manager, "get_recent_messages", fake_get_recent_messages, raising=False)
+    monkeypatch.setattr(main.connection_manager, "send_to_user", fake_send_to_user, raising=False)
+    monkeypatch.setattr(main.connection_manager, "broadcast_to_admins", fake_broadcast, raising=False)
+    monkeypatch.setattr(main.MessageProcessor, "_download_media", fake_download_media, raising=False)
+
+    message = {
+        "from": "user1",
+        "type": "audio",
+        "id": "msg1",
+        "timestamp": "0",
+        "audio": {"id": "m1"},
+    }
+
+    asyncio.run(main.message_processor._handle_incoming_message(message))
+
+    with TestClient(main.app) as client:
+        res = client.get("/messages/user1")
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data) == 1
+        assert data[0]["url"] == "https://storage.test/audio.ogg"
