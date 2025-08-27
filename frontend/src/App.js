@@ -15,10 +15,15 @@ export default function App() {
   const [catalogProducts, setCatalogProducts] = useState({});
   const [conversations, setConversations] = useState([]);
   const [activeUser, setActiveUser] = useState(null);
+  const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
   const wsRef = useRef(null);
   const adminWsRef = useRef(null);
+
+  useEffect(() => {
+    activeUserRef.current = activeUser;
+  }, [activeUser]);
 
   // Fetch all conversations for chat list
   const fetchConversations = async () => {
@@ -86,9 +91,56 @@ export default function App() {
       `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
     const ws = new WebSocket(`${wsBase}admin`);
     adminWsRef.current = ws;
-    ws.onmessage = () => {
-      // Refresh conversations when any new message arrives
-      fetchConversations();
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === "message_received") {
+          const msg = data.data || {};
+          const userId = msg.user_id;
+          const text =
+            typeof msg.message === "string"
+              ? msg.message
+              : msg.caption || msg.type || "";
+          const time = msg.timestamp || new Date().toISOString();
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c.user_id === userId);
+            if (idx !== -1) {
+              const current = prev[idx];
+              if (
+                current.last_message_time &&
+                new Date(current.last_message_time) > new Date(time)
+              ) {
+                return prev;
+              }
+              const updated = {
+                ...current,
+                last_message: text,
+                last_message_time: time,
+                unread_count:
+                  activeUserRef.current?.user_id === userId
+                    ? current.unread_count
+                    : (current.unread_count || 0) + 1,
+              };
+              return [
+                updated,
+                ...prev.slice(0, idx),
+                ...prev.slice(idx + 1),
+              ];
+            }
+            const newConv = {
+              user_id: userId,
+              name: msg.name || userId,
+              last_message: text,
+              last_message_time: time,
+              unread_count:
+                activeUserRef.current?.user_id === userId ? 0 : 1,
+            };
+            return [newConv, ...prev];
+          });
+        }
+      } catch (err) {
+        console.error("WS message parsing failed", err);
+      }
     };
     return () => ws.close();
   }, []);
