@@ -1,5 +1,6 @@
 import api from "./api";
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { loadCatalogSets, saveCatalogSets, loadCatalogSetProducts, saveCatalogSetProducts } from "./chatStorage";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "";
 
@@ -38,19 +39,27 @@ export default function CatalogPanel({
   // Temporary status for sending an entire set
   const [sendingSet, setSendingSet] = useState(false);
 
-  // Fetch sets list
+  // Fetch sets list with SWR (cache first, then refresh)
   const fetchSets = async () => {
     setLoadingSets(true);
+    try {
+      const cached = await loadCatalogSets();
+      if (cached?.length) {
+        setSets(cached);
+        if (!selectedSet) setSelectedSet(cached[0].id);
+      }
+    } catch {}
     try {
       const res = await api.get(`${API_BASE}/catalog-sets`);
       const list = Array.isArray(res.data) ? res.data : [];
       setSets(list);
+      await saveCatalogSets(list);
       if (!selectedSet && list.length > 0) {
         setSelectedSet(list[0].id);
       }
     } catch (err) {
       console.error("Error fetching sets:", err);
-      setSets([]);
+      if (!Array.isArray(sets) || sets.length === 0) setSets([]);
     }
     setLoadingSets(false);
   };
@@ -69,6 +78,7 @@ export default function CatalogPanel({
       });
       const list = Array.isArray(res.data) ? res.data : [];
       setProducts(list);
+      try { await saveCatalogSetProducts(setId, list); } catch {}
       setHasMore(list.length >= (limit || PAGE_SIZE));
       return list;
     } catch (err) {
@@ -231,12 +241,12 @@ export default function CatalogPanel({
       // Send each as interactive product (fast)
       for (const p of items) {
         await sendInteractiveProduct(p);
-        await new Promise(r => setTimeout(r, 120));
+        await new Promise(r => setTimeout(r, 50));
       }
     } else {
       for (const url of selectedImages) {
         sendImageUrl(url);
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 60));
       }
     }
   };
@@ -331,6 +341,11 @@ export default function CatalogPanel({
     setFetchLimit(PAGE_SIZE);
     setSelectedImages([]);
     setModalOpen(true);
+    // Show cached instantly
+    try {
+      const cached = await loadCatalogSetProducts(setObj.id);
+      if (Array.isArray(cached) && cached.length) setProducts(cached);
+    } catch {}
     await fetchProducts(setObj.id, PAGE_SIZE);
   };
 

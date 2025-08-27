@@ -251,7 +251,8 @@ export default function ChatWindow({ activeUser }) {
   useEffect(() => {
     async function fetchAllProducts() {
       try {
-        const res = await api.get(`${API_BASE}/all-catalog-products`);
+        // Use cached endpoint for instant load
+        const res = await api.get(`${API_BASE}/catalog-all-products`);
         const lookup = {};
         (res.data || []).forEach(prod => {
           lookup[String(prod.retailer_id)] = {
