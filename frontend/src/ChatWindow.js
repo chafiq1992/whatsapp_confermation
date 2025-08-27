@@ -167,7 +167,8 @@ export default function ChatWindow({ activeUser }) {
         const list = Array.isArray(data.data) ? data.data : [];
         setMessages(prev => mergeAndDedupe(prev, list));
         setOffset(list.length);
-        setHasMore(list.length === MESSAGE_LIMIT);
+        // WS may send fewer than MESSAGE_LIMIT (e.g. 20). Keep hasMore true so HTTP can paginate.
+        setHasMore(list.length > 0);
       }
       
       if (data.type === "message_sent") {
