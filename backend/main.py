@@ -986,15 +986,15 @@ class MessageProcessor:
                 # For media messages: support either local path upload or direct link
                 media_path = message.get("media_path")
                 media_url = message.get("url")
-                if media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
-                    wa_response = await self.whatsapp_messenger.send_media_message(
-                        user_id, message["type"], media_url, message.get("caption", "")
-                    )
-                elif media_path and Path(media_path).exists():
+                if media_path and Path(media_path).exists():
                     print(f"📤 Uploading media: {media_path}")
                     media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
                     wa_response = await self.whatsapp_messenger.send_media_message(
                         user_id, message["type"], media_id, message.get("caption", "")
+                    )
+                elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
+                    wa_response = await self.whatsapp_messenger.send_media_message(
+                        user_id, message["type"], media_url, message.get("caption", "")
                     )
                 else:
                     raise Exception("No media found: require url http(s) or valid media_path")
@@ -1686,6 +1686,7 @@ async def send_media(
             message_data = {
                 "user_id": user_id,
                 "message": str(file_path),
+                # URL is kept for UI display; WhatsApp will use the uploaded media ID
                 "url": media_url,
                 "type": media_type,
                 "from_me": True,

@@ -42,6 +42,8 @@ def _upload_sync(file_path: str, content_type: str | None = None) -> str:
 
     if content_type is None:
         content_type, _ = mimetypes.guess_type(file_path)
+        if content_type is None and file_path.lower().endswith('.ogg'):
+            content_type = 'audio/ogg'
     blob.upload_from_filename(file_path, content_type=content_type)
     blob.make_public()
 
