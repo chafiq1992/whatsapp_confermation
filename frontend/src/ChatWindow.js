@@ -89,6 +89,7 @@ export default function ChatWindow({ activeUser }) {
   const MESSAGE_LIMIT = 50;
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   // Load cached messages when switching conversations
   useEffect(() => {
@@ -289,9 +290,24 @@ export default function ChatWindow({ activeUser }) {
     }
   };
 
-  const loadOlderMessages = async () => {
-    await fetchMessages({ offset, append: true });
-  };
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlder || !hasMore) return;
+    const container = messagesEndRef.current;
+    if (!container) return;
+    setLoadingOlder(true);
+    setPreserveScroll(true);
+    const prevHeight = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    try {
+      await fetchMessages({ offset, append: true });
+    } finally {
+      requestAnimationFrame(() => {
+        const newHeight = container.scrollHeight;
+        container.scrollTop = newHeight - prevHeight + prevTop;
+        setLoadingOlder(false);
+      });
+    }
+  }, [offset, loadingOlder, hasMore, fetchMessages]);
   
   const sendMessageViaWebSocket = ({ message, type, caption, price }) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -410,6 +426,8 @@ export default function ChatWindow({ activeUser }) {
     if (canvasRef.current) setCanvasRef(canvasRef.current);
   }, [canvasRef.current, activeUser?.user_id]);
 
+  const [preserveScroll, setPreserveScroll] = useState(false);
+
   const scrollToBottom = () => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollTop = messagesEndRef.current.scrollHeight;
@@ -417,8 +435,24 @@ export default function ChatWindow({ activeUser }) {
   };
 
   useEffect(() => {
+    if (preserveScroll) {
+      setPreserveScroll(false);
+      return;
+    }
     scrollToBottom();
-  }, [messages]);
+  }, [messages, preserveScroll]);
+
+  useEffect(() => {
+    const container = messagesEndRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      if (container.scrollTop <= 100 && hasMore && !loadingOlder) {
+        loadOlderMessages();
+      }
+    };
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [hasMore, loadingOlder, loadOlderMessages]);
 
   // Persist messages to IndexedDB whenever they change
   useEffect(() => {
@@ -699,11 +733,6 @@ export default function ChatWindow({ activeUser }) {
       )}
       
       <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-900" ref={messagesEndRef}>
-        {hasMore && (
-          <button onClick={loadOlderMessages} className="text-xs text-blue-400 underline mb-2">
-            Load older messages
-          </button>
-        )}
         {groupedMessages.map((msg, index) => (
           <React.Fragment key={msg.id || msg.temp_id || index}>
             {index === unreadSeparatorIndex && (
