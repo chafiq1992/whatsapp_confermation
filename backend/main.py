@@ -1825,7 +1825,15 @@ async def get_catalog_sets():
 
 @app.get("/catalog-all-products")
 async def get_catalog_products_endpoint():
-    return catalog_manager.get_cached_products()
+    # Serve cached if available; otherwise refresh synchronously for fast subsequent loads
+    products = catalog_manager.get_cached_products()
+    if products:
+        return products
+    try:
+        await catalog_manager.refresh_catalog_cache()
+    except Exception as exc:
+        print(f"Catalog cache refresh failed in endpoint: {exc}")
+    return catalog_manager.get_cached_products() or []
 
 
 @app.get("/catalog-set-products")
@@ -1940,8 +1948,18 @@ class CatalogManager:
             cached = catalog_manager.get_cached_products()
             if cached:
                 return cached[: max(1, int(limit))]
-            # Fallback to live fetch if cache empty
-            return await CatalogManager.get_catalog_products()
+            # Fallback to live fetch if cache empty; also persist to cache for next requests
+            products_live = await CatalogManager.get_catalog_products()
+            try:
+                with open(config.CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
+                    json.dump(products_live, f, ensure_ascii=False)
+                try:
+                    await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+                except Exception as _exc:
+                    print(f"GCS upload failed after live fetch: {_exc}")
+            except Exception as _exc:
+                print(f"Writing local catalog cache failed: {_exc}")
+            return products_live[: max(1, int(limit))]
 
         # Serve from in-memory cache if fresh
         import time as _time
