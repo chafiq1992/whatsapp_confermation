@@ -71,7 +71,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   const localUrl =
     typeof msg.message === "string" &&
     msg.type !== "text" &&
-    msg.type !== "order"
+    msg.type !== "order" &&
+    !/^https?:\/\//i.test(msg.message)
       ? getSafeMediaUrl(msg.message)
       : "";
 
