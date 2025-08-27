@@ -9,7 +9,7 @@ async def fake_send_catalog_products(to, ids):
     fake_send_catalog_products.called = (to, ids)
     return ["ok"]
 
-async def fake_send_single_catalog_item(to, rid):
+async def fake_send_single_catalog_item(to, rid, caption=""):
     fake_send_single_catalog_item.called = (to, rid)
     return {"ok": True}
 
@@ -56,6 +56,38 @@ def test_send_catalog_item_fallback(monkeypatch):
     resp = client.post("/send-catalog-item", data={"user_id": "U4", "product_retailer_id": "pid2"})
     assert resp.status_code == 200
     assert fake_send_single_catalog_item.called == ("U4", "pid2")
+
+
+def test_send_catalog_all_uses_lookup(monkeypatch):
+    async def fake_lookup_phone(uid):
+        return "+123"
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
+    monkeypatch.setattr(
+        main.catalog_manager,
+        "get_cached_products",
+        lambda: [{"retailer_id": "a"}, {"retailer_id": "b"}],
+    )
+    monkeypatch.setattr(main.messenger, "send_catalog_products", fake_send_catalog_products)
+    resp = client.post("/send-catalog-all", data={"user_id": "U1"})
+    assert resp.status_code == 200
+    assert fake_send_catalog_products.called == ("+123", ["a", "b"])
+
+
+def test_send_catalog_all_fallback(monkeypatch):
+    async def fake_lookup_phone(uid):
+        return None
+
+    monkeypatch.setattr(main, "lookup_phone", fake_lookup_phone)
+    monkeypatch.setattr(
+        main.catalog_manager,
+        "get_cached_products",
+        lambda: [{"retailer_id": "x"}],
+    )
+    monkeypatch.setattr(main.messenger, "send_catalog_products", fake_send_catalog_products)
+    resp = client.post("/send-catalog-all", data={"user_id": "U2"})
+    assert resp.status_code == 200
+    assert fake_send_catalog_products.called == ("U2", ["x"])
 
 
 def test_startup_creates_catalog_cache(tmp_path, monkeypatch):

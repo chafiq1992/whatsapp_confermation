@@ -275,6 +275,19 @@ class WhatsAppMessenger:
             }
         }
         return await self._make_request("messages", data)
+
+    async def send_full_catalog(self, user_id: str, caption: str = "") -> List[Dict[str, Any]]:
+        """Send the entire catalog to a user, optionally with a caption."""
+        products = catalog_manager.get_cached_products()
+        product_ids = [p.get("retailer_id") for p in products if p.get("retailer_id")]
+
+        if caption:
+            await self.send_text_message(user_id, caption)
+
+        if not product_ids:
+            return []
+
+        return await self.send_catalog_products(user_id, product_ids)
     
     async def send_media_message(self, to: str, media_type: str, media_id_or_url: str, caption: str = "") -> dict:
         """Send media message - handles both media_id and URL"""
@@ -1686,6 +1699,16 @@ async def send_catalog_item_endpoint(
     customer_phone = await lookup_phone(user_id) or user_id
     response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id, caption)
     return {"status": "ok", "response": response}
+
+
+@app.post("/send-catalog-all")
+async def send_catalog_all_endpoint(
+    user_id: str = Form(...),
+    caption: str = Form("")
+):
+    customer_phone = await lookup_phone(user_id) or user_id
+    results = await messenger.send_full_catalog(customer_phone, caption)
+    return {"status": "ok", "results": results}
 
 
 @app.get("/catalog-sets")
