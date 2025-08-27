@@ -127,7 +127,9 @@ def test_send_catalog_set_all_chunks(monkeypatch):
     calls = []
 
     async def fake_make_request(endpoint, data):
-        calls.append(data["multi_product"]["products"])
+        calls.append(
+            data["interactive"]["action"]["sections"][0]["product_items"]
+        )
         return {"ok": True}
 
     monkeypatch.setattr(main.messenger, "_make_request", fake_make_request)
