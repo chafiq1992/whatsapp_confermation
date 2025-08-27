@@ -288,6 +288,19 @@ class WhatsAppMessenger:
             return []
 
         return await self.send_catalog_products(user_id, product_ids)
+
+    async def send_full_set(self, user_id: str, set_id: str, caption: str = "") -> List[Dict[str, Any]]:
+        """Send all products for a specific set in chunks."""
+        products = await CatalogManager.get_products_for_set(set_id)
+        product_ids = [p.get("retailer_id") for p in products if p.get("retailer_id")]
+
+        if caption:
+            await self.send_text_message(user_id, caption)
+
+        if not product_ids:
+            return []
+
+        return await self.send_catalog_products(user_id, product_ids)
     
     async def send_media_message(self, to: str, media_type: str, media_id_or_url: str, caption: str = "") -> dict:
         """Send media message - handles both media_id and URL"""
@@ -1708,6 +1721,17 @@ async def send_catalog_all_endpoint(
 ):
     customer_phone = await lookup_phone(user_id) or user_id
     results = await messenger.send_full_catalog(customer_phone, caption)
+    return {"status": "ok", "results": results}
+
+
+@app.post("/send-catalog-set-all")
+async def send_catalog_set_all_endpoint(
+    user_id: str = Form(...),
+    set_id: str = Form(...),
+    caption: str = Form("")
+):
+    customer_phone = await lookup_phone(user_id) or user_id
+    results = await messenger.send_full_set(customer_phone, set_id, caption)
     return {"status": "ok", "results": results}
 
 
