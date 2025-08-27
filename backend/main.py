@@ -17,6 +17,7 @@ from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
+import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
 
 from fastapi.staticfiles import StaticFiles
@@ -366,26 +367,32 @@ class WhatsAppMessenger:
             response = await client.post(url, json=payload, headers=self.headers)
             return response.json()
     
-    async def download_media(self, media_id: str) -> bytes:
-        """Download media from WhatsApp"""
+    async def download_media(self, media_id: str) -> tuple[bytes, str]:
+        """Download media from WhatsApp.
+
+        Returns a tuple ``(content, mime_type)`` where ``content`` is the raw
+        bytes of the file and ``mime_type`` comes from the ``Content-Type``
+        header of the media response.
+        """
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{media_id}"
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=self.headers)
             if response.status_code != 200:
                 raise Exception(f"Failed to get media info: {response.text}")
-            
+
             media_info = response.json()
             media_url = media_info.get("url")
-            
+
             if not media_url:
                 raise Exception("No media URL in response")
-            
+
             media_response = await client.get(media_url, headers=self.headers)
             if media_response.status_code != 200:
                 raise Exception(f"Failed to download media: {media_response.text}")
-            
-            return media_response.content
+
+            mime_type = media_response.headers.get("Content-Type", "")
+            return media_response.content, mime_type
 
 # ────────────────────────────────────────────────────────────
 # Async, single-source Database helper – WhatsApp-Web logic
@@ -1214,17 +1221,17 @@ class MessageProcessor:
         fails so callers don't fall back to local paths.
         """
         try:
-            media_content = await self.whatsapp_messenger.download_media(media_id)
+            media_content, mime_type = await self.whatsapp_messenger.download_media(media_id)
 
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            file_extension = self._get_file_extension(media_type)
+            file_extension = mimetypes.guess_extension(mime_type) or ""
             filename = f"{media_type}_{timestamp}_{media_id[:8]}{file_extension}"
             file_path = self.media_dir / filename
 
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
-            drive_url = await upload_file_to_gcs(str(file_path))
+            drive_url = await upload_file_to_gcs(str(file_path), mime_type)
             if not drive_url:
                 raise RuntimeError("GCS upload failed")
 
@@ -1233,16 +1240,6 @@ class MessageProcessor:
         except Exception as e:
             print(f"Error downloading media {media_id}: {e}")
             raise
-    
-    def _get_file_extension(self, media_type: str) -> str:
-        """Get file extension based on media type"""
-        extensions = {
-            "image": ".jpg",
-            "audio": ".ogg",
-            "video": ".mp4",
-            "document": ".pdf"
-        }
-        return extensions.get(media_type, "")
 
 # ------------------------- helpers -------------------------
 
