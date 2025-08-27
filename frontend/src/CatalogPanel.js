@@ -158,6 +158,19 @@ export default function CatalogPanel({
   // Send whole set by requesting backend to deliver the selected set
   const sendWholeSet = async () => {
     if (!activeUser?.user_id || !selectedSet) return;
+
+    // Build a caption that mirrors what the customer will see
+    const setInfo = sets.find((s) => s.id === selectedSet);
+    const captionDetails = [];
+    if (setInfo?.name) captionDetails.push(setInfo.name);
+    if (setInfo?.item_count) captionDetails.push(`${setInfo.item_count} items`);
+    const captionText = captionDetails.length
+      ? `Sending entire set: ${captionDetails.join(' • ')}…`
+      : 'Sending entire set…';
+
+    // Optimistic bubble before hitting the API
+    const tempId = sendOptimisticMessage({ type: 'text', message: captionText });
+
     setSendingSet(true);
     try {
       await api.post(
@@ -165,6 +178,8 @@ export default function CatalogPanel({
         new URLSearchParams({
           user_id: activeUser.user_id,
           set_id: selectedSet,
+          caption: captionDetails.join(' • '),
+          temp_id: tempId,
         }),
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
