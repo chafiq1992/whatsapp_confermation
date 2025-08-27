@@ -49,9 +49,9 @@ def test_download_media_raises_on_gcs_failure(tmp_path, monkeypatch):
     mp.media_dir = tmp_path
 
     async def fake_download(media_id):
-        return b"data"
+        return b"data", "image/jpeg"
 
-    async def fake_upload(path):
+    async def fake_upload(path, content_type=None):
         return None
 
     monkeypatch.setattr(mp.whatsapp_messenger, "download_media", fake_download, raising=False)

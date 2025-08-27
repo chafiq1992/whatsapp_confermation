@@ -3,6 +3,7 @@ import os
 import json
 from pathlib import Path
 import mimetypes
+from functools import partial
 try:
     from google.cloud import storage
 except Exception:  # pragma: no cover - library may be missing in tests
@@ -30,7 +31,7 @@ def _get_client():
     return storage.Client(credentials=credentials)
 
 
-def _upload_sync(file_path: str) -> str:
+def _upload_sync(file_path: str, content_type: str | None = None) -> str:
     bucket_name = os.getenv("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
     if not bucket_name:
         raise RuntimeError("GCS_BUCKET_NAME is not set")
@@ -39,17 +40,19 @@ def _upload_sync(file_path: str) -> str:
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(Path(file_path).name)
 
-    content_type, _ = mimetypes.guess_type(file_path)
+    if content_type is None:
+        content_type, _ = mimetypes.guess_type(file_path)
     blob.upload_from_filename(file_path, content_type=content_type)
     blob.make_public()
 
     return blob.public_url
 
 
-async def upload_file_to_gcs(file_path: str) -> str:
+async def upload_file_to_gcs(file_path: str, content_type: str | None = None) -> str:
     """Upload a file to Google Cloud Storage and return a public URL."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _upload_sync, file_path)
+    func = partial(_upload_sync, file_path, content_type)
+    return await loop.run_in_executor(None, func)
 
 
 def _download_sync(blob_name: str, destination: str) -> None:

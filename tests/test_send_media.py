@@ -8,7 +8,7 @@ import json
 def test_send_media_returns_gcs_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    async def fake_upload(path: str):
+    async def fake_upload(path: str, content_type=None):
         return f"https://storage.test/{Path(path).name}"
 
     monkeypatch.setattr(main, "upload_file_to_gcs", fake_upload)
