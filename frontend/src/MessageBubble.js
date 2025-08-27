@@ -115,7 +115,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   // WaveSurfer setup with retry logic
   useEffect(() => {
     let wavesurfer = null;
-    let triedLocal = false;
+    let attemptedFallback = false;
 
     if (isAudio && waveformRef.current && (primaryUrl || localUrl)) {
       // Cleanup existing instance
@@ -143,35 +143,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           mediaType: "audio",
         });
 
-        const loadUrl = async (url, isPrimary) => {
-          if (!url) return false;
-          try {
-            await fetch(url, { method: "HEAD" });
-          } catch (err) {
-            console.warn(`Fetch failed for ${isPrimary ? "primary" : "local"} URL:`, err);
-            return false;
-          }
+        const load = (url) => {
+          if (!url) return;
           try {
             setActiveUrl(url);
             wavesurfer.load(url, { crossOrigin: "anonymous" });
-            return true;
           } catch (err) {
             console.error("WaveSurfer load error:", err);
-            return false;
-          }
-        };
-
-        const tryLocal = async () => {
-          if (localUrl && !triedLocal) {
-            triedLocal = true;
-            const ok = await loadUrl(localUrl, false);
-            if (!ok) {
-              setAudioError(true);
-              setActiveUrl("");
-            }
-          } else {
-            setAudioError(true);
-            setActiveUrl("");
           }
         };
 
@@ -179,15 +157,18 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
 
         wavesurfer.on("ready", () => setAudioError(false));
         wavesurfer.on("finish", () => setPlaying(false));
-        wavesurfer.on("error", async (error) => {
+        wavesurfer.on("error", (error) => {
           console.error("WaveSurfer error:", error);
-          await tryLocal();
+          if (!attemptedFallback && localUrl) {
+            attemptedFallback = true;
+            load(localUrl);
+          } else {
+            setAudioError(true);
+            setActiveUrl("");
+          }
         });
 
-        (async () => {
-          const ok = await loadUrl(primaryUrl, true);
-          if (!ok) await tryLocal();
-        })();
+        load(primaryUrl || localUrl);
 
         wavesurferRef.current = wavesurfer;
       } catch (err) {
