@@ -239,6 +239,19 @@ class WhatsAppMessenger:
         url = f"{self.base_url}/{endpoint}"
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=data, headers=self.headers)
+            if response.status_code < 200 or response.status_code >= 300:
+                # Log response body for easier debugging
+                try:
+                    body = response.text
+                except Exception:
+                    body = "<no body>"
+                print(
+                    f"❌ WhatsApp API request to {endpoint} failed with status {response.status_code}: {body}"
+                )
+                raise Exception(
+                    f"WhatsApp API request failed with status {response.status_code}"
+                )
+
             return response.json()
 
     async def send_catalog_products(self, user_id: str, product_ids: List[str]) -> List[Dict[str, Any]]:
@@ -1743,7 +1756,12 @@ async def send_catalog_set_all_endpoint(
     caption: str = Form("")
 ):
     customer_phone = await lookup_phone(user_id) or user_id
-    results = await messenger.send_full_set(customer_phone, set_id, caption)
+    try:
+        results = await messenger.send_full_set(customer_phone, set_id, caption)
+    except Exception as exc:
+        print(f"Error sending catalog set {set_id} to {customer_phone}: {exc}")
+        raise HTTPException(status_code=502, detail=str(exc))
+
     return {"status": "ok", "results": results}
 
 
