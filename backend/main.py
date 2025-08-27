@@ -50,7 +50,7 @@ class Config:
     UPLOADS_DIR = "uploads"
     WHATSAPP_API_VERSION = "v19.0"
     MAX_CATALOG_ITEMS = 30
-    RATE_LIMIT_DELAY = 0.6
+    RATE_LIMIT_DELAY = 0
 
 config = Config()
 # Get environment variables
@@ -282,7 +282,6 @@ class WhatsAppMessenger:
             }
             result = await self._make_request("messages", data)
             results.append(result)
-            await asyncio.sleep(config.RATE_LIMIT_DELAY)
         return results
 
     async def send_single_catalog_item(self, user_id: str, product_retailer_id: str, caption: str = "") -> Dict[str, Any]:
@@ -1758,18 +1757,21 @@ async def send_catalog_all_endpoint(
 
 @app.post("/send-catalog-set-all")
 async def send_catalog_set_all_endpoint(
+    background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     set_id: str = Form(...),
     caption: str = Form("")
 ):
     customer_phone = await lookup_phone(user_id) or user_id
-    try:
-        results = await messenger.send_full_set(customer_phone, set_id, caption)
-    except Exception as exc:
-        print(f"Error sending catalog set {set_id} to {customer_phone}: {exc}")
-        raise HTTPException(status_code=502, detail=str(exc))
 
-    return {"status": "ok", "results": results}
+    async def run_send_full_set():
+        try:
+            await messenger.send_full_set(customer_phone, set_id, caption)
+        except Exception as exc:
+            print(f"Error sending catalog set {set_id} to {customer_phone}: {exc}")
+
+    background_tasks.add_task(run_send_full_set)
+    return {"status": "queued"}
 
 
 @app.get("/catalog-sets")
