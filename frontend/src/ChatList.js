@@ -35,9 +35,13 @@ const formatTime = (iso) => {
   return date.toLocaleDateString();
 };
 
+const WS_BASE =
+  process.env.REACT_APP_WS_URL ||
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
+
 /* ───────────── Component ───────────── */
 function ChatList({
-  conversations = [],
+  conversations: initialConversations = [],
   setActiveUser,
   activeUser,
   onlineUsers = [],
@@ -45,6 +49,69 @@ function ChatList({
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [conversations, setConversations] = useState(initialConversations);
+  const [wsConnected, setWsConnected] = useState(false);
+  const activeUserRef = useRef(activeUser);
+
+  useEffect(() => {
+    setConversations(initialConversations);
+  }, [initialConversations]);
+
+  useEffect(() => {
+    activeUserRef.current = activeUser;
+  }, [activeUser]);
+
+  useEffect(() => {
+    const ws = new WebSocket(`${WS_BASE}admin`);
+    ws.onopen = () => setWsConnected(true);
+    ws.onclose = () => setWsConnected(false);
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'message_received') {
+          const msg = data.data || {};
+          const userId = msg.user_id;
+          const text =
+            typeof msg.message === 'string'
+              ? msg.message
+              : msg.caption || msg.type || '';
+          const time = msg.timestamp || new Date().toISOString();
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c.user_id === userId);
+            if (idx !== -1) {
+              const current = prev[idx];
+              const updated = {
+                ...current,
+                last_message: text,
+                last_message_time: time,
+                unread_count:
+                  activeUserRef.current?.user_id === userId
+                    ? current.unread_count
+                    : (current.unread_count || 0) + 1,
+              };
+              return [
+                updated,
+                ...prev.slice(0, idx),
+                ...prev.slice(idx + 1),
+              ];
+            }
+            const newConv = {
+              user_id: userId,
+              name: msg.name || userId,
+              last_message: text,
+              last_message_time: time,
+              unread_count:
+                activeUserRef.current?.user_id === userId ? 0 : 1,
+            };
+            return [newConv, ...prev];
+          });
+        }
+      } catch (err) {
+        console.error('WS message parsing failed', err);
+      }
+    };
+    return () => ws.close();
+  }, []);
 
   /* ─── Derived data (memoised) ─── */
   const filteredConversations = useMemo(() => {
@@ -101,7 +168,7 @@ function ChatList({
   return (
     <div className="w-full h-full flex flex-col">
       {/* Top-bar */}
-      <div className="flex gap-2 p-2">
+      <div className="flex gap-2 p-2 items-center">
         <input
           className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"
           placeholder="Search or start new chat"
@@ -118,6 +185,12 @@ function ChatList({
         >
           Unread
         </button>
+        <div
+          className={`w-3 h-3 rounded-full ${
+            wsConnected ? 'bg-green-500' : 'bg-red-500'
+          }`}
+          title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
+        ></div>
       </div>
 
       {/* Empty states */}
