@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 from pathlib import Path
+import asyncio
+import pytest
 from backend import main
 from backend import google_cloud_storage
 import json
@@ -134,4 +136,82 @@ def test_gcs_json_credentials(tmp_path, monkeypatch):
     assert captured["bucket"] == "bucket"
     assert captured["blob_name"] == "x.txt"
     assert captured["public"]
+
+
+def test_upload_sync_sets_audio_ogg(tmp_path, monkeypatch):
+    monkeypatch.setenv("GCS_BUCKET_NAME", "bucket")
+
+    file_path = tmp_path / "sound.ogg"
+    file_path.write_text("data")
+
+    captured = {}
+
+    class DummyBlob:
+        public_url = "https://storage.googleapis.com/bucket/sound.ogg"
+
+        def upload_from_filename(self, filename, content_type=None):
+            captured["content_type"] = content_type
+
+        def make_public(self):
+            pass
+
+    class DummyBucket:
+        def blob(self, name):
+            return DummyBlob()
+
+    class DummyClient:
+        def bucket(self, name):
+            return DummyBucket()
+
+    monkeypatch.setattr(google_cloud_storage, "_get_client", lambda: DummyClient())
+    monkeypatch.setattr(google_cloud_storage.mimetypes, "guess_type", lambda path: (None, None))
+
+    url = google_cloud_storage._upload_sync(str(file_path))
+
+    assert url == DummyBlob.public_url
+    assert captured["content_type"] == "audio/ogg"
+
+
+def test_send_to_whatsapp_prefers_upload(tmp_path, monkeypatch):
+    file_path = tmp_path / "sound.ogg"
+    file_path.write_bytes(b"oggdata")
+
+    message = {
+        "temp_id": "t1",
+        "user_id": "u1",
+        "type": "audio",
+        "media_path": str(file_path),
+        "url": "https://example.com/sound.ogg",
+        "caption": "",
+        "message": str(file_path),
+    }
+
+    captured = {}
+
+    async def fake_upload(path, media_type):
+        captured["uploaded"] = path
+        return "id123"
+
+    async def fake_send(to, media_type, media_id, caption):
+        captured["sent"] = media_id
+        return {"messages": [{"id": "wa123"}]}
+
+    async def fake_send_to_user(user_id, msg):
+        pass
+
+    async def fake_save_message(msg, wa_id, status):
+        pass
+
+    monkeypatch.setattr(main.message_processor, "_upload_media_to_whatsapp", fake_upload)
+    monkeypatch.setattr(main.message_processor.whatsapp_messenger, "send_media_message", fake_send)
+    monkeypatch.setattr(main.message_processor.connection_manager, "send_to_user", fake_send_to_user)
+    monkeypatch.setattr(main.message_processor.db_manager, "save_message", fake_save_message)
+
+    async def run():
+        await main.message_processor._send_to_whatsapp_bg(message)
+
+    asyncio.run(run())
+
+    assert captured["uploaded"] == str(file_path)
+    assert captured["sent"] == "id123"
 
