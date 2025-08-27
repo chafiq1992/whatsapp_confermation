@@ -159,7 +159,39 @@ export default function CatalogPanel({
   const sendWholeSet = async () => {
     if (!activeUser?.user_id || !selectedSet) return;
     setSendingSet(true);
+
+    // Track optimistic message temp IDs so we can clear them
+    const tempIds = [];
+
     try {
+      // Fetch products for the set; if already loaded, reuse them
+      let list = products;
+      if (!Array.isArray(list) || list.length === 0) {
+        try {
+          const res = await api.get(`${API_BASE}/catalog-set-products`, {
+            params: { set_id: selectedSet, limit: 1000 },
+          });
+          list = Array.isArray(res.data) ? res.data : [];
+        } catch (fetchErr) {
+          console.error('Error fetching set products:', fetchErr);
+          list = [];
+        }
+      }
+
+      // Add optimistic bubbles for each product
+      list.forEach((p) => {
+        const caption =
+          p?.name && p?.price
+            ? `${p.name} • ${p.price}`
+            : p?.name || '';
+        const id = sendOptimisticMessage({
+          type: 'text',
+          message: caption || 'Product',
+        });
+        if (id) tempIds.push(id);
+      });
+
+      // Actual delivery via backend
       await api.post(
         `${API_BASE}/send-catalog-set-all`,
         new URLSearchParams({
@@ -171,6 +203,14 @@ export default function CatalogPanel({
     } catch (err) {
       console.error('Error sending full set:', err);
     } finally {
+      // Clear pending ops since backend does not report status for these temp IDs
+      if (tempIds.length) {
+        setPendingOperations((prev) => {
+          const newSet = new Set(prev);
+          tempIds.forEach((id) => newSet.delete(id));
+          return newSet;
+        });
+      }
       setSendingSet(false);
     }
   };
