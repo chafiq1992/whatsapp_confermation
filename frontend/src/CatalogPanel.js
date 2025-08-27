@@ -154,21 +154,34 @@ export default function CatalogPanel({
 
   // Send whole set: send first N thumbnails as separate image messages
   const sendWholeSet = async () => {
-    if (!activeUser?.user_id || products.length === 0) return;
+    if (!activeUser?.user_id || !selectedSet) return;
     if (sendMode === 'product') {
-      // Use interactive multi_product message for fast official send
-      const ids = products.map(p => p.retailer_id).filter(Boolean);
-      // Optimistic note
-      sendOptimisticMessage({ type: 'text', message: `Sending ${ids.length} products…` });
       try {
-        await api.post(`${API_BASE}/send-catalog-set`, new URLSearchParams({
-          user_id: activeUser.user_id,
-          product_ids: JSON.stringify(ids)
-        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      } catch {}
+        // Fetch all products in the active set with a large limit to cover entire set
+        const res = await api.get(`${API_BASE}/catalog-set-products`, {
+          params: { set_id: selectedSet, limit: 1000 }
+        });
+        const list = Array.isArray(res.data) ? res.data : [];
+        const ids = list.map(p => p.retailer_id).filter(Boolean);
+        // Optimistic bubble while the request is processed
+        sendOptimisticMessage({ type: 'text', message: 'Sending full set…' });
+        await api.post(
+          `${API_BASE}/send-catalog-set-all`,
+          new URLSearchParams({
+            user_id: activeUser.user_id,
+            product_ids: JSON.stringify(ids)
+          }),
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+      } catch (err) {
+        console.error('Error sending full set:', err);
+      }
     } else {
       const MAX_SEND = 12;
-      const list = products.slice(0, MAX_SEND).map(p => p.images?.[0]?.url).filter(Boolean);
+      const list = products
+        .slice(0, MAX_SEND)
+        .map(p => p.images?.[0]?.url)
+        .filter(Boolean);
       for (const url of list) {
         sendImageUrl(url);
         await new Promise(r => setTimeout(r, 150));
