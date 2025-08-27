@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
@@ -1310,6 +1311,7 @@ async def no_cache_html(request: StarletteRequest, call_next):
 
 @app.on_event("startup")
 async def startup():
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     await db_manager.init_db()
     await redis_manager.connect()
 
