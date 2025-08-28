@@ -475,7 +475,13 @@ class DatabaseManager:
 
     async def _get_pool(self):
         if not self._pool:
-            self._pool = await asyncpg.create_pool(self.db_url)
+            try:
+                self._pool = await asyncpg.create_pool(self.db_url)
+            except Exception as exc:
+                # Fallback to SQLite if Postgres is unavailable at startup
+                print(f"⚠️ Postgres pool creation failed, falling back to SQLite: {exc}")
+                self.use_postgres = False
+                self._pool = None
         return self._pool
 
     def _convert(self, query: str) -> str:
