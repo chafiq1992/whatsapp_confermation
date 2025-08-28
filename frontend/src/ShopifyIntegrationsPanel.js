@@ -266,7 +266,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             {!activeUser?.phone && (
               <p>Select a conversation with a user to fetch Shopify customer info by phone.</p>
             )}
-            {activeUser?.phone && loading && <p>Loading customer info...</p>}
+            {activeUser?.phone && loading && <p>Loading customer info…</p>}
             {activeUser?.phone && !loading && (customer || customersList.length > 0) && (
               <>
                 {customersList.length > 0 ? (
@@ -422,37 +422,41 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 onChange={e => handleOrderDataChange('phone', e.target.value)}
                 autoComplete="off"
               />
-              <label className="block text-xs font-bold">city</label>
+              <label className="block text-xs font-bold">City <span className="text-red-400">*</span></label>
               <input
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.city}
                 onChange={e => handleOrderDataChange('city', e.target.value)}
                 autoComplete="off"
+                required
               />
-              <label className="block text-xs font-bold">province</label>
+              <label className="block text-xs font-bold">Province <span className="text-red-400">*</span></label>
               <select
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.province}
                 onChange={e => handleOrderDataChange('province', e.target.value)}
+                required
               >
                 <option value="" disabled>Select province</option>
                  {MOROCCO_PROVINCES.map((prov) => (
                    <option key={prov} value={prov}>{prov}</option>
                  ))}
                </select>
-              <label className="block text-xs font-bold">zip</label>
+              <label className="block text-xs font-bold">ZIP <span className="text-red-400">*</span></label>
               <input
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.zip}
                 onChange={e => handleOrderDataChange('zip', e.target.value)}
                 autoComplete="off"
+                required
               />
-              <label className="block text-xs font-bold">Address</label>
+              <label className="block text-xs font-bold">Address <span className="text-red-400">*</span></label>
               <input
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.address}
                 onChange={e => handleOrderDataChange('address', e.target.value)}
                 autoComplete="off"
+                required
               />
             </div>
             {/* Product search and add section */}

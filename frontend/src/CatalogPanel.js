@@ -459,6 +459,11 @@ export default function CatalogPanel({
       <div className="catalog-sets grid grid-cols-3 gap-2 max-h-[84px]">
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
+        ) : sets.length === 0 ? (
+          <div className="text-xs text-gray-600 col-span-full flex items-center gap-2">
+            <span>No sets available.</span>
+            <button className="px-2 py-1 bg-gray-200 rounded" onClick={fetchSets} type="button">Retry</button>
+          </div>
         ) : (
           <>
             <button

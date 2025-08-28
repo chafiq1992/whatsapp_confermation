@@ -8,9 +8,7 @@ import React, {
 } from "react";
 import api from './api';
 import AdminDashboard from './AdminDashboard';
-// ⬇︎ uncomment if you want huge-list virtualization
-// import { FixedSizeList as List } from "react-window";
-//  npm i react-window  ← install once
+import { FixedSizeList as List } from "react-window";
 
 /* ───────────── Helpers ───────────── */
 const getInitials = (name = "") => {
@@ -326,35 +324,24 @@ function ChatList({
       ) : (
         /* Chat list */
         <div ref={listRef} className="flex-1 overflow-y-auto divide-y divide-gray-800">
-          {/* 👉 if you installed react-window, swap the <div> for virtualized <List> :
-                <List
-                  height={window.innerHeight - 110}
-                  itemCount={filteredConversations.length}
-                  itemSize={72}
-                  width="100%"
-                >
-                  {({ index, style }) => (
-                    <ConversationRow
-                      style={style}
-                      conv={filteredConversations[index]}
-                      onSelect={handleSelect}
-                      active={activeUser?.user_id}
-                      isOnline={isOnline}
-                    />
-                  )}
-                </List>
-            */}
-          {filteredConversations.map((c) => (
-            <ConversationRow
-              key={c.user_id}
-              conv={c}
-              onSelect={handleSelect}
-              active={activeUser?.user_id}
-              isOnline={isOnline}
-              agents={agents}
-              tagOptions={tagOptions}
-            />
-          ))}
+          <List
+            height={Math.max(200, window.innerHeight - 110)}
+            itemCount={filteredConversations.length}
+            itemSize={72}
+            width={'100%'}
+          >
+            {({ index, style }) => (
+              <ConversationRow
+                style={style}
+                conv={filteredConversations[index]}
+                onSelect={handleSelect}
+                active={activeUser?.user_id}
+                isOnline={isOnline}
+                agents={agents}
+                tagOptions={tagOptions}
+              />
+            )}
+          </List>
         </div>
       )}
       {/* Bottom-left settings */}

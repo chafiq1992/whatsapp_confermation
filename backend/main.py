@@ -12,7 +12,9 @@ import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body, Depends
+from starlette.requests import Request as _LimiterRequest
+from starlette.responses import Response as _LimiterResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import redis.asyncio as redis
@@ -22,6 +24,9 @@ import subprocess
 import asyncpg
 import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
+from prometheus_fastapi_instrumentator import Instrumentator
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter
 
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request as StarletteRequest
@@ -59,6 +64,15 @@ class Config:
 config = Config()
 # Verbose logging flag (minimize noisy Cloud Run logs when off)
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
+
+# Backpressure and rate limiting configuration
+WA_MAX_CONCURRENCY = int(os.getenv("WA_MAX_CONCURRENCY", "4"))
+SEND_TEXT_PER_MIN = int(os.getenv("SEND_TEXT_PER_MIN", "30"))
+SEND_MEDIA_PER_MIN = int(os.getenv("SEND_MEDIA_PER_MIN", "15"))
+ENABLE_WS_PUBSUB = os.getenv("ENABLE_WS_PUBSUB", "1") == "1"
+
+# Global semaphore to cap concurrent WhatsApp Graph API calls per instance
+wa_semaphore = asyncio.Semaphore(WA_MAX_CONCURRENCY)
 
 def _vlog(*args, **kwargs):
     if LOG_VERBOSE:
@@ -120,6 +134,8 @@ class ConnectionManager:
         self.active_connections: Dict[str, Set[WebSocket]] = defaultdict(set)
         self.message_queue: Dict[str, List[dict]] = defaultdict(list)
         self.connection_metadata: Dict[WebSocket, dict] = {}
+        # Optional: will be attached after initialization
+        self.redis_manager = None
     
     async def connect(self, websocket: WebSocket, user_id: str, client_info: dict = None):
         """Connect a new WebSocket for a user"""
@@ -154,7 +170,7 @@ class ConnectionManager:
             
             print(f"❌ User {user_id} disconnected")
     
-    async def send_to_user(self, user_id: str, message: dict):
+    async def _send_local(self, user_id: str, message: dict):
         _vlog(f"📤 Attempting to send to user {user_id}")
         _vlog("📤 Message content:", json.dumps(message, indent=2))
         """Send message to all connections of a specific user"""
@@ -173,6 +189,15 @@ class ConnectionManager:
             self.message_queue[user_id].append(message)
             if len(self.message_queue[user_id]) > 100:
                 self.message_queue[user_id] = self.message_queue[user_id][-50:]
+
+    async def send_to_user(self, user_id: str, message: dict):
+        """Send locally and, if enabled, publish to Redis for other instances."""
+        await self._send_local(user_id, message)
+        try:
+            if ENABLE_WS_PUBSUB and getattr(self, "redis_manager", None):
+                await self.redis_manager.publish_ws_event(user_id, message)
+        except Exception as exc:
+            _vlog(f"WS publish error: {exc}")
     
     async def broadcast_to_admins(self, message: dict, exclude_user: str = None):
         """Broadcast message to all admin users"""
@@ -230,6 +255,36 @@ class RedisManager:
         except Exception as e:
             print(f"Redis get error: {e}")
             return []
+
+    async def publish_ws_event(self, user_id: str, message: dict):
+        """Publish a WebSocket event so other instances can deliver it."""
+        if not self.redis_client:
+            return
+        try:
+            payload = json.dumps({"user_id": user_id, "message": message})
+            await self.redis_client.publish("ws_events", payload)
+        except Exception as exc:
+            print(f"Redis publish error: {exc}")
+
+    async def subscribe_ws_events(self, connection_manager: "ConnectionManager"):
+        """Subscribe to WS events and forward them to local connections only."""
+        if not self.redis_client:
+            return
+        try:
+            pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
+            await pubsub.subscribe("ws_events")
+            async for msg in pubsub.listen():
+                try:
+                    if msg and msg.get("type") == "message":
+                        data = json.loads(msg.get("data"))
+                        uid = data.get("user_id")
+                        payload = data.get("message")
+                        if uid and payload:
+                            await connection_manager._send_local(uid, payload)
+                except Exception as inner_exc:
+                    _vlog(f"WS subscribe handler error: {inner_exc}")
+        except Exception as exc:
+            print(f"Redis subscribe error: {exc}")
 
 # WhatsApp API Client
 class WhatsAppMessenger:
@@ -1246,46 +1301,47 @@ class MessageProcessor:
         user_id = message["user_id"]
         
         try:
-            # Send to WhatsApp API
-            if message["type"] == "text":
-                wa_response = await self.whatsapp_messenger.send_text_message(
-                    user_id, message["message"]
-                )
-            elif message["type"] in ("catalog_item", "interactive_product"):
-                # Interactive single product via catalog
-                retailer_id = (
-                    message.get("product_retailer_id")
-                    or message.get("retailer_id")
-                    or message.get("product_id")
-                )
-                caption = message.get("caption") or message.get("message") or ""
-                if not retailer_id:
-                    raise Exception("Missing product_retailer_id for catalog_item")
-                wa_response = await self.whatsapp_messenger.send_single_catalog_item(
-                    user_id, str(retailer_id), caption
-                )
-            elif message["type"] == "order":
-                # For now send order payload as text to ensure delivery speed
-                payload = message.get("message")
-                wa_response = await self.whatsapp_messenger.send_text_message(
-                    user_id, payload if isinstance(payload, str) else json.dumps(payload or {})
-                )
-            else:
-                # For media messages: support either local path upload or direct link
-                media_path = message.get("media_path")
-                media_url = message.get("url")
-                if media_path and Path(media_path).exists():
-                    print(f"📤 Uploading media: {media_path}")
-                    media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
-                    wa_response = await self.whatsapp_messenger.send_media_message(
-                        user_id, message["type"], media_id, message.get("caption", "")
+            # Send to WhatsApp API with concurrency guard
+            async with wa_semaphore:
+                if message["type"] == "text":
+                    wa_response = await self.whatsapp_messenger.send_text_message(
+                        user_id, message["message"]
                     )
-                elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
-                    wa_response = await self.whatsapp_messenger.send_media_message(
-                        user_id, message["type"], media_url, message.get("caption", "")
+                elif message["type"] in ("catalog_item", "interactive_product"):
+                    # Interactive single product via catalog
+                    retailer_id = (
+                        message.get("product_retailer_id")
+                        or message.get("retailer_id")
+                        or message.get("product_id")
+                    )
+                    caption = message.get("caption") or message.get("message") or ""
+                    if not retailer_id:
+                        raise Exception("Missing product_retailer_id for catalog_item")
+                    wa_response = await self.whatsapp_messenger.send_single_catalog_item(
+                        user_id, str(retailer_id), caption
+                    )
+                elif message["type"] == "order":
+                    # For now send order payload as text to ensure delivery speed
+                    payload = message.get("message")
+                    wa_response = await self.whatsapp_messenger.send_text_message(
+                        user_id, payload if isinstance(payload, str) else json.dumps(payload or {})
                     )
                 else:
-                    raise Exception("No media found: require url http(s) or valid media_path")
+                    # For media messages: support either local path upload or direct link
+                    media_path = message.get("media_path")
+                    media_url = message.get("url")
+                    if media_path and Path(media_path).exists():
+                        print(f"📤 Uploading media: {media_path}")
+                        media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
+                        wa_response = await self.whatsapp_messenger.send_media_message(
+                            user_id, message["type"], media_id, message.get("caption", "")
+                        )
+                    elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
+                        wa_response = await self.whatsapp_messenger.send_media_message(
+                            user_id, message["type"], media_url, message.get("caption", "")
+                        )
+                    else:
+                        raise Exception("No media found: require url http(s) or valid media_path")
             
             # Extract WhatsApp message ID
             wa_message_id = None
@@ -1569,6 +1625,9 @@ messenger = message_processor.whatsapp_messenger
 # FastAPI app
 app = FastAPI()
 
+# Expose Prometheus metrics
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
 # Enable Shopify integration only if it can be imported/configured.
 try:
     from .shopify_integration import router as shopify_router  # type: ignore
@@ -1607,7 +1666,17 @@ async def startup():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     await db_manager.init_db()
     await redis_manager.connect()
-
+    # Attach Redis manager to connection manager for WS pub/sub
+    connection_manager.redis_manager = redis_manager
+    if ENABLE_WS_PUBSUB and redis_manager.redis_client:
+        asyncio.create_task(redis_manager.subscribe_ws_events(connection_manager))
+    # Initialize rate limiter
+    if redis_manager.redis_client:
+        try:
+            await FastAPILimiter.init(redis_manager.redis_client)
+        except Exception as exc:
+            print(f"Rate limiter init failed: {exc}")
+    # Attempt to hydrate catalog cache from GCS if missing
     if not os.path.exists(config.CATALOG_CACHE_FILE):
         try:
             loop = asyncio.get_event_loop()
@@ -1619,16 +1688,31 @@ async def startup():
             )
         except Exception:
             pass
+    # Ensure cache exists/refreshed at startup for deterministic behavior
+    try:
+        count = await catalog_manager.refresh_catalog_cache()
+        print(f"Catalog cache created with {count} items")
+    except Exception as exc:
+        print(f"Catalog cache refresh failed: {exc}")
 
-    if not os.path.exists(config.CATALOG_CACHE_FILE):
-        async def _refresh_cache_bg():
-            try:
-                count = await catalog_manager.refresh_catalog_cache()
-                print(f"Catalog cache created with {count} items")
-            except Exception as exc:
-                print(f"Catalog cache refresh failed: {exc}")
+# Optional rate limit dependencies that no-op when limiter is not initialized
+async def _optional_rate_limit_text(request: _LimiterRequest, response: _LimiterResponse):
+    try:
+        if FastAPILimiter.redis:
+            limiter = RateLimiter(times=SEND_TEXT_PER_MIN, seconds=60)
+            return await limiter(request, response)
+    except Exception:
+        return
 
-        asyncio.create_task(_refresh_cache_bg())
+async def _optional_rate_limit_media(request: _LimiterRequest, response: _LimiterResponse):
+    try:
+        if FastAPILimiter.redis:
+            limiter = RateLimiter(times=SEND_MEDIA_PER_MIN, seconds=60)
+            return await limiter(request, response)
+    except Exception:
+        return
+
+    
 
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
@@ -1798,7 +1882,10 @@ async def test_media_upload(file: UploadFile = File(...)):
         return {"error": str(e), "status": "failed"}
 
 @app.post("/send-message")
-async def send_message_endpoint(request: dict):
+async def send_message_endpoint(
+    request: dict,
+    _: None = Depends(_optional_rate_limit_text),
+):
     """Send text message - Frontend uses this endpoint"""
     try:
         # Extract data from request
@@ -2040,6 +2127,7 @@ async def send_media(
     files: List[UploadFile] = File(...),
     caption: str = Form("", description="Optional caption"),
     price: str = Form("", description="Optional price"),
+    _: None = Depends(_optional_rate_limit_media),
 ):
     """Send media message with proper error handling, plus WebM → OGG conversion"""
 
@@ -2127,7 +2215,8 @@ async def send_media(
 @app.post("/send-catalog-set")
 async def send_catalog_set_endpoint(
     user_id: str = Form(...),
-    product_ids: str = Form(...)
+    product_ids: str = Form(...),
+    _: None = Depends(_optional_rate_limit_text),
 ):
     try:
         product_id_list = json.loads(product_ids)
@@ -2142,7 +2231,8 @@ async def send_catalog_set_endpoint(
 async def send_catalog_item_endpoint(
     user_id: str = Form(...),
     product_retailer_id: str = Form(...),
-    caption: str = Form("")
+    caption: str = Form(""),
+    _: None = Depends(_optional_rate_limit_text),
 ):
     customer_phone = await lookup_phone(user_id) or user_id
     response = await messenger.send_single_catalog_item(customer_phone, product_retailer_id, caption)
@@ -2152,7 +2242,8 @@ async def send_catalog_item_endpoint(
 @app.post("/send-catalog-all")
 async def send_catalog_all_endpoint(
     user_id: str = Form(...),
-    caption: str = Form("")
+    caption: str = Form(""),
+    _: None = Depends(_optional_rate_limit_text),
 ):
     customer_phone = await lookup_phone(user_id) or user_id
     results = await messenger.send_full_catalog(customer_phone, caption)
@@ -2164,7 +2255,8 @@ async def send_catalog_set_all_endpoint(
     background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     set_id: str = Form(...),
-    caption: str = Form("")
+    caption: str = Form(""),
+    _: None = Depends(_optional_rate_limit_text),
 ):
     customer_phone = await lookup_phone(user_id) or user_id
     job_id = str(uuid.uuid4())

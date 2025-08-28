@@ -52,3 +52,5 @@ aiosqlite
 aiofiles
 redis
 asyncpg
+prometheus-fastapi-instrumentator
+fastapi-limiter
