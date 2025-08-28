@@ -434,13 +434,13 @@ const ConversationRow = memo(function Row({
             {conv.last_message || "No messages yet"}
           </span>
           <div className="flex gap-2 ml-2 items-center">
-            {conv.assigned_agent && (
-              <span className="px-2 py-0.5 bg-indigo-600 text-white rounded-full text-xs">
-                {agents.find(a => a.username === conv.assigned_agent)?.name || conv.assigned_agent}
+            {selectedAgent && (
+              <span className="px-2.5 py-1 bg-indigo-600 text-white rounded-full text-sm">
+                {agents.find(a => a.username === selectedAgent)?.name || selectedAgent}
               </span>
             )}
             {(tags || []).slice(0,3).map(t => (
-              <span key={t} className="px-2 py-0.5 bg-gray-700 text-white rounded-full text-xs">
+              <span key={t} className="px-2.5 py-1 bg-gray-700 text-white rounded-full text-sm">
                 {(() => {
                   const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
                   return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
@@ -474,21 +474,12 @@ const ConversationRow = memo(function Row({
                   <div className="mb-2">
                     <label className="text-xs text-gray-400">Assign to</label>
                     <div className="flex gap-2 mt-1">
-                      <select className="flex-1 bg-gray-800 text-white p-2 rounded" value={selectedAgent} onChange={(e)=>setSelectedAgent(e.target.value)}>
+                      <select className="flex-1 bg-gray-800 text-white p-2 rounded" value={selectedAgent} onChange={(e)=>{ const v = e.target.value; setSelectedAgent(v); (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/assign`, { agent: v || null }); } catch(e) {} })(); }}>
                         <option value="">Unassigned</option>
                         {agents.map(a => (
                           <option key={a.username} value={a.username}>{a.name || a.username}</option>
                         ))}
                       </select>
-                      <button
-                        className="px-2 bg-indigo-600 rounded"
-                        onClick={async ()=>{
-                          try {
-                            await api.post(`/conversations/${conv.user_id}/assign`, { agent: selectedAgent || null });
-                          } catch (e) {}
-                          setAssignOpen(false);
-                        }}
-                      >Save</button>
                     </div>
                   </div>
                   <div>
@@ -497,7 +488,16 @@ const ConversationRow = memo(function Row({
                       <select
                         className="flex-1 bg-gray-800 text-white p-2 rounded"
                         value={tagsInput}
-                        onChange={(e)=>setTagsInput(e.target.value)}
+                        onChange={(e)=>{
+                          const val = e.target.value;
+                          setTagsInput(val);
+                          if (val && !tags.includes(val)) {
+                            const newTags = [...tags, val];
+                            setTags(newTags);
+                            setTagsInput('');
+                            (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
+                          }
+                        }}
                       >
                         <option value="">Select a tag…</option>
                         {tagOptions.map(opt => (
@@ -506,16 +506,6 @@ const ConversationRow = memo(function Row({
                           </option>
                         ))}
                       </select>
-                      <button
-                        className="px-2 bg-gray-700 rounded"
-                        onClick={() => {
-                          if (tagsInput && !tags.includes(tagsInput)) {
-                            setTags([...tags, tagsInput]);
-                            setTagsInput('');
-                          }
-                        }}
-                      >Add</button>
-                      <button className="px-2 bg-blue-600 rounded" onClick={async ()=>{ try{ await api.post(`/conversations/${conv.user_id}/tags`, { tags }); }catch(e){} setAssignOpen(false); }}>Save</button>
                     </div>
                     <div className="flex gap-1 flex-wrap mt-2">
                       {tags.map(t => (
@@ -524,7 +514,11 @@ const ConversationRow = memo(function Row({
                             const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
                             return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
                           })()}
-                          <button onClick={()=>setTags(tags.filter(x=>x!==t))}>✕</button>
+                          <button onClick={() => {
+                            const newTags = tags.filter(x => x !== t);
+                            setTags(newTags);
+                            (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
+                          }}>✕</button>
                         </span>
                       ))}
                     </div>
