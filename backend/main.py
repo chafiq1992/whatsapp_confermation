@@ -614,11 +614,12 @@ class DatabaseManager:
 
     async def list_agents(self) -> List[dict]:
         async with self._conn() as db:
-            query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
             if self.use_postgres:
+                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY created_at DESC")
                 rows = await db.fetch(query)
                 return [dict(r) for r in rows]
             else:
+                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
                 cur = await db.execute(query)
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]

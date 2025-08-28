@@ -359,17 +359,12 @@ const ConversationRow = memo(function Row({
     >
       {/* Avatar */}
       <div className="relative shrink-0">
-        {conv.avatar ? (
-          <img
-            src={conv.avatar}
-            alt={conv.name || conv.user_id}
-            className="w-10 h-10 rounded-full object-cover"
-          />
-        ) : (
-          <div className="w-10 h-10 rounded-full bg-gray-600 text-white flex items-center justify-center font-bold">
-            {getInitials(conv.name || conv.user_id)}
-          </div>
-        )}
+        <img
+          src={conv.avatar || '/broken-image.png'}
+          alt={conv.name || conv.user_id}
+          className="w-10 h-10 rounded-full object-cover bg-gray-700"
+          onError={(e) => { e.currentTarget.src = '/broken-image.png'; }}
+        />
         {isOnline(conv.user_id) && (
           <span
             className="absolute -right-0.5 -bottom-0.5 w-3 h-3 bg-green-500 border-2 border-gray-900 rounded-full"
