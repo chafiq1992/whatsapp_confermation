@@ -368,7 +368,7 @@ function ChatList({
         </button>
         <button
           className="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
-          onClick={() => { window.location.href = '/#/automation-studio'; }}
+          onClick={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
           title="Open Automation Studio"
         >
           🛠️ Automation

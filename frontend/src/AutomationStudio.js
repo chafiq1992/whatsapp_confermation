@@ -183,6 +183,7 @@ export default function AutomationStudio({ onClose, initialEnv }) {
   );
 
   const dragRef = useRef({ id: null, offsetX: 0, offsetY: 0 });
+  const canvasRef = useRef(null);
 
   const onCanvasDown = (e) => {
     if (e.target.dataset && e.target.dataset.canvas) {
@@ -203,14 +204,16 @@ export default function AutomationStudio({ onClose, initialEnv }) {
   const onMouseMove = (e) => {
     const d = dragRef.current;
     if (!d.id) return;
+    const rect = canvasRef.current ? canvasRef.current.getBoundingClientRect() : null;
+    if (!rect) return;
     setFlow((f) => ({
       ...f,
       nodes: f.nodes.map((n) =>
         n.id === d.id
           ? {
               ...n,
-              x: (e.clientX - d.offsetX - 280) / zoom,
-              y: (e.clientY - d.offsetY - 80) / zoom,
+              x: (e.clientX - rect.left - d.offsetX) / zoom,
+              y: (e.clientY - rect.top - d.offsetY) / zoom,
             }
           : n
       ),
@@ -403,6 +406,7 @@ export default function AutomationStudio({ onClose, initialEnv }) {
             onMouseUp={onMouseUp}
             onMouseDown={onCanvasDown}
             data-canvas
+            ref={canvasRef}
           >
             <GridBackdrop />
             <div className="absolute left-0 top-0 origin-top-left" style={{ transform: `scale(${zoom})`, transformOrigin: "0 0" }}>

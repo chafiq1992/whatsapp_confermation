@@ -263,14 +263,6 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         </button>
         {showInfo && (
           <div className="bg-gray-700 p-4 space-y-2 rounded-b shadow-inner">
-            <div className="flex justify-end">
-              <button
-                className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm"
-                onClick={() => { window.location.href = '/#/automation-studio'; }}
-              >
-                Open Automation Studio (new page)
-              </button>
-            </div>
             {!activeUser?.phone && (
               <p>Select a conversation with a user to fetch Shopify customer info by phone.</p>
             )}
