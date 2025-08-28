@@ -55,9 +55,11 @@ function ChatList({
   const [wsConnected, setWsConnected] = useState(false);
   const [agents, setAgents] = useState([]);
   const [assignedFilter, setAssignedFilter] = useState('all'); // 'all' | 'unassigned' | username
-  const [tagFilterInput, setTagFilterInput] = useState("");
+  const [tagOptions, setTagOptions] = useState([]);
+  const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [tagFilters, setTagFilters] = useState([]);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   useEffect(() => {
@@ -80,6 +82,18 @@ function ChatList({
     })();
   }, []);
 
+  // Load tag options from settings
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get('/admin/tag-options');
+        if (Array.isArray(res.data)) setTagOptions(res.data);
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, []);
+
   // Optionally fetch filtered conversations from backend for scalability
   useEffect(() => {
     const controller = new AbortController();
@@ -88,6 +102,7 @@ function ChatList({
     if (showUnreadOnly) params.set('unread_only', 'true');
     if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
     if (tagFilters.length) params.set('tags', tagFilters.join(','));
+    if (needsReplyOnly) params.set('unresponded_only', 'true');
     (async () => {
       try {
         const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
@@ -97,7 +112,7 @@ function ChatList({
       }
     })();
     return () => controller.abort();
-  }, [search, showUnreadOnly, assignedFilter, tagFilters]);
+  }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
 
   useEffect(() => {
     const ws = new WebSocket(`${WS_BASE}admin`);
@@ -163,9 +178,10 @@ function ChatList({
         (assignedFilter === 'unassigned' && !c.assigned_agent) ||
         c.assigned_agent === assignedFilter;
       const tagsOK = tagFilters.length === 0 || (c.tags || []).some(t => tagFilters.includes(t));
-      return matches && unreadOK && assignedOK && tagsOK;
+      const needsReplyOK = !needsReplyOnly || (c.unresponded_count || 0) > 0;
+      return matches && unreadOK && assignedOK && tagsOK && needsReplyOK;
     });
-  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters]);
+  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
 
   /* ─── Helpers ─── */
   const isOnline = useCallback(
@@ -210,7 +226,8 @@ function ChatList({
   /* ─── Render ─── */
   return (
     <div className="w-full h-full flex flex-col">
-      {/* Top-bar */}
+      {/* Top-bar */
+      }
       <div className="flex flex-col gap-2 p-2">
         <div className="flex gap-2 items-center">
           <input
@@ -230,11 +247,15 @@ function ChatList({
             Unread
           </button>
           <button
-            className="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300"
-            onClick={() => setShowAdmin(true)}
-            title="Admin"
+            className={`px-3 rounded text-sm font-medium ${
+              needsReplyOnly
+                ? "bg-yellow-500 text-black"
+                : "bg-gray-300 text-gray-800"
+            }`}
+            onClick={() => setNeedsReplyOnly((p) => !p)}
+            title="Conversations needing reply"
           >
-            ⚙️
+            Needs reply
           </button>
           <div
             className={`w-3 h-3 rounded-full ${
@@ -256,24 +277,34 @@ function ChatList({
             ))}
           </select>
           <div className="flex items-center gap-2 flex-1">
-            <input
+            <select
               className="flex-1 p-2 bg-gray-100 rounded text-black"
-              placeholder="Add tag filter and press Enter"
-              value={tagFilterInput}
-              onChange={(e) => setTagFilterInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && tagFilterInput.trim()) {
-                  if (!tagFilters.includes(tagFilterInput.trim())) {
-                    setTagFilters([...tagFilters, tagFilterInput.trim()]);
-                  }
-                  setTagFilterInput("");
+              value={selectedTagFilter}
+              onChange={(e) => setSelectedTagFilter(e.target.value)}
+            >
+              <option value="">Select tag to filter…</option>
+              {tagOptions.map(opt => (
+                <option key={opt.label} value={opt.label}>
+                  {`${opt.icon ? opt.icon + ' ' : ''}${opt.label}`}
+                </option>
+              ))}
+            </select>
+            <button
+              className="px-2 py-2 bg-blue-600 text-white rounded"
+              onClick={() => {
+                if (selectedTagFilter && !tagFilters.includes(selectedTagFilter)) {
+                  setTagFilters([...tagFilters, selectedTagFilter]);
+                  setSelectedTagFilter("");
                 }
               }}
-            />
+            >Add</button>
             <div className="flex gap-1 flex-wrap">
               {tagFilters.map(t => (
                 <span key={t} className="px-2 py-1 bg-blue-600 text-white rounded-full text-xs flex items-center gap-1">
-                  {t}
+                  {(() => {
+                    const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                    return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
+                  })()}
                   <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="ml-1">✕</button>
                 </span>
               ))}
@@ -321,10 +352,21 @@ function ChatList({
               active={activeUser?.user_id}
               isOnline={isOnline}
               agents={agents}
+              tagOptions={tagOptions}
             />
           ))}
         </div>
       )}
+      {/* Bottom-left settings */}
+      <div className="p-2 border-t border-gray-800">
+        <button
+          className="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300"
+          onClick={() => setShowAdmin(true)}
+          title="Admin settings"
+        >
+          ⚙️ Settings
+        </button>
+      </div>
       {showAdmin && (
         <AdminDashboard onClose={() => setShowAdmin(false)} />
       )}
@@ -340,6 +382,7 @@ const ConversationRow = memo(function Row({
   isOnline,
   style, // only used by react-window
   agents = [],
+  tagOptions = [],
 }) {
   const selected = active === conv.user_id;
   const [assignOpen, setAssignOpen] = useState(false);
@@ -397,7 +440,12 @@ const ConversationRow = memo(function Row({
               </span>
             )}
             {(tags || []).slice(0,3).map(t => (
-              <span key={t} className="px-2 py-0.5 bg-gray-700 text-white rounded-full text-xs">{t}</span>
+              <span key={t} className="px-2 py-0.5 bg-gray-700 text-white rounded-full text-xs">
+                {(() => {
+                  const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                  return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
+                })()}
+              </span>
             ))}
             {!!conv.unread_count && (
               <span
@@ -445,14 +493,37 @@ const ConversationRow = memo(function Row({
                   </div>
                   <div>
                     <label className="text-xs text-gray-400">Tags</label>
-                    <div className="flex gap-2 mt-1">
-                      <input className="flex-1 bg-gray-800 text-white p-2 rounded" placeholder="add tag and Enter" value={tagsInput} onChange={(e)=>setTagsInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && tagsInput.trim()){ if(!tags.includes(tagsInput.trim())) setTags([...tags, tagsInput.trim()]); setTagsInput(''); } }} />
+                    <div className="flex gap-2 mt-1 items-center">
+                      <select
+                        className="flex-1 bg-gray-800 text-white p-2 rounded"
+                        value={tagsInput}
+                        onChange={(e)=>setTagsInput(e.target.value)}
+                      >
+                        <option value="">Select a tag…</option>
+                        {tagOptions.map(opt => (
+                          <option key={opt.label} value={opt.label}>
+                            {`${opt.icon ? opt.icon + ' ' : ''}${opt.label}`}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="px-2 bg-gray-700 rounded"
+                        onClick={() => {
+                          if (tagsInput && !tags.includes(tagsInput)) {
+                            setTags([...tags, tagsInput]);
+                            setTagsInput('');
+                          }
+                        }}
+                      >Add</button>
                       <button className="px-2 bg-blue-600 rounded" onClick={async ()=>{ try{ await api.post(`/conversations/${conv.user_id}/tags`, { tags }); }catch(e){} setAssignOpen(false); }}>Save</button>
                     </div>
                     <div className="flex gap-1 flex-wrap mt-2">
                       {tags.map(t => (
                         <span key={t} className="px-2 py-0.5 bg-gray-700 rounded-full text-xs flex items-center gap-1">
-                          {t}
+                          {(() => {
+                            const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                            return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
+                          })()}
                           <button onClick={()=>setTags(tags.filter(x=>x!==t))}>✕</button>
                         </span>
                       ))}

@@ -566,6 +566,12 @@ class DatabaseManager:
                     status     TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
+
+                -- Key/value settings store (JSON-encoded values)
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT
+                );
                 """
             if self.use_postgres:
                 script = base_script.replace(
@@ -996,10 +1002,61 @@ class DatabaseManager:
                     conv_tags = set(conv.get("tags") or [])
                     if not set(tags).issubset(conv_tags):
                         continue
+                # filter conversations that need a reply if requested later via route param
                 conversations.append(conv)
 
             conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
             return conversations
+
+    # ── Settings (key/value JSON) ──────────────────────────────────
+    async def get_setting(self, key: str) -> Optional[str]:
+        async with self._conn() as db:
+            query = self._convert("SELECT value FROM settings WHERE key = ?")
+            params = (key,)
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+                return row[0] if row else None
+            else:
+                cur = await db.execute(query, params)
+                row = await cur.fetchone()
+                return row[0] if row else None
+
+    async def set_setting(self, key: str, value: Any):
+        # value is JSON-serializable
+        data = json.dumps(value)
+        async with self._conn() as db:
+            query = self._convert(
+                """
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
+                """
+            )
+            params = (key, data)
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, params)
+                await db.commit()
+
+    async def get_tag_options(self) -> List[dict]:
+        raw = await self.get_setting("tag_options")
+        try:
+            options = json.loads(raw) if raw else []
+            # ensure list of dicts with label and icon
+            cleaned = []
+            for opt in options or []:
+                if isinstance(opt, dict) and opt.get("label"):
+                    cleaned.append({"label": opt["label"], "icon": opt.get("icon", "")})
+                elif isinstance(opt, str):
+                    cleaned.append({"label": opt, "icon": ""})
+            return cleaned
+        except Exception:
+            return []
+
+    async def set_tag_options(self, options: List[dict]):
+        # Persist as provided
+        await self.set_setting("tag_options", options)
 
     # ----- Order payout helpers -----
     async def add_delivered_order(self, order_id: str):
@@ -1754,11 +1811,13 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None):
-    """Get conversations with optional filters: q, unread_only, assigned, tags (csv)."""
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False):
+    """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
         conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list)
+        if unresponded_only:
+            conversations = [c for c in conversations if (c.get("unresponded_count") or 0) > 0]
         return conversations
     except Exception as e:
         print(f"Error fetching conversations: {e}")
@@ -1769,6 +1828,26 @@ async def get_conversations(q: Optional[str] = None, unread_only: bool = False, 
 @app.get("/admin/agents")
 async def list_agents_endpoint():
     return await db_manager.list_agents()
+
+# ---- Tags options management ----
+@app.get("/admin/tag-options")
+async def get_tag_options_endpoint():
+    return await db_manager.get_tag_options()
+
+@app.post("/admin/tag-options")
+async def set_tag_options_endpoint(payload: dict = Body(...)):
+    options = payload.get("options") or []
+    if not isinstance(options, list):
+        raise HTTPException(status_code=400, detail="options must be a list")
+    # normalize items: require label, optional icon
+    norm = []
+    for item in options:
+        if isinstance(item, dict) and item.get("label"):
+            norm.append({"label": str(item["label"]), "icon": str(item.get("icon", ""))})
+        elif isinstance(item, str):
+            norm.append({"label": item, "icon": ""})
+    await db_manager.set_tag_options(norm)
+    return {"ok": True, "count": len(norm)}
 
 @app.post("/admin/agents")
 async def create_agent_endpoint(payload: dict = Body(...)):

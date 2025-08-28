@@ -5,6 +5,8 @@ export default function AdminDashboard({ onClose }) {
   const [agents, setAgents] = useState([]);
   const [form, setForm] = useState({ username: '', name: '', password: '', is_admin: false });
   const [loading, setLoading] = useState(false);
+  const [tagOptions, setTagOptions] = useState([]);
+  const [savingTags, setSavingTags] = useState(false);
 
   const loadAgents = async () => {
     try {
@@ -14,6 +16,15 @@ export default function AdminDashboard({ onClose }) {
   };
 
   useEffect(() => { loadAgents(); }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get('/admin/tag-options');
+        setTagOptions(Array.isArray(res.data) ? res.data : []);
+      } catch (e) {}
+    })();
+  }, []);
 
   const createAgent = async (e) => {
     e.preventDefault();
@@ -35,6 +46,22 @@ export default function AdminDashboard({ onClose }) {
   };
 
   const inboxLink = `${window.location.origin}/?inbox=shared`;
+
+  const updateTagOption = (idx, field, value) => {
+    setTagOptions(prev => prev.map((opt, i) => i === idx ? { ...opt, [field]: value } : opt));
+  };
+
+  const addTagOption = () => setTagOptions(prev => [...prev, { label: '', icon: '' }]);
+  const removeTagOption = (idx) => setTagOptions(prev => prev.filter((_, i) => i !== idx));
+  const saveTagOptions = async () => {
+    setSavingTags(true);
+    try {
+      const cleaned = tagOptions.filter(o => (o.label || '').trim()).map(o => ({ label: o.label.trim(), icon: (o.icon || '').trim() }));
+      await api.post('/admin/tag-options', { options: cleaned });
+    } finally {
+      setSavingTags(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
@@ -85,6 +112,37 @@ export default function AdminDashboard({ onClose }) {
             <button className="px-3 py-2 bg-gray-700 rounded" onClick={() => navigator.clipboard.writeText(inboxLink)}>Copy</button>
           </div>
           <p className="text-xs text-gray-400 mt-1">Share this link with your agents to access the inbox. Use the filters to view per-agent tabs.</p>
+        </div>
+
+        <div className="mt-4 border-t border-gray-800 pt-3">
+          <h3 className="font-medium mb-2">Tag Options (icon + label)</h3>
+          <div className="space-y-2">
+            {tagOptions.map((opt, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <input
+                  className="w-24 p-2 bg-gray-800 rounded"
+                  placeholder="icon (emoji)"
+                  value={opt.icon || ''}
+                  onChange={(e) => updateTagOption(idx, 'icon', e.target.value)}
+                />
+                <input
+                  className="flex-1 p-2 bg-gray-800 rounded"
+                  placeholder="label (e.g. Urgent)"
+                  value={opt.label || ''}
+                  onChange={(e) => updateTagOption(idx, 'label', e.target.value)}
+                />
+                <button className="px-2 py-2 bg-red-600 rounded" onClick={() => removeTagOption(idx)}>Delete</button>
+              </div>
+            ))}
+            {tagOptions.length === 0 && (
+              <div className="text-sm text-gray-400">No tag options yet. Add some below.</div>
+            )}
+            <div className="flex items-center gap-2">
+              <button className="px-3 py-2 bg-gray-700 rounded" onClick={addTagOption}>+ Add tag</button>
+              <button disabled={savingTags} className="px-3 py-2 bg-blue-600 rounded disabled:opacity-50" onClick={saveTagOptions}>{savingTags ? 'Saving…' : 'Save tags'}</button>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">These options appear in the chat list filters and when editing conversation tags.</p>
         </div>
       </div>
     </div>
