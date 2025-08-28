@@ -205,6 +205,115 @@ async def search_customer(phone_number: str):
         raise HTTPException(status_code=int(data.get("status", 500)), detail=data.get("detail") or data.get("error"))
     return data
 
+
+# =========== FASTAPI ENDPOINT: SEARCH MULTIPLE CUSTOMERS ============
+def _candidate_phones(raw: str) -> list[str]:
+    """Generate possible normalized phone variants for broader matching."""
+    if not raw:
+        return []
+    raw = str(raw).strip().replace(" ", "").replace("-", "")
+    candidates: set[str] = set()
+    # Base normalized
+    base = normalize_phone(raw)
+    if base:
+        candidates.add(base)
+    # Try stripping plus
+    if base.startswith("+"):
+        candidates.add(base[1:])
+    # Morocco specific: +212XXXXXXXXX -> 0XXXXXXXXX
+    if base.startswith("+212") and len(base) >= 5:
+        candidates.add("0" + base[4:])
+        candidates.add(base[4:])  # 212XXXXXXXXX
+    # If raw starts with 06/07 etc, make +212 variant
+    if len(raw) == 10 and raw.startswith("0"):
+        candidates.add("+212" + raw[1:])
+        candidates.add("212" + raw[1:])
+    # If provided already w/o plus but 212 prefix
+    if raw.startswith("212"):
+        candidates.add("+" + raw)
+        candidates.add("0" + raw[3:])
+    # Deduplicate
+    return [c for c in candidates if c]
+
+
+@router.get("/search-customers-all")
+async def search_customers_all(phone_number: str):
+    """
+    Return all Shopify customers matching multiple phone normalizations.
+    Each customer includes minimal profile and primary address if available.
+    """
+    cand = _candidate_phones(phone_number)
+    if not cand:
+        return []
+    results_by_id: dict[str, dict] = {}
+    async with httpx.AsyncClient() as client:
+        for pn in cand:
+            params = {'query': f'phone:{pn}'}
+            resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+            if resp.status_code == 403:
+                raise HTTPException(status_code=403, detail="Shopify token lacks read_customers scope or app not installed.")
+            customers = resp.json().get('customers', [])
+            for c in customers:
+                cid = str(c.get("id"))
+                if cid in results_by_id:
+                    continue
+                # Build compact customer payload
+                primary_addr = (c.get("addresses") or [{}])[0] or {}
+                results_by_id[cid] = {
+                    "customer_id": c.get("id"),
+                    "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
+                    "email": c.get("email") or "",
+                    "phone": c.get("phone") or "",
+                    "addresses": [
+                        {
+                            "address1": a.get("address1", ""),
+                            "city": a.get("city", ""),
+                            "province": a.get("province", ""),
+                            "zip": a.get("zip", ""),
+                            "phone": a.get("phone", ""),
+                            "name": (a.get("name") or f"{c.get('first_name','')} {c.get('last_name','')}").strip(),
+                        }
+                        for a in (c.get("addresses") or [])
+                    ],
+                    "primary_address": {
+                        "address1": primary_addr.get("address1", ""),
+                        "city": primary_addr.get("city", ""),
+                        "province": primary_addr.get("province", ""),
+                        "zip": primary_addr.get("zip", ""),
+                        "phone": primary_addr.get("phone", ""),
+                    },
+                    "total_orders": c.get("orders_count", 0),
+                }
+        # Optionally fetch last order for each (best-effort)
+        for cid, entry in results_by_id.items():
+            order_params = {
+                "customer_id": entry["customer_id"],
+                "status": "any",
+                "limit": 1,
+                "order": "created_at desc",
+            }
+            try:
+                orders_resp = await client.get(ORDERS_ENDPOINT, params=order_params, timeout=10, **_client_args())
+                orders_list = orders_resp.json().get('orders', [])
+                if orders_list:
+                    o = orders_list[0]
+                    entry["last_order"] = {
+                        "order_number": o.get("name"),
+                        "total_price": o.get("total_price"),
+                        "line_items": [
+                            {
+                                "title": li.get("title"),
+                                "variant_title": li.get("variant_title"),
+                                "quantity": li.get("quantity"),
+                            }
+                            for li in o.get("line_items", [])
+                        ],
+                    }
+            except Exception:
+                continue
+
+    return list(results_by_id.values())
+
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/shipping_zones.json"

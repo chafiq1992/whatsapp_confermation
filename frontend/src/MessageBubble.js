@@ -378,6 +378,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                 const hasProductInfo = product.name || product.image;
                 // Try to infer size/color from common WhatsApp payload shapes
                 const customizations = item.customizations || item.variations || item.attributes || [];
+                // Broad scan for size/color on the item object as well
+                const lowerKeys = Object.entries(item || {}).reduce((acc, [k, v]) => {
+                  acc[k.toLowerCase()] = v;
+                  return acc;
+                }, {});
                 const getFromArray = (arr, key) => {
                   try {
                     const found = (arr || []).find(
@@ -390,8 +395,25 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                     return "";
                   }
                 };
-                const sizeVal = item.size || item.variant_size || getFromArray(customizations, "size");
-                const colorVal = item.color || item.variant_color || getFromArray(customizations, "color");
+                const sizeVal = lowerKeys.size || lowerKeys.variant_size || getFromArray(customizations, "size");
+                const colorVal = lowerKeys.color || lowerKeys.variant_color || getFromArray(customizations, "color");
+                // Extra: parse '(Size: X, Color: Y)' from a name/description if present
+                const tryParseFromText = (txt) => {
+                  if (!txt || typeof txt !== 'string') return {};
+                  const mSize = txt.match(/size\s*[:\-]\s*([A-Za-z0-9]+)/i);
+                  const mColor = txt.match(/color|couleur\s*[:\-]\s*([\w\s]+)/i);
+                  return {
+                    size: mSize?.[1] || "",
+                    color: mColor?.[1] || "",
+                  };
+                };
+                const parsedFromText = tryParseFromText(product.name || item.name || "");
+                const finalSize = sizeVal || parsedFromText.size;
+                const finalColor = colorVal || parsedFromText.color;
+
+                // Image fallbacks from order payload
+                const orderImage = item.product_image_url || item.image_url || item.image?.url || item.product?.image?.url;
+                const effectiveImage = product.image || orderImage || "";
                 
                 return (
                   <li
@@ -399,9 +421,9 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                     className="flex items-center rounded-xl bg-white/95 border border-blue-200 shadow-sm p-3 gap-3 transition-all hover:shadow-md hover:bg-blue-50/50"
                   >
                     <div className="flex-shrink-0">
-                      {product.image ? (
+                      {effectiveImage ? (
                         <img
-                          src={product.image}
+                          src={effectiveImage}
                           alt={product.name || `Product ${item.product_retailer_id}`}
                           className="w-14 h-14 object-cover rounded-lg border border-blue-200 shadow-sm bg-gray-50"
                           onError={(e) => handleImageError(e, '/placeholder-product.png')}
@@ -436,21 +458,21 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                             {item.item_price} {item.currency || "MAD"}
                           </span>
                         </span>
-                        {sizeVal && (
+                        {finalSize && (
                           <>
                             <span className="text-gray-400">|</span>
                             <span className="flex items-center">
                               <span className="font-medium text-blue-700">Size:</span>
-                              <span className="ml-1 font-semibold">{sizeVal}</span>
+                              <span className="ml-1 font-semibold">{finalSize}</span>
                             </span>
                           </>
                         )}
-                        {colorVal && (
+                        {finalColor && (
                           <>
                             <span className="text-gray-400">|</span>
                             <span className="flex items-center">
                               <span className="font-medium text-blue-700">Color:</span>
-                              <span className="ml-1 font-semibold">{colorVal}</span>
+                              <span className="ml-1 font-semibold">{finalColor}</span>
                             </span>
                           </>
                         )}

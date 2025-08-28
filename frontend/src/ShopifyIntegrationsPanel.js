@@ -6,6 +6,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   const [customer, setCustomer] = useState(null);
+  const [customersList, setCustomersList] = useState([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState(null);
+  const [selectedAddressIdx, setSelectedAddressIdx] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const normalizePhone = (phone) => {
@@ -62,6 +65,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   useEffect(() => {
     if (!activeUser?.phone) {
       setCustomer(null);
+      setCustomersList([]);
+      setSelectedCustomerId(null);
+      setSelectedAddressIdx(0);
       setOrderData({
         name: "",
         email: "",
@@ -75,41 +81,53 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
     setLoading(true);
     setErrorMsg("");
-    api
-      .get(`${API_BASE}/search-customer?phone_number=${encodeURIComponent(activeUser.phone)}`)
-      .then((res) => {
-        setCustomer(res.data);
+    Promise.all([
+      api.get(`${API_BASE}/search-customer?phone_number=${encodeURIComponent(activeUser.phone)}`)
+        .catch(() => null),
+      api.get(`${API_BASE}/search-customers-all?phone_number=${encodeURIComponent(activeUser.phone)}`)
+        .catch(() => ({ data: [] })),
+    ]).then(([single, multi]) => {
+      const list = Array.isArray(multi?.data) ? multi.data : [];
+      setCustomersList(list);
+      if (list.length > 0) {
+        const first = list[0];
+        setSelectedCustomerId(first.customer_id);
+        setSelectedAddressIdx(0);
+        setCustomer(first);
+        const addr = (first.primary_address || first.addresses?.[0] || {});
         setOrderData({
-          name: res.data.name || "",
-          email: res.data.email || "",
-          phone: res.data.phone || activeUser.phone,
-          address: res.data.address || "",
-          city: res.data.city || "",
-          province: res.data.province || "", 
-          zip: res.data.zip || "",
+          name: first.name || "",
+          email: first.email || "",
+          phone: first.phone || activeUser.phone,
+          address: addr.address1 || "",
+          city: addr.city || "",
+          province: addr.province || "",
+          zip: addr.zip || "",
         });
-      })
-      .catch((err) => {
+      } else if (single?.data) {
+        const c = single.data;
+        setCustomer(c);
+        setOrderData({
+          name: c.name || "",
+          email: c.email || "",
+          phone: c.phone || activeUser.phone,
+          address: c.address || "",
+          city: c.city || "",
+          province: c.province || "",
+          zip: c.zip || "",
+        });
+      } else {
         setCustomer(null);
-        const detail = err?.response?.data?.detail || err?.message || "";
-        if (err?.response?.status === 403) {
-          setErrorMsg("Shopify permissions error: token lacks read_customers scope or app not installed.");
-        } else if (err?.response?.status === 404) {
-          setErrorMsg(""); // normal: no customer found
-        } else if (detail) {
-          setErrorMsg(String(detail));
-        }
-        setOrderData({
-          name: "",
-          email: "",
-          phone: activeUser.phone || "",
-          address: "",
-          city: "",
-          province: "",
-          zip: "",
-        });
-      })
-      .finally(() => setLoading(false));
+        setOrderData(prev => ({ ...prev, phone: activeUser.phone || "" }));
+      }
+    }).catch((err) => {
+      const detail = err?.response?.data?.detail || err?.message || "";
+      if (err?.response?.status === 403) {
+        setErrorMsg("Shopify permissions error: token lacks read_customers scope or app not installed.");
+      } else if (detail) {
+        setErrorMsg(String(detail));
+      }
+    }).finally(() => setLoading(false));
   }, [activeUser, API_BASE]);
 
   // Product search with debounce
@@ -247,20 +265,85 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               <p>Select a conversation with a user to fetch Shopify customer info by phone.</p>
             )}
             {activeUser?.phone && loading && <p>Loading customer info...</p>}
-            {activeUser?.phone && !loading && customer && (
+            {activeUser?.phone && !loading && (customer || customersList.length > 0) && (
               <>
-                <p><strong>Name:</strong> {customer.name}</p>
-                <p><strong>Email:</strong> {customer.email}</p>
-                <p><strong>Phone:</strong> {customer.phone}</p>
-                <p><strong>Address:</strong> {customer.address}</p>
+                {customersList.length > 0 ? (
+                  <div className="space-y-2">
+                    <div className="text-sm text-gray-300">Multiple customers found for this phone:</div>
+                    {customersList.map((c) => (
+                      <div key={c.customer_id} className={`p-2 rounded border ${selectedCustomerId===c.customer_id? 'border-green-500':'border-gray-600'}`}>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="customerChoice"
+                            checked={selectedCustomerId === c.customer_id}
+                            onChange={() => {
+                              setSelectedCustomerId(c.customer_id);
+                              setSelectedAddressIdx(0);
+                              setCustomer(c);
+                              const addr = (c.primary_address || c.addresses?.[0] || {});
+                              setOrderData(d => ({
+                                ...d,
+                                name: c.name || "",
+                                email: c.email || "",
+                                phone: c.phone || activeUser.phone,
+                                address: addr.address1 || "",
+                                city: addr.city || "",
+                                province: addr.province || "",
+                                zip: addr.zip || "",
+                              }));
+                            }}
+                          />
+                          <span className="font-semibold">{c.name || '(no name)'} • {c.phone || ''}</span>
+                        </label>
+                        {Array.isArray(c.addresses) && c.addresses.length > 0 && (
+                          <div className="ml-6 mt-1">
+                            <div className="text-xs mb-1">Address:</div>
+                            <select
+                              className="bg-gray-800 text-white p-1 rounded"
+                              value={selectedCustomerId===c.customer_id ? selectedAddressIdx : 0}
+                              onChange={(e) => {
+                                const idx = Number(e.target.value) || 0;
+                                setSelectedCustomerId(c.customer_id);
+                                setSelectedAddressIdx(idx);
+                                const addr = c.addresses[idx] || {};
+                                setOrderData(d => ({
+                                  ...d,
+                                  address: addr.address1 || "",
+                                  city: addr.city || "",
+                                  province: addr.province || "",
+                                  zip: addr.zip || "",
+                                  phone: c.phone || activeUser.phone,
+                                  name: c.name || d.name,
+                                  email: c.email || d.email,
+                                }));
+                              }}
+                            >
+                              {c.addresses.map((a, idx) => (
+                                <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    <p><strong>Name:</strong> {customer.name}</p>
+                    <p><strong>Email:</strong> {customer.email}</p>
+                    <p><strong>Phone:</strong> {customer.phone}</p>
+                    <p><strong>Address:</strong> {customer.address}</p>
+                  </>
+                )}
                 <hr className="my-2" />
-                <p><strong>Total Orders:</strong> {customer.total_orders}</p>
-                {customer.last_order && (
+                <p><strong>Total Orders:</strong> {(customer || customersList[0])?.total_orders}</p>
+                {(customer || customersList[0])?.last_order && (
                   <div>
-                    <p><strong>Last Order Number:</strong> {customer.last_order.order_number}</p>
-                    <p><strong>Order Total:</strong> {customer.last_order.total_price}</p>
+                    <p><strong>Last Order Number:</strong> {(customer || customersList[0])?.last_order.order_number}</p>
+                    <p><strong>Order Total:</strong> {(customer || customersList[0])?.last_order.total_price}</p>
                     <ul className="ml-4 list-disc">
-                      {customer.last_order.line_items.map((li, idx) => (
+                      {(customer || customersList[0])?.last_order.line_items.map((li, idx) => (
                         <li key={idx}>
                           {li.quantity} x {li.title} {li.variant_title ? `(${li.variant_title})` : ""}
                         </li>
