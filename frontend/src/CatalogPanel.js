@@ -32,6 +32,9 @@ export default function CatalogPanel({
   // Modal state (grid popup)
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTitle, setModalTitle] = useState("");
+  const [modalMode, setModalMode] = useState('products'); // 'folders' | 'products'
+  const [folderSets, setFolderSets] = useState([]); // sets shown as folders in folder view
+  const [activeFilter, setActiveFilter] = useState(null); // 'girls' | 'boys' | 'all'
 
   // Send mode: 'product' (interactive) or 'image'
   const [sendMode, setSendMode] = useState('product');
@@ -114,7 +117,7 @@ export default function CatalogPanel({
 
   // Infinite scroll handler
   useEffect(() => {
-    if (!modalOpen) return;
+    if (!modalOpen || modalMode !== 'products') return;
     const el = gridRef.current;
     if (!el) return;
     const onScroll = () => {
@@ -126,7 +129,13 @@ export default function CatalogPanel({
     };
     el.addEventListener('scroll', onScroll);
     return () => el.removeEventListener('scroll', onScroll);
-  }, [modalOpen, loadingProducts, hasMore]);
+  }, [modalOpen, modalMode, loadingProducts, hasMore]);
+
+  // Re-fetch more products when fetchLimit increases
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'products' || !selectedSet) return;
+    fetchProducts(selectedSet, fetchLimit);
+  }, [fetchLimit]);
 
   const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -359,6 +368,7 @@ export default function CatalogPanel({
   const openSetModal = async (setObj) => {
     setSelectedSet(setObj.id);
     setModalTitle(setObj.name || setObj.id);
+    setModalMode('products');
     setFetchLimit(PAGE_SIZE);
     setSelectedImages([]);
     setLoadingProducts(true);
@@ -369,6 +379,52 @@ export default function CatalogPanel({
       if (Array.isArray(cached) && cached.length) setProducts(cached);
     } catch {}
     await fetchProducts(setObj.id, PAGE_SIZE);
+  };
+
+  // Helpers: filter sets by prefix (case-insensitive)
+  const filterSetsByPrefix = (prefix) => {
+    const p = String(prefix || '').trim().toLowerCase();
+    return sets.filter(s => (s?.name || s?.id || '').toString().toLowerCase().startsWith(p));
+  };
+
+  // Open folder view modal for a filter (girls/boys/all)
+  const openFolderModal = async (filter) => {
+    setActiveFilter(filter);
+    const title = filter === 'girls' ? 'Girls' : filter === 'boys' ? 'Boys' : 'All Sets';
+    setModalTitle(title);
+    setModalMode('folders');
+    setSelectedImages([]);
+    setProducts([]);
+    setModalOpen(true);
+
+    const fsets = filter === 'all' ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
+    setFolderSets(fsets);
+
+    // Prefetch first few sets in the background for instant entry
+    try {
+      const top = fsets.slice(0, 4);
+      const concurrency = 2;
+      let i = 0;
+      const runNext = async () => {
+        if (i >= top.length) return;
+        const s = top[i++];
+        if (!s?.id) return runNext();
+        const cachedSet = await loadCatalogSetProducts(s.id);
+        if (!cachedSet || cachedSet.length === 0) {
+          try {
+            const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PAGE_SIZE } });
+            const arr = Array.isArray(resp.data) ? resp.data : [];
+            if (arr.length) await saveCatalogSetProducts(s.id, arr);
+          } catch {}
+        }
+        return runNext();
+      };
+      await Promise.all(Array.from({ length: concurrency }, () => runNext()));
+    } catch {}
+  };
+
+  const enterFolder = async (setObj) => {
+    await openSetModal(setObj);
   };
 
   return (
@@ -397,22 +453,34 @@ export default function CatalogPanel({
         </div>
       )}
 
-      {/* Sets grid (2-3 rows, wraps within panel) */}
-      <div className="catalog-sets grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-[84px] overflow-auto">
+      {/* Filter buttons: Girls / Boys / All */}
+      <div className="catalog-sets grid grid-cols-3 gap-2 max-h-[84px]">
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
         ) : (
-          sets.map(s => (
+          <>
             <button
-              key={s.id}
-              className="px-2.5 py-1 text-[12px] font-medium rounded border border-gray-300 bg-gray-100 hover:bg-gray-200 text-black truncate shadow-sm"
-              title={s.name || s.id}
-              onClick={() => openSetModal(s)}
+              className="px-3 py-2 text-sm font-semibold rounded bg-pink-600 text-white hover:bg-pink-700 shadow-sm"
               type="button"
+              onClick={() => openFolderModal('girls')}
             >
-              <span className="truncate inline-block max-w-full text-black">{s.name || s.id}</span>
+              Girls
             </button>
-          ))
+            <button
+              className="px-3 py-2 text-sm font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
+              type="button"
+              onClick={() => openFolderModal('boys')}
+            >
+              Boys
+            </button>
+            <button
+              className="px-3 py-2 text-sm font-semibold rounded bg-gray-800 text-white hover:bg-black shadow-sm"
+              type="button"
+              onClick={() => openFolderModal('all')}
+            >
+              All
+            </button>
+          </>
         )}
       </div>
 
@@ -422,58 +490,91 @@ export default function CatalogPanel({
           <div className="relative bg-white rounded-xl p-3 w-[92vw] max-w-5xl max-h-[88vh] flex flex-col">
             {/* Modal header */}
             <div className="flex items-center gap-2 mb-2">
+              {modalMode === 'products' && (
+                <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={() => { setModalMode('folders'); setProducts([]); setSelectedImages([]); }}>
+                  ← Back
+                </button>
+              )}
               <div className="font-semibold text-gray-800 text-sm flex-1 truncate">{modalTitle}</div>
-              <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
-              <div className="flex items-center gap-1 mr-2">
-                <span className="text-[11px] text-gray-600">Send as:</span>
-                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
-                <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
-              </div>
-              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
-              <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
-              <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
-              <button className="px-2 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+              {modalMode === 'products' ? (
+                <>
+                  <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
+                  <div className="flex items-center gap-1 mr-2">
+                    <span className="text-[11px] text-gray-600">Send as:</span>
+                    <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
+                    <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
+                  </div>
+                  <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
+                  <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
+                  <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
+                  <button className="px-2 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+                </>
+              ) : (
+                <span className="text-xs text-gray-500">Select a set</span>
+              )}
               <button className="ml-2 px-2 py-1 text-xs rounded bg-red-600 text-white" onClick={() => setModalOpen(false)}>Close</button>
             </div>
 
             {/* Grid */}
             <div ref={gridRef} className="flex-1 overflow-y-auto">
-              {loadingProducts && products.length === 0 ? (
-                <div className="grid grid-cols-4 gap-2">
-                  {Array.from({ length: 12 }).map((_, i) => (
-                    <div key={i} className="h-24 bg-gray-100 animate-pulse rounded" />
-                  ))}
+              {modalMode === 'folders' ? (
+                <div className="grid grid-cols-4 gap-3">
+                  {folderSets.length === 0 ? (
+                    <div className="text-center text-gray-500 text-sm py-6 col-span-4">No sets found.</div>
+                  ) : (
+                    folderSets.map((s) => (
+                      <button
+                        key={s.id}
+                        className="relative border rounded p-3 bg-gray-50 hover:bg-gray-100 text-left"
+                        title={s.name || s.id}
+                        onClick={() => enterFolder(s)}
+                        type="button"
+                      >
+                        <div className="w-10 h-7 mb-2 bg-yellow-300 rounded-sm" />
+                        <div className="text-xs font-medium text-gray-800 truncate">{s.name || s.id}</div>
+                      </button>
+                    ))
+                  )}
                 </div>
-              ) : products.length === 0 ? (
-                <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
               ) : (
-                <div className="grid grid-cols-4 gap-2">
-                  {products.map((p, idx) => {
-                    const url = p.images?.[0]?.url;
-                    const checked = url && selectedImages.includes(url);
-                    return (
-                      <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
-                        {url && (
-                          <input type="checkbox" className="absolute top-1 right-1 z-10 scale-110" checked={checked} onChange={() => toggleSelect(url)} />
-                        )}
-                        <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
-                          {url ? (
-                            <img src={url} alt={p.name} className="w-full h-24 object-cover" loading="lazy" />
-                          ) : (
-                            <span className="text-xs text-gray-400">No Image</span>
-                          )}
-                        </div>
-                        {/* Inline send product button */}
-                        <div className="absolute left-1 bottom-1 flex gap-1">
-                          <button className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {loadingProducts && products.length > 0 && (
-                <div className="text-center text-gray-500 text-xs py-2">Loading…</div>
+                <>
+                  {loadingProducts && products.length === 0 ? (
+                    <div className="grid grid-cols-4 gap-2">
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <div key={i} className="h-24 bg-gray-100 animate-pulse rounded" />
+                      ))}
+                    </div>
+                  ) : products.length === 0 ? (
+                    <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
+                  ) : (
+                    <div className="grid grid-cols-4 gap-2">
+                      {products.map((p, idx) => {
+                        const url = p.images?.[0]?.url;
+                        const checked = url && selectedImages.includes(url);
+                        return (
+                          <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
+                            {url && (
+                              <input type="checkbox" className="absolute top-1 right-1 z-10 scale-110" checked={checked} onChange={() => toggleSelect(url)} />
+                            )}
+                            <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+                              {url ? (
+                                <img src={url} alt={p.name} className="w-full h-24 object-cover" loading="lazy" />
+                              ) : (
+                                <span className="text-xs text-gray-400">No Image</span>
+                              )}
+                            </div>
+                            <div className="absolute left-1 bottom-1 flex gap-1">
+                              <button className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {loadingProducts && products.length > 0 && (
+                    <div className="text-center text-gray-500 text-xs py-2">Loading…</div>
+                  )}
+                </>
               )}
             </div>
           </div>
