@@ -6,6 +6,8 @@ import React, {
   useRef,
   memo,
 } from "react";
+import api from './api';
+import AdminDashboard from './AdminDashboard';
 // ⬇︎ uncomment if you want huge-list virtualization
 // import { FixedSizeList as List } from "react-window";
 //  npm i react-window  ← install once
@@ -51,6 +53,11 @@ function ChatList({
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [conversations, setConversations] = useState(initialConversations);
   const [wsConnected, setWsConnected] = useState(false);
+  const [agents, setAgents] = useState([]);
+  const [assignedFilter, setAssignedFilter] = useState('all'); // 'all' | 'unassigned' | username
+  const [tagFilterInput, setTagFilterInput] = useState("");
+  const [tagFilters, setTagFilters] = useState([]);
+  const [showAdmin, setShowAdmin] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   useEffect(() => {
@@ -60,6 +67,37 @@ function ChatList({
   useEffect(() => {
     activeUserRef.current = activeUser;
   }, [activeUser]);
+
+  // Load agents for filters and assignment tabs
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get('/admin/agents');
+        setAgents(res.data || []);
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, []);
+
+  // Optionally fetch filtered conversations from backend for scalability
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    if (search) params.set('q', search);
+    if (showUnreadOnly) params.set('unread_only', 'true');
+    if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
+    if (tagFilters.length) params.set('tags', tagFilters.join(','));
+    (async () => {
+      try {
+        const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
+        if (Array.isArray(res.data)) setConversations(res.data);
+      } catch (e) {
+        // network errors fall back to client filtering of existing list
+      }
+    })();
+    return () => controller.abort();
+  }, [search, showUnreadOnly, assignedFilter, tagFilters]);
 
   useEffect(() => {
     const ws = new WebSocket(`${WS_BASE}admin`);
@@ -120,9 +158,14 @@ function ChatList({
       const txt = (c.name || c.user_id || "").toLowerCase();
       const matches = txt.includes(search.toLowerCase());
       const unreadOK = !showUnreadOnly || c.unread_count > 0;
-      return matches && unreadOK;
+      const assignedOK =
+        assignedFilter === 'all' ||
+        (assignedFilter === 'unassigned' && !c.assigned_agent) ||
+        c.assigned_agent === assignedFilter;
+      const tagsOK = tagFilters.length === 0 || (c.tags || []).some(t => tagFilters.includes(t));
+      return matches && unreadOK && assignedOK && tagsOK;
     });
-  }, [conversations, search, showUnreadOnly]);
+  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters]);
 
   /* ─── Helpers ─── */
   const isOnline = useCallback(
@@ -168,29 +211,75 @@ function ChatList({
   return (
     <div className="w-full h-full flex flex-col">
       {/* Top-bar */}
-      <div className="flex gap-2 p-2 items-center">
-        <input
-          className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"
-          placeholder="Search or start new chat"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <button
-          className={`px-3 rounded text-sm font-medium ${
-            showUnreadOnly
-              ? "bg-[#004AAD] text-white"
-              : "bg-gray-300 text-gray-800"
-          }`}
-          onClick={() => setShowUnreadOnly((p) => !p)}
-        >
-          Unread
-        </button>
-        <div
-          className={`w-3 h-3 rounded-full ${
-            wsConnected ? 'bg-green-500' : 'bg-red-500'
-          }`}
-          title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
-        ></div>
+      <div className="flex flex-col gap-2 p-2">
+        <div className="flex gap-2 items-center">
+          <input
+            className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"
+            placeholder="Search or start new chat"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button
+            className={`px-3 rounded text-sm font-medium ${
+              showUnreadOnly
+                ? "bg-[#004AAD] text-white"
+                : "bg-gray-300 text-gray-800"
+            }`}
+            onClick={() => setShowUnreadOnly((p) => !p)}
+          >
+            Unread
+          </button>
+          <button
+            className="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300"
+            onClick={() => setShowAdmin(true)}
+            title="Admin"
+          >
+            ⚙️
+          </button>
+          <div
+            className={`w-3 h-3 rounded-full ${
+              wsConnected ? 'bg-green-500' : 'bg-red-500'
+            }`}
+            title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
+          ></div>
+        </div>
+        <div className="flex gap-2 items-center">
+          <select
+            className="p-2 bg-gray-100 rounded text-black"
+            value={assignedFilter}
+            onChange={(e) => setAssignedFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="unassigned">Unassigned</option>
+            {agents.map(a => (
+              <option key={a.username} value={a.username}>{a.name || a.username}</option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2 flex-1">
+            <input
+              className="flex-1 p-2 bg-gray-100 rounded text-black"
+              placeholder="Add tag filter and press Enter"
+              value={tagFilterInput}
+              onChange={(e) => setTagFilterInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && tagFilterInput.trim()) {
+                  if (!tagFilters.includes(tagFilterInput.trim())) {
+                    setTagFilters([...tagFilters, tagFilterInput.trim()]);
+                  }
+                  setTagFilterInput("");
+                }
+              }}
+            />
+            <div className="flex gap-1 flex-wrap">
+              {tagFilters.map(t => (
+                <span key={t} className="px-2 py-1 bg-blue-600 text-white rounded-full text-xs flex items-center gap-1">
+                  {t}
+                  <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="ml-1">✕</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Empty states */}
@@ -231,9 +320,13 @@ function ChatList({
               onSelect={handleSelect}
               active={activeUser?.user_id}
               isOnline={isOnline}
+              agents={agents}
             />
           ))}
         </div>
+      )}
+      {showAdmin && (
+        <AdminDashboard onClose={() => setShowAdmin(false)} />
       )}
     </div>
   );
@@ -246,8 +339,14 @@ const ConversationRow = memo(function Row({
   active,
   isOnline,
   style, // only used by react-window
+  agents = [],
 }) {
   const selected = active === conv.user_id;
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [selectedAgent, setSelectedAgent] = useState(conv.assigned_agent || '');
+  const [tagsEditOpen, setTagsEditOpen] = useState(false);
+  const [tagsInput, setTagsInput] = useState("");
+  const [tags, setTags] = useState(conv.tags || []);
   return (
     <div
       style={style}
@@ -296,7 +395,15 @@ const ConversationRow = memo(function Row({
           <span className="truncate text-xs text-gray-300 flex-1">
             {conv.last_message || "No messages yet"}
           </span>
-          <div className="flex gap-1 ml-2">
+          <div className="flex gap-2 ml-2 items-center">
+            {conv.assigned_agent && (
+              <span className="px-2 py-0.5 bg-indigo-600 text-white rounded-full text-xs">
+                {agents.find(a => a.username === conv.assigned_agent)?.name || conv.assigned_agent}
+              </span>
+            )}
+            {(tags || []).slice(0,3).map(t => (
+              <span key={t} className="px-2 py-0.5 bg-gray-700 text-white rounded-full text-xs">{t}</span>
+            ))}
             {!!conv.unread_count && (
               <span
                 className="bg-green-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center"
@@ -313,6 +420,52 @@ const ConversationRow = memo(function Row({
                 {conv.unresponded_count > 99 ? "99+" : conv.unresponded_count}
               </span>
             )}
+            <div className="relative">
+              <button
+                className="px-2 py-1 bg-gray-600 text-white rounded"
+                onClick={(e) => { e.stopPropagation(); setAssignOpen(!assignOpen); }}
+                title="Assign / Tags"
+              >⋯</button>
+              {assignOpen && (
+                <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded shadow-lg z-10 p-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="mb-2">
+                    <label className="text-xs text-gray-400">Assign to</label>
+                    <div className="flex gap-2 mt-1">
+                      <select className="flex-1 bg-gray-800 text-white p-2 rounded" value={selectedAgent} onChange={(e)=>setSelectedAgent(e.target.value)}>
+                        <option value="">Unassigned</option>
+                        {agents.map(a => (
+                          <option key={a.username} value={a.username}>{a.name || a.username}</option>
+                        ))}
+                      </select>
+                      <button
+                        className="px-2 bg-indigo-600 rounded"
+                        onClick={async ()=>{
+                          try {
+                            await api.post(`/conversations/${conv.user_id}/assign`, { agent: selectedAgent || null });
+                          } catch (e) {}
+                          setAssignOpen(false);
+                        }}
+                      >Save</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400">Tags</label>
+                    <div className="flex gap-2 mt-1">
+                      <input className="flex-1 bg-gray-800 text-white p-2 rounded" placeholder="add tag and Enter" value={tagsInput} onChange={(e)=>setTagsInput(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && tagsInput.trim()){ if(!tags.includes(tagsInput.trim())) setTags([...tags, tagsInput.trim()]); setTagsInput(''); } }} />
+                      <button className="px-2 bg-blue-600 rounded" onClick={async ()=>{ try{ await api.post(`/conversations/${conv.user_id}/tags`, { tags }); }catch(e){} setAssignOpen(false); }}>Save</button>
+                    </div>
+                    <div className="flex gap-1 flex-wrap mt-2">
+                      {tags.map(t => (
+                        <span key={t} className="px-2 py-0.5 bg-gray-700 rounded-full text-xs flex items-center gap-1">
+                          {t}
+                          <button onClick={()=>setTags(tags.filter(x=>x!==t))}>✕</button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

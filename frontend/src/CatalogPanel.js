@@ -185,14 +185,16 @@ export default function CatalogPanel({
     });
   };
 
-  // Send interactive catalog product (with price/title) via backend
+  // Send interactive catalog product instantly via WebSocket
   const sendInteractiveProduct = async (product) => {
     if (!activeUser?.user_id || !product?.retailer_id) return;
     const caption = product?.name && product?.price ? `${product.name} • ${product.price}` : (product?.name || "");
-    // Optimistic bubble (text) while interactive sends
-    sendOptimisticMessage({ type: 'text', message: caption || 'Product' });
-    const body = new URLSearchParams({ user_id: activeUser.user_id, product_retailer_id: String(product.retailer_id), caption });
-    try { await api.post(`${API_BASE}/send-catalog-item`, body, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); } catch {}
+    sendOptimisticMessage({
+      type: 'catalog_item',
+      message: caption || 'Product',
+      product_retailer_id: String(product.retailer_id),
+      caption,
+    });
   };
 
   // Send whole set by requesting backend to deliver the selected set

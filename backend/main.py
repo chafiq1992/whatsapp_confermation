@@ -1,6 +1,8 @@
 import asyncio
 import json
 import uuid
+import hashlib
+import secrets
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
@@ -61,6 +63,20 @@ LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
 def _vlog(*args, **kwargs):
     if LOG_VERBOSE:
         print(*args, **kwargs)
+
+# ── simple password hashing helpers ───────────────────────────────
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes.fromhex(salt), 100_000)
+    return f"{salt}${dk.hex()}"
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, h = stored.split('$', 1)
+        dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes.fromhex(salt), 100_000)
+        return h.lower() == dk.hex().lower()
+    except Exception:
+        return False
 # Get environment variables
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
@@ -494,7 +510,7 @@ class DatabaseManager:
     # ── schema ──
     async def init_db(self):
         async with self._conn() as db:
-            script = """
+            base_script = """
                 CREATE TABLE IF NOT EXISTS messages (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
                     wa_message_id  TEXT UNIQUE,
@@ -520,11 +536,25 @@ class DatabaseManager:
                     created_at TEXT  DEFAULT CURRENT_TIMESTAMP
                 );
 
+                -- Agents who handle the shared inbox
+                CREATE TABLE IF NOT EXISTS agents (
+                    username      TEXT PRIMARY KEY,
+                    name          TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_admin      INTEGER DEFAULT 0,
+                    created_at    TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Optional metadata per customer conversation
+                CREATE TABLE IF NOT EXISTS conversation_meta (
+                    user_id        TEXT PRIMARY KEY,
+                    assigned_agent TEXT REFERENCES agents(username),
+                    tags           TEXT, -- JSON array of strings
+                    avatar_url     TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_msg_wa_id
                     ON messages (wa_message_id);
-
-                CREATE INDEX IF NOT EXISTS idx_msg_temp_id
-                    ON messages (temp_id);
 
                 CREATE INDEX IF NOT EXISTS idx_msg_user_time
                     ON messages (user_id, datetime(timestamp));
@@ -538,7 +568,7 @@ class DatabaseManager:
                 );
                 """
             if self.use_postgres:
-                script = script.replace(
+                script = base_script.replace(
                     "INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY"
                 )
                 # PostgreSQL doesn't support the SQLite datetime() function in
@@ -548,11 +578,121 @@ class DatabaseManager:
                 for stmt in statements:
                     await db.execute(stmt)
             else:
-                await db.executescript(script)
+                await db.executescript(base_script)
                 await db.commit()
 
             # Ensure newer columns exist for deployments created before they were added
+            await self._add_column_if_missing(db, "messages", "temp_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "url", "TEXT")
+
+            # Create index on temp_id now that the column is guaranteed to exist
+            if self.use_postgres:
+                await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_temp_id ON messages (temp_id)")
+            else:
+                await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_temp_id ON messages (temp_id)")
+                await db.commit()
+
+    # ── Agents management ──────────────────────────────────────────
+    async def create_agent(self, username: str, name: str, password_hash: str, is_admin: int = 0):
+        async with self._conn() as db:
+            query = self._convert(
+                """
+                INSERT INTO agents (username, name, password_hash, is_admin)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    name=EXCLUDED.name,
+                    password_hash=EXCLUDED.password_hash,
+                    is_admin=EXCLUDED.is_admin
+                """
+            )
+            params = (username, name, password_hash, int(is_admin))
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, params)
+                await db.commit()
+
+    async def list_agents(self) -> List[dict]:
+        async with self._conn() as db:
+            query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
+            if self.use_postgres:
+                rows = await db.fetch(query)
+                return [dict(r) for r in rows]
+            else:
+                cur = await db.execute(query)
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def delete_agent(self, username: str):
+        async with self._conn() as db:
+            query = self._convert("DELETE FROM agents WHERE username = ?")
+            params = (username,)
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, params)
+                await db.commit()
+
+    async def get_agent_password_hash(self, username: str) -> Optional[str]:
+        async with self._conn() as db:
+            query = self._convert("SELECT password_hash FROM agents WHERE username = ?")
+            params = (username,)
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+            else:
+                cur = await db.execute(query, params)
+                row = await cur.fetchone()
+            return row[0] if row else None
+
+    # ── Conversation metadata (assignment, tags, avatar) ───────────
+    async def get_conversation_meta(self, user_id: str) -> dict:
+        async with self._conn() as db:
+            query = self._convert("SELECT assigned_agent, tags, avatar_url FROM conversation_meta WHERE user_id = ?")
+            params = (user_id,)
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+            else:
+                cur = await db.execute(query, params)
+                row = await cur.fetchone()
+            if not row:
+                return {}
+            d = dict(row)
+            try:
+                if isinstance(d.get("tags"), str):
+                    d["tags"] = json.loads(d["tags"]) if d["tags"] else []
+            except Exception:
+                d["tags"] = []
+            return d
+
+    async def upsert_conversation_meta(self, user_id: str, assigned_agent: Optional[str] = None, tags: Optional[List[str]] = None, avatar_url: Optional[str] = None):
+        async with self._conn() as db:
+            existing = await self.get_conversation_meta(user_id)
+            new_tags = tags if tags is not None else existing.get("tags")
+            new_assignee = assigned_agent if assigned_agent is not None else existing.get("assigned_agent")
+            new_avatar = avatar_url if avatar_url is not None else existing.get("avatar_url")
+
+            query = self._convert(
+                """
+                INSERT INTO conversation_meta (user_id, assigned_agent, tags, avatar_url)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    assigned_agent=EXCLUDED.assigned_agent,
+                    tags=EXCLUDED.tags,
+                    avatar_url=EXCLUDED.avatar_url
+                """
+            )
+            params = (user_id, new_assignee, json.dumps(new_tags) if isinstance(new_tags, list) else new_tags, new_avatar)
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, params)
+                await db.commit()
+
+    async def set_conversation_assignment(self, user_id: str, agent_username: Optional[str]):
+        await self.upsert_conversation_meta(user_id, assigned_agent=agent_username)
+
+    async def set_conversation_tags(self, user_id: str, tags: List[str]):
+        await self.upsert_conversation_meta(user_id, tags=tags)
 
     # ── UPSERT with status-precedence ──
     async def upsert_message(self, data: dict):
@@ -740,8 +880,8 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
-    async def get_conversations_with_stats(self) -> List[dict]:
-        """Return conversation summaries for chat list."""
+    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None) -> List[dict]:
+        """Return conversation summaries for chat list with optional filters."""
         async with self._conn() as db:
             if self.use_postgres:
                 user_rows = await db.fetch(self._convert("SELECT DISTINCT user_id FROM messages"))
@@ -826,7 +966,8 @@ class DatabaseManager:
                     unr_row = await cur.fetchone()
                 unresponded = unr_row["c"]
 
-                conversations.append({
+                meta = await self.get_conversation_meta(uid)
+                conv = {
                     "user_id": uid,
                     "name": user["name"] if user else None,
                     "phone": user["phone"] if user else None,
@@ -834,7 +975,27 @@ class DatabaseManager:
                     "last_message_time": last_time,
                     "unread_count": unread,
                     "unresponded_count": unresponded,
-                })
+                    "avatar": meta.get("avatar_url"),
+                    "assigned_agent": meta.get("assigned_agent"),
+                    "tags": meta.get("tags", []),
+                }
+                # Apply filters in-memory for simplicity
+                if q:
+                    t = (conv.get("name") or conv.get("user_id") or "").lower()
+                    if q.lower() not in t:
+                        continue
+                if unread_only and not (conv.get("unread_count") or 0) > 0:
+                    continue
+                if assigned is not None:
+                    if assigned == "unassigned" and conv.get("assigned_agent"):
+                        continue
+                    if assigned not in (None, "unassigned") and conv.get("assigned_agent") != assigned:
+                        continue
+                if tags:
+                    conv_tags = set(conv.get("tags") or [])
+                    if not set(tags).issubset(conv_tags):
+                        continue
+                conversations.append(conv)
 
             conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
             return conversations
@@ -983,6 +1144,25 @@ class MessageProcessor:
             if message["type"] == "text":
                 wa_response = await self.whatsapp_messenger.send_text_message(
                     user_id, message["message"]
+                )
+            elif message["type"] in ("catalog_item", "interactive_product"):
+                # Interactive single product via catalog
+                retailer_id = (
+                    message.get("product_retailer_id")
+                    or message.get("retailer_id")
+                    or message.get("product_id")
+                )
+                caption = message.get("caption") or message.get("message") or ""
+                if not retailer_id:
+                    raise Exception("Missing product_retailer_id for catalog_item")
+                wa_response = await self.whatsapp_messenger.send_single_catalog_item(
+                    user_id, str(retailer_id), caption
+                )
+            elif message["type"] == "order":
+                # For now send order payload as text to ensure delivery speed
+                payload = message.get("message")
+                wa_response = await self.whatsapp_messenger.send_text_message(
+                    user_id, payload if isinstance(payload, str) else json.dumps(payload or {})
                 )
             else:
                 # For media messages: support either local path upload or direct link
@@ -1573,14 +1753,62 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations():
-    """Get all conversations with proper stats for ChatList"""
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None):
+    """Get conversations with optional filters: q, unread_only, assigned, tags (csv)."""
     try:
-        conversations = await db_manager.get_conversations_with_stats()
+        tag_list = [t.strip() for t in tags.split(",")] if tags else None
+        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list)
         return conversations
     except Exception as e:
         print(f"Error fetching conversations: {e}")
         return []
+
+# ----- Agents & assignments management -----
+
+@app.get("/admin/agents")
+async def list_agents_endpoint():
+    return await db_manager.list_agents()
+
+@app.post("/admin/agents")
+async def create_agent_endpoint(payload: dict = Body(...)):
+    username = (payload.get("username") or "").strip()
+    name = (payload.get("name") or username).strip()
+    password = payload.get("password") or ""
+    is_admin = int(bool(payload.get("is_admin", False)))
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+    await db_manager.create_agent(username=username, name=name, password_hash=hash_password(password), is_admin=is_admin)
+    return {"ok": True}
+
+@app.delete("/admin/agents/{username}")
+async def delete_agent_endpoint(username: str):
+    await db_manager.delete_agent(username)
+    return {"ok": True}
+
+@app.post("/auth/login")
+async def auth_login(payload: dict = Body(...)):
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    stored = await db_manager.get_agent_password_hash(username)
+    if not stored or not verify_password(password, stored):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Minimal session token: for simplicity return echo token (NOT JWT). Frontend can store.
+    token = uuid.uuid4().hex
+    return {"token": token, "username": username}
+
+@app.post("/conversations/{user_id}/assign")
+async def assign_conversation(user_id: str, payload: dict = Body(...)):
+    agent = payload.get("agent")  # string or None
+    await db_manager.set_conversation_assignment(user_id, agent)
+    return {"ok": True, "user_id": user_id, "assigned_agent": agent}
+
+@app.post("/conversations/{user_id}/tags")
+async def update_conversation_tags(user_id: str, payload: dict = Body(...)):
+    tags = payload.get("tags") or []
+    if not isinstance(tags, list):
+        raise HTTPException(status_code=400, detail="tags must be a list")
+    await db_manager.set_conversation_tags(user_id, tags)
+    return {"ok": True, "user_id": user_id, "tags": tags}
 
 @app.get("/health")
 async def health_check():
@@ -1777,32 +2005,37 @@ async def send_catalog_set_all_endpoint(
 ):
     customer_phone = await lookup_phone(user_id) or user_id
     job_id = str(uuid.uuid4())
+    # Emit optimistic message immediately for instant UI feedback
+    temp_id = f"temp_{uuid.uuid4().hex}"
+    timestamp = datetime.utcnow().isoformat()
+    optimistic_record = {
+        "id": temp_id,
+        "temp_id": temp_id,
+        "user_id": user_id,
+        "message": caption or f"Catalog set {set_id}",
+        "type": "catalog_set",
+        "from_me": True,
+        "status": "sending",
+        "timestamp": timestamp,
+        "caption": caption,
+    }
+    await redis_manager.cache_message(user_id, optimistic_record)
+    await connection_manager.send_to_user(
+        user_id, {"type": "message_sent", "data": optimistic_record}
+    )
 
     async def run_send_full_set():
         try:
             await messenger.send_full_set(customer_phone, set_id, caption)
             print(f"Successfully sent catalog set {set_id} to {customer_phone}")
-
-            # Build a message record so UI/DB cache stay in sync
-            temp_id = f"temp_{uuid.uuid4().hex}"
-            timestamp = datetime.utcnow().isoformat()
-            record = {
-                "id": temp_id,
-                "temp_id": temp_id,
-                "user_id": user_id,
-                "message": caption or f"Catalog set {set_id}",
-                "type": "catalog_set",
-                "from_me": True,
-                "status": "sent",
-                "timestamp": timestamp,
-                "caption": caption,
-            }
-
-            await db_manager.upsert_message(record)
-            await redis_manager.cache_message(user_id, record)
+            # Update UI status to 'sent' and persist
             await connection_manager.send_to_user(
-                user_id, {"type": "message_sent", "data": record}
+                user_id,
+                {"type": "message_status_update", "data": {"temp_id": temp_id, "status": "sent"}},
             )
+            final_record = {**optimistic_record, "status": "sent"}
+            await db_manager.upsert_message(final_record)
+            await redis_manager.cache_message(user_id, final_record)
         except Exception as exc:
             error_message = f"Error sending catalog set {set_id} to {customer_phone}: {exc}"
             print(error_message)
