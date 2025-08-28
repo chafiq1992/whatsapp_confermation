@@ -45,6 +45,7 @@ function formatTime(ts) {
 }
 
 export default function MessageBubble({ msg, self, catalogProducts = {} }) {
+  const API_BASE = process.env.REACT_APP_API_BASE || "";
   // Enhanced order data parsing with better error handling
   const getOrderData = () => {
     if (msg.type !== "order") return null;
@@ -78,8 +79,14 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
 
   const isAudio = msg.type === "audio";
 
-  // Best available URL for non-audio media
-  const mediaUrl = isAudio ? primaryUrl : primaryUrl || localUrl;
+  // Best available URL for media
+  const mediaUrl = primaryUrl || localUrl;
+  // Use backend proxy for audio to avoid CORS issues when drawing waveform
+  const effectiveAudioUrl = isAudio
+    ? (primaryUrl && /^https?:\/\//i.test(primaryUrl)
+        ? `${API_BASE}/proxy-audio?url=${encodeURIComponent(primaryUrl)}`
+        : primaryUrl)
+    : null;
 
   // Track which URL is currently used by the audio player
   const [activeUrl, setActiveUrl] = useState(mediaUrl);
@@ -118,7 +125,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   useEffect(() => {
     if (!isAudio) return;
 
-    if (!primaryUrl) {
+    const url = effectiveAudioUrl || primaryUrl;
+    if (!url) {
       setAudioError(true);
       setActiveUrl("");
       return;
@@ -137,10 +145,10 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
       }
 
       try {
-        setActiveUrl(primaryUrl);
+        setActiveUrl(url);
         wavesurfer = WaveSurfer.create({
           container: waveformRef.current,
-          url: primaryUrl,
+          url,
           waveColor: "#8ecae6",
           progressColor: "#219ebc",
           height: 48,
@@ -150,6 +158,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           cursorWidth: 1,
           interact: true,
           normalize: true,
+          backend: 'MediaElement',
         });
 
         setAudioError(false);

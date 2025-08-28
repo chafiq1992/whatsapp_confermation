@@ -24,6 +24,7 @@ from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
+from fastapi.responses import StreamingResponse
 
 # Absolute paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -54,6 +55,12 @@ class Config:
     RATE_LIMIT_DELAY = 0
 
 config = Config()
+# Verbose logging flag (minimize noisy Cloud Run logs when off)
+LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
+
+def _vlog(*args, **kwargs):
+    if LOG_VERBOSE:
+        print(*args, **kwargs)
 # Get environment variables
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
@@ -61,10 +68,10 @@ PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
 
-print(f"🔧 Configuration loaded:")
-print(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
-print(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
-print(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
+_vlog(f"🔧 Configuration loaded:")
+_vlog(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
+_vlog(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
+_vlog(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
 
 def chunk_list(items: List[str], size: int):
     """Yield successive chunks from a list."""
@@ -132,8 +139,8 @@ class ConnectionManager:
             print(f"❌ User {user_id} disconnected")
     
     async def send_to_user(self, user_id: str, message: dict):
-        print(f"📤 Attempting to send to user {user_id}")
-        print("📤 Message content:", json.dumps(message, indent=2))
+        _vlog(f"📤 Attempting to send to user {user_id}")
+        _vlog("📤 Message content:", json.dumps(message, indent=2))
         """Send message to all connections of a specific user"""
         if user_id in self.active_connections:
             disconnected = set()
@@ -1018,7 +1025,7 @@ class MessageProcessor:
             # Save to database with real WhatsApp ID
             await self.db_manager.save_message(message, wa_message_id, "sent")
             
-            print(f"✅ Message sent successfully: {wa_message_id}")
+            _vlog(f"✅ Message sent successfully: {wa_message_id}")
             
         except Exception as e:
             print(f"❌ WhatsApp send failed: {e}")
@@ -1074,8 +1081,8 @@ class MessageProcessor:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(upload_url, files=files, headers=headers)
                 
-                print(f"📤 WhatsApp upload response: {response.status_code}")
-                print(f"📤 Response body: {response.text}")
+                _vlog(f"📤 WhatsApp upload response: {response.status_code}")
+                _vlog(f"📤 Response body: {response.text}")
                 
                 if response.status_code != 200:
                     raise Exception(f"WhatsApp media upload failed: {response.text}")
@@ -1086,7 +1093,7 @@ class MessageProcessor:
                 if not media_id:
                     raise Exception(f"No media_id in WhatsApp response: {result}")
                 
-                print(f"✅ Media uploaded successfully. ID: {media_id}")
+                _vlog(f"✅ Media uploaded successfully. ID: {media_id}")
                 return media_id
                 
         except httpx.TimeoutException:
@@ -1096,8 +1103,8 @@ class MessageProcessor:
             raise Exception(f"Failed to upload media to WhatsApp: {str(e)}")
     
     async def process_incoming_message(self, webhook_data: dict):
-        print("🚨 process_incoming_message CALLED")
-        print(json.dumps(webhook_data, indent=2))
+        _vlog("🚨 process_incoming_message CALLED")
+        _vlog(json.dumps(webhook_data, indent=2))
         """Process incoming WhatsApp message"""
         try:
             value = webhook_data['entry'][0]['changes'][0]['value']
@@ -1447,18 +1454,18 @@ async def webhook(request: Request):
         token = params.get("hub.verify_token")
         challenge = params.get("hub.challenge")
         
-        print(f"🔐 Webhook verification: mode={mode}, token={token}, challenge={challenge}")
+        _vlog(f"🔐 Webhook verification: mode={mode}, token={token}, challenge={challenge}")
         
         if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
-            print("✅ Webhook verified successfully")
+            _vlog("✅ Webhook verified successfully")
             return PlainTextResponse(challenge)
-        print("❌ Webhook verification failed")
+        _vlog("❌ Webhook verification failed")
         return PlainTextResponse("Verification failed", status_code=403)
         
     elif request.method == "POST":
         data = await request.json()
-        print("📥 Incoming Webhook Payload:")
-        print(json.dumps(data, indent=2))
+        _vlog("📥 Incoming Webhook Payload:")
+        _vlog(json.dumps(data, indent=2))
 
         await message_processor.process_incoming_message(data)
         return {"ok": True}
@@ -1467,13 +1474,13 @@ async def webhook(request: Request):
 async def test_media_upload(file: UploadFile = File(...)):
     """Test endpoint to debug media upload issues"""
     try:
-        print(f"📁 Received file: {file.filename}")
-        print(f"📁 Content type: {file.content_type}")
-        print(f"📁 File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
+        _vlog(f"📁 Received file: {file.filename}")
+        _vlog(f"📁 Content type: {file.content_type}")
+        _vlog(f"📁 File size: {file.size if hasattr(file, 'size') else 'Unknown'}")
         
         # Read file content
         content = await file.read()
-        print(f"📁 Read {len(content)} bytes")
+        _vlog(f"📁 Read {len(content)} bytes")
         
         # Reset file pointer for actual processing
         await file.seek(0)
@@ -1861,6 +1868,25 @@ async def get_all_catalog_products():
     except Exception as e:
         print(f"Error fetching catalog: {e}")
         return []
+
+
+@app.get("/proxy-audio")
+async def proxy_audio(url: str):
+    """Proxy remote audio through this server to avoid CORS issues in waveform decoding."""
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid url")
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        media_type = resp.headers.get("Content-Type", "audio/ogg")
+        return StarletteResponse(
+            content=resp.content,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"}
+        )
+    except Exception as exc:
+        print(f"Proxy audio error: {exc}")
+        raise HTTPException(status_code=502, detail="Proxy fetch failed")
 
 # Serve React build after all routes
 app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
