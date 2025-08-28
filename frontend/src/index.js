@@ -5,8 +5,9 @@ import App from './App.js';
 import StudioPage from './StudioPage';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-const path = window.location.pathname;
-const isStudio = path === '/automation-studio' || path.startsWith('/automation-studio/');
+const hash = window.location.hash || '';
+const path = window.location.pathname || '';
+const isStudio = (hash && hash.includes('/automation-studio')) || path === '/automation-studio' || path.startsWith('/automation-studio/');
 
 root.render(
   isStudio ? <StudioPage /> : <App />

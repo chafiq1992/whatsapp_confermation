@@ -266,7 +266,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             <div className="flex justify-end">
               <button
                 className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded text-sm"
-                onClick={() => { window.location.href = '/automation-studio'; }}
+                onClick={() => { window.location.href = '/#/automation-studio'; }}
               >
                 Open Automation Studio (new page)
               </button>

@@ -358,13 +358,20 @@ function ChatList({
         </div>
       )}
       {/* Bottom-left settings */}
-      <div className="p-2 border-t border-gray-800">
+      <div className="p-2 border-t border-gray-800 flex items-center gap-2">
         <button
           className="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300"
           onClick={() => setShowAdmin(true)}
           title="Admin settings"
         >
           ⚙️ Settings
+        </button>
+        <button
+          className="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+          onClick={() => { window.location.href = '/#/automation-studio'; }}
+          title="Open Automation Studio"
+        >
+          🛠️ Automation
         </button>
       </div>
       {showAdmin && (
