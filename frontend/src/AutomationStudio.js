@@ -108,6 +108,103 @@ const LOGIC = [
   },
 ];
 
+// Shopify event catalog with common variables and sample payload hints
+const SHOPIFY_EVENTS = [
+  {
+    id: "orders/create",
+    label: "Shopify: New Order",
+    topic: "orders/create",
+    variables: [
+      "id",
+      "order_number",
+      "financial_status",
+      "total_price",
+      "created_at",
+      "customer.id",
+      "customer.first_name",
+      "customer.last_name",
+      "customer.phone",
+      "line_items[].title",
+      "line_items[].variant_title",
+      "shipping_address.city",
+      "shipping_address.province",
+    ],
+    sample: JSON.stringify({
+      topic: "orders/create",
+      id: 123456,
+      order_number: "#1025",
+      financial_status: "paid",
+      total_price: 499,
+      created_at: "2024-01-01T12:00:00Z",
+      customer: { id: 999, first_name: "Nora", last_name: "A.", phone: "+212612345678" },
+      line_items: [{ title: "T-Shirt", variant_title: "Large" }],
+      shipping_address: { city: "Casablanca", province: "Casablanca-Settat" },
+    }, null, 2),
+  },
+  {
+    id: "orders/paid",
+    label: "Shopify: Order Paid",
+    topic: "orders/paid",
+    variables: ["id", "order_number", "total_price", "customer.phone", "created_at"],
+    sample: JSON.stringify({
+      topic: "orders/paid",
+      id: 123456,
+      order_number: "#1025",
+      total_price: 499,
+      created_at: "2024-01-01T12:00:00Z",
+      customer: { phone: "+212612345678" },
+    }, null, 2),
+  },
+  {
+    id: "customers/create",
+    label: "Shopify: New Customer",
+    topic: "customers/create",
+    variables: [
+      "id",
+      "email",
+      "first_name",
+      "last_name",
+      "phone",
+      "default_address.city",
+      "default_address.province",
+    ],
+    sample: JSON.stringify({
+      topic: "customers/create",
+      id: 1001,
+      email: "nora@example.com",
+      first_name: "Nora",
+      last_name: "A.",
+      phone: "+212612345678",
+      default_address: { city: "Rabat", province: "Rabat-Salé-Kénitra" },
+    }, null, 2),
+  },
+  {
+    id: "checkouts/update",
+    label: "Shopify: Abandoned Checkout",
+    topic: "checkouts/update",
+    variables: [
+      "id",
+      "abandoned_checkout_url",
+      "email",
+      "phone",
+      "line_items[].title",
+      "line_items[].variant_title",
+      "total_price",
+      "created_at",
+    ],
+    sample: JSON.stringify({
+      topic: "checkouts/update",
+      id: 222,
+      abandoned_checkout_url: "https://shop.myshopify.com/123/abandon",
+      email: "nora@example.com",
+      phone: "+212612345678",
+      line_items: [{ title: "Shoes", variant_title: "42" }],
+      total_price: 299,
+      created_at: "2024-01-01T12:10:00Z",
+    }, null, 2),
+  },
+];
+
 function TagIcon() {
   return (
     <svg
@@ -168,19 +265,11 @@ function makeEdge(from, fromPort, to, toPort) {
   return { id: nextId(), from, fromPort, to, toPort };
 }
 
-export default function AutomationStudio({ onClose, initialEnv }) {
+export default function AutomationStudio({ onClose }) {
   const [flow, setFlow] = useState(defaultFlow);
   const [linking, setLinking] = useState(null);
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
-  const [env, setEnv] = useState(
-    initialEnv || {
-      whatsappPhoneId: "",
-      whatsappToken: "",
-      shopifyWebhookSecret: "",
-      region: "europe-west1",
-    }
-  );
 
   const dragRef = useRef({ id: null, offsetX: 0, offsetY: 0 });
   const canvasRef = useRef(null);
@@ -369,19 +458,7 @@ export default function AutomationStudio({ onClose, initialEnv }) {
             </div>
           </div>
 
-          <div className="border rounded">
-            <div className="px-3 py-2 border-b text-sm font-medium">Environment</div>
-            <div className="p-2 space-y-2">
-              <input className="w-full border rounded px-2 py-1" placeholder="WhatsApp Phone ID" value={env.whatsappPhoneId} onChange={(e)=>setEnv({...env, whatsappPhoneId:e.target.value})} />
-              <input className="w-full border rounded px-2 py-1" placeholder="WhatsApp Token" type="password" value={env.whatsappToken} onChange={(e)=>setEnv({...env, whatsappToken:e.target.value})} />
-              <input className="w-full border rounded px-2 py-1" placeholder="Shopify Webhook Secret" type="password" value={env.shopifyWebhookSecret} onChange={(e)=>setEnv({...env, shopifyWebhookSecret:e.target.value})} />
-              <select className="w-full border rounded px-2 py-1" value={env.region} onChange={(e)=>setEnv({...env, region:e.target.value})}>
-                <option value="europe-west1">europe-west1</option>
-                <option value="europe-west4">europe-west4</option>
-                <option value="us-central1">us-central1</option>
-              </select>
-            </div>
-          </div>
+          {/* Environment panel removed: studio uses same environment as inbox */}
         </aside>
 
         <section className="col-span-12 md:col-span-6 relative">
@@ -628,20 +705,80 @@ function makePath(x1,y1,x2,y2){
 
 function Inspector({ node, onUpdate }){
   if(node.type === NODE_TYPES.TRIGGER){
+    const isShopify = String(node.data.source||'').toLowerCase() === 'shopify' || !node.data.source;
+    const selected = SHOPIFY_EVENTS.find(ev => ev.topic === node.data.topic) || null;
     return (
       <div className="space-y-3 text-sm">
         <div>
-          <div className="text-xs text-slate-500 mb-1">Source</div>
-          <input className="w-full border rounded px-2 py-1" value={node.data.source||""} onChange={(e)=>onUpdate({source:e.target.value})} />
+          <div className="text-xs text-slate-500 mb-1">Provider</div>
+          <select
+            className="w-full border rounded px-2 py-1"
+            value={isShopify ? 'shopify' : (node.data.source || 'whatsapp')}
+            onChange={(e)=>{
+              const v = e.target.value;
+              if (v === 'shopify') onUpdate({ source: 'shopify' });
+              else onUpdate({ source: v, topic: v==='whatsapp' ? 'message' : (node.data.topic||'') });
+            }}
+          >
+            <option value="shopify">Shopify</option>
+            <option value="whatsapp">WhatsApp</option>
+          </select>
         </div>
-        <div>
-          <div className="text-xs text-slate-500 mb-1">Topic</div>
-          <input className="w-full border rounded px-2 py-1" value={node.data.topic||""} onChange={(e)=>onUpdate({topic:e.target.value})} />
-        </div>
-        <div>
-          <div className="text-xs text-slate-500 mb-1">Sample Payload</div>
-          <textarea className="w-full border rounded px-2 py-1" value={node.data.sample||""} onChange={(e)=>onUpdate({sample:e.target.value})} rows={5} />
-        </div>
+
+        {isShopify ? (
+          <>
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Shopify Event</div>
+              <select
+                className="w-full border rounded px-2 py-1"
+                value={selected?.topic || node.data.topic || ''}
+                onChange={(e)=>{
+                  const ev = SHOPIFY_EVENTS.find(x=>x.topic===e.target.value);
+                  if (ev) onUpdate({ source: 'shopify', topic: ev.topic, sample: ev.sample });
+                  else onUpdate({ source: 'shopify', topic: e.target.value });
+                }}
+              >
+                <option value="">Select event…</option>
+                {SHOPIFY_EVENTS.map(ev => (
+                  <option key={ev.id} value={ev.topic}>{ev.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {!!selected && (
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Variables</div>
+                <div className="flex flex-wrap gap-1">
+                  {selected.variables.map(v => (
+                    <button
+                      key={v}
+                      type="button"
+                      className="px-2 py-0.5 rounded border text-xs hover:bg-slate-50"
+                      title="Click to copy"
+                      onClick={()=>{ try { navigator.clipboard.writeText(`{{ ${v} }}`); } catch(_) {} }}
+                    >{v}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Sample Payload</div>
+              <textarea className="w-full border rounded px-2 py-1" value={node.data.sample||selected?.sample||""} onChange={(e)=>onUpdate({sample:e.target.value})} rows={5} />
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Topic</div>
+              <input className="w-full border rounded px-2 py-1" value={node.data.topic||""} onChange={(e)=>onUpdate({topic:e.target.value})} />
+            </div>
+            <div>
+              <div className="text-xs text-slate-500 mb-1">Sample Payload</div>
+              <textarea className="w-full border rounded px-2 py-1" value={node.data.sample||""} onChange={(e)=>onUpdate({sample:e.target.value})} rows={5} />
+            </div>
+          </>
+        )}
       </div>
     );
   }
