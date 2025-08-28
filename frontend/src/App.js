@@ -182,9 +182,9 @@ export default function App() {
   }, [activeUser?.user_id]);
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white">
+    <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Chat list */}
-      <div className="w-1/3 border-r border-gray-700 overflow-y-auto">
+      <div className="w-1/3 border-r border-gray-700 overflow-hidden">
         <ChatList
           conversations={conversations}
           setActiveUser={setActiveUser}
@@ -192,7 +192,7 @@ export default function App() {
         />
       </div>
       {/* MIDDLE: Chat window */}
-      <div className="flex-1">
+      <div className="flex-1 overflow-hidden">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
         <ChatWindow
           activeUser={activeUser}
@@ -201,7 +201,7 @@ export default function App() {
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}
-      <div className="w-96 border-l border-gray-800 bg-gray-900">
+      <div className="w-96 border-l border-gray-800 bg-gray-900 overflow-y-auto">
         <ShopifyIntegrationsPanel activeUser={activeUser} />
       </div>
     </div>

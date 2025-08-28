@@ -127,7 +127,6 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
     let wavesurfer = null;
 
     if (waveformRef.current) {
-      // Cleanup existing instance
       if (wavesurferRef.current) {
         try {
           wavesurferRef.current.destroy();
@@ -138,28 +137,20 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
       }
 
       try {
+        setActiveUrl(primaryUrl);
         wavesurfer = WaveSurfer.create({
           container: waveformRef.current,
+          url: primaryUrl,
           waveColor: "#8ecae6",
           progressColor: "#219ebc",
-          height: 40,
+          height: 48,
           barWidth: 2,
-          barRadius: 1,
-          responsive: true,
+          barGap: 1,
+          barRadius: 2,
+          cursorWidth: 1,
           interact: true,
           normalize: true,
-          backend: "MediaElement",
-          mediaType: "audio",
         });
-
-        const load = (url) => {
-          try {
-            setActiveUrl(url);
-            wavesurfer.load(url, { crossOrigin: "anonymous" });
-          } catch (err) {
-            console.error("WaveSurfer load error:", err);
-          }
-        };
 
         setAudioError(false);
 
@@ -169,8 +160,6 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
           console.error("WaveSurfer error:", error);
           setAudioError(true);
         });
-
-        load(primaryUrl);
 
         wavesurferRef.current = wavesurfer;
       } catch (err) {
