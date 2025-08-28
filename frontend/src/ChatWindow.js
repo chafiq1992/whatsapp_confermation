@@ -78,7 +78,7 @@ function groupConsecutiveImages(messages) {
   return grouped;
 }
 
-export default function ChatWindow({ activeUser }) {
+export default function ChatWindow({ activeUser, ws }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [pendingQueues, setPendingQueues] = useState({});
@@ -122,8 +122,8 @@ export default function ChatWindow({ activeUser }) {
     });
   }, [activeUser?.user_id]);
   
-  // Simplified WebSocket state
-  const [ws, setWs] = useState(null);
+  // Track last received timestamp for resume on reconnect
+  const lastTimestampRef = useRef(null);
 
   // Max concurrent image uploads (WhatsApp style)
   const MAX_CONCURRENT_UPLOADS = 3;
@@ -147,79 +147,81 @@ export default function ChatWindow({ activeUser }) {
     });
   const isUploading = !!sendingQueues[getUserId()];
 
-  // Simplified WebSocket implementation
+  // Attach listeners to provided WebSocket and request resume on open
   useEffect(() => {
-    if (!activeUser?.user_id) return;
+    if (!ws || !activeUser?.user_id) return;
     const uid = activeUser.user_id;
-    const websocket = new WebSocket(`${WS_BASE}${uid}`);
-    setWs(websocket); // store in state
-    
-    websocket.onopen = () => {
-      console.log("✅ WebSocket connected");
-    };
-    
-    websocket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log("📥 WS received", data);
-      
-      if (data.type === "recent_messages") {
-        if (conversationIdRef.current !== uid) return; // ignore stale
-        const list = Array.isArray(data.data) ? data.data : [];
-        setMessages(prev => mergeAndDedupe(prev, list));
-        setOffset(list.length);
-        // WS may send fewer than MESSAGE_LIMIT (e.g. 20). Keep hasMore true so HTTP can paginate.
-        setHasMore(list.length > 0);
-      }
-      
-      if (data.type === "message_sent") {
-        setMessages(prev => {
-          const idx = prev.findIndex(m => m.temp_id && m.temp_id === data.data.temp_id);
-          if (idx !== -1) {
-            const updated = [...prev];
-            updated[idx] = { ...prev[idx], ...data.data };
-            return sortByTime(updated);
-          }
-          return mergeAndDedupe(prev, [data.data]);
-        });
-      }
-      if (data.type === "message_received") {
-        // Messages coming back from WhatsApp **that we ourselves sent**
-        // were already rendered optimistically and will be updated via
-        // `message_status_update`.  Just ignore them to avoid duplicates.
-        if (data.data.from_me) return;
 
-        setMessages(prev => mergeAndDedupe(prev, [data.data]));
-       }
-      
-      if (data.type === "message_status_update") {
-        setMessages(prev => sortByTime(
-          prev.map(msg =>
-            msg.temp_id === data.data.temp_id ||
-            msg.wa_message_id === data.data.wa_message_id
+    const handleOpen = () => {
+      try {
+        const last = lastTimestampRef.current;
+        if (last) {
+          ws.send(JSON.stringify({ type: 'resume_since', since: last, limit: 500 }));
+        }
+        ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+      } catch {}
+    };
+
+    const handleMessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'recent_messages') {
+          if (conversationIdRef.current !== uid) return;
+          const list = Array.isArray(data.data) ? data.data : [];
+          setMessages(prev => mergeAndDedupe(prev, list));
+          setOffset(list.length);
+          setHasMore(list.length > 0);
+        } else if (data.type === 'conversation_history') {
+          setMessages(prev => mergeAndDedupe(prev, Array.isArray(data.data) ? data.data : []));
+        } else if (data.type === 'message_sent') {
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.temp_id && m.temp_id === data.data.temp_id);
+            if (idx !== -1) {
+              const updated = [...prev];
+              updated[idx] = { ...prev[idx], ...data.data };
+              return sortByTime(updated);
+            }
+            return mergeAndDedupe(prev, [data.data]);
+          });
+        } else if (data.type === 'message_received') {
+          if (data.data.from_me) return;
+          setMessages(prev => mergeAndDedupe(prev, [data.data]));
+        } else if (data.type === 'message_status_update') {
+          setMessages(prev => sortByTime(prev.map(msg =>
+            msg.temp_id === data.data.temp_id || msg.wa_message_id === data.data.wa_message_id
               ? { ...msg, ...data.data }
               : msg
-          )
-        ));
+          )));
+        }
+      } catch (e) {
+        console.error('WS parse error', e);
       }
+    };
 
-      if (data.type === "messages_marked_read") {
-        const ids = data.data?.message_ids || [];
-        setMessages(prev =>
-          prev.map(m =>
-            !m.from_me && ids.includes(m.wa_message_id)
-              ? { ...m, status: "read" }
-              : m
-          )
-        );
-      }
+    ws.addEventListener('open', handleOpen);
+    ws.addEventListener('message', handleMessage);
+
+    const pingInterval = setInterval(() => {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+        }
+      } catch {}
+    }, 30000);
+
+    return () => {
+      ws.removeEventListener('open', handleOpen);
+      ws.removeEventListener('message', handleMessage);
+      clearInterval(pingInterval);
     };
-    
-    websocket.onclose = () => {
-      console.log("❌ WebSocket disconnected");
-    };
-    
-    return () => websocket.close();
-  }, [activeUser?.user_id]);
+  }, [ws, activeUser?.user_id]);
+
+  // Track latest timestamp whenever messages change
+  useEffect(() => {
+    if (!messages || messages.length === 0) return;
+    const newest = messages[messages.length - 1]?.timestamp;
+    if (newest) lastTimestampRef.current = newest;
+  }, [messages]);
 
   // Cleanup queues and revoke URLs for all except active user on conversation change
   useEffect(() => {

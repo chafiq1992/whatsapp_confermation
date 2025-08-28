@@ -84,100 +84,123 @@ export default function App() {
     // return () => clearInterval(interval);
   }, []);
 
-  // Open a persistent WebSocket for admin notifications
+  // Open a persistent WebSocket for admin notifications (with reconnection)
   useEffect(() => {
+    let retry = 0;
+    let timer = null;
     const wsBase =
       process.env.REACT_APP_WS_URL ||
       `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
-    const ws = new WebSocket(`${wsBase}admin`);
-    adminWsRef.current = ws;
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === "message_received") {
-          const msg = data.data || {};
-          const userId = msg.user_id;
-          const text =
-            typeof msg.message === "string"
-              ? msg.message
-              : msg.caption || msg.type || "";
-          const time = msg.timestamp || new Date().toISOString();
-          setConversations((prev) => {
-            const idx = prev.findIndex((c) => c.user_id === userId);
-            if (idx !== -1) {
-              const current = prev[idx];
-              if (
-                current.last_message_time &&
-                new Date(current.last_message_time) > new Date(time)
-              ) {
-                return prev;
+
+    const connectAdmin = () => {
+      const ws = new WebSocket(`${wsBase}admin`);
+      adminWsRef.current = ws;
+      ws.addEventListener('open', () => {
+        retry = 0;
+        try { ws.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
+      });
+      ws.addEventListener('close', () => {
+        const delay = Math.min(30000, 1000 * Math.pow(2, retry++)) + Math.floor(Math.random() * 500);
+        timer = setTimeout(connectAdmin, delay);
+      });
+      ws.addEventListener('error', () => {
+        try { ws.close(); } catch {}
+      });
+      ws.addEventListener('message', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === "message_received") {
+            const msg = data.data || {};
+            const userId = msg.user_id;
+            const text =
+              typeof msg.message === "string"
+                ? msg.message
+                : msg.caption || msg.type || "";
+            const time = msg.timestamp || new Date().toISOString();
+            setConversations((prev) => {
+              const idx = prev.findIndex((c) => c.user_id === userId);
+              if (idx !== -1) {
+                const current = prev[idx];
+                if (
+                  current.last_message_time &&
+                  new Date(current.last_message_time) > new Date(time)
+                ) {
+                  return prev;
+                }
+                const updated = {
+                  ...current,
+                  last_message: text,
+                  last_message_time: time,
+                  unread_count:
+                    activeUserRef.current?.user_id === userId
+                      ? current.unread_count
+                      : (current.unread_count || 0) + 1,
+                };
+                return [
+                  updated,
+                  ...prev.slice(0, idx),
+                  ...prev.slice(idx + 1),
+                ];
               }
-              const updated = {
-                ...current,
+              const newConv = {
+                user_id: userId,
+                name: msg.name || userId,
                 last_message: text,
                 last_message_time: time,
                 unread_count:
-                  activeUserRef.current?.user_id === userId
-                    ? current.unread_count
-                    : (current.unread_count || 0) + 1,
+                  activeUserRef.current?.user_id === userId ? 0 : 1,
               };
-              return [
-                updated,
-                ...prev.slice(0, idx),
-                ...prev.slice(idx + 1),
-              ];
-            }
-            const newConv = {
-              user_id: userId,
-              name: msg.name || userId,
-              last_message: text,
-              last_message_time: time,
-              unread_count:
-                activeUserRef.current?.user_id === userId ? 0 : 1,
-            };
-            return [newConv, ...prev];
-          });
+              return [newConv, ...prev];
+            });
+          }
+        } catch (err) {
+          console.error("WS message parsing failed", err);
         }
-      } catch (err) {
-        console.error("WS message parsing failed", err);
-      }
+      });
     };
-    return () => ws.close();
+
+    connectAdmin();
+    return () => {
+      clearTimeout(timer);
+      if (adminWsRef.current) try { adminWsRef.current.close(); } catch {}
+    };
   }, []);
 
-  // --- Setup WebSocket for messages ---
+  // --- Setup WebSocket for messages (with reconnection) ---
   useEffect(() => {
+    let retry = 0;
+    let timer = null;
     if (!activeUser?.user_id) return;
-    // Close previous WebSocket if any
-    if (wsRef.current) wsRef.current.close();
+    if (wsRef.current) try { wsRef.current.close(); } catch {}
 
-    // Connect to backend WebSocket for the selected user
     const wsBase =
       process.env.REACT_APP_WS_URL ||
       `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
-    const ws = new WebSocket(`${wsBase}${activeUser.user_id}`);
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-      // Optionally: fetchConversations() here to refresh chat list on connect
-    };
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-    };
-    ws.onerror = (err) => {
-      console.error('WebSocket error:', err);
+    const connectUser = () => {
+      const ws = new WebSocket(`${wsBase}${activeUserRef.current?.user_id}`);
+      wsRef.current = ws;
+      ws.addEventListener('open', () => {
+        retry = 0;
+        try { ws.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
+      });
+      ws.addEventListener('close', () => {
+        const delay = Math.min(30000, 1000 * Math.pow(2, retry++)) + Math.floor(Math.random() * 500);
+        timer = setTimeout(connectUser, delay);
+      });
+      ws.addEventListener('error', () => {
+        try { ws.close(); } catch {}
+      });
+      ws.addEventListener('message', () => {
+        // Keep conversations in sync with new events
+        fetchConversations();
+      });
     };
 
-    // If you want to listen for incoming messages here and update chat list:
-    ws.onmessage = (event) => {
-      // Example: refresh conversations list on any new message
-      // You can make this smarter by updating state only as needed
-      fetchConversations();
-    };
-
+    connectUser();
     return () => {
-      if (ws) ws.close();
+      clearTimeout(timer);
+      if (wsRef.current) try { wsRef.current.close(); } catch {}
     };
   }, [activeUser?.user_id]);
 

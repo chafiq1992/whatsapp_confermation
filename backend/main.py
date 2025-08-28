@@ -565,6 +565,10 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_msg_user_time
                     ON messages (user_id, datetime(timestamp));
 
+                -- Additional index to optimize TEXT-based timestamp ordering in SQLite
+                CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text
+                    ON messages (user_id, timestamp);
+
                 -- Orders table used to track payout status
                 CREATE TABLE IF NOT EXISTS orders (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -589,6 +593,8 @@ class DatabaseManager:
                 statements = [s.strip() for s in script.split(";") if s.strip()]
                 for stmt in statements:
                     await db.execute(stmt)
+                # Ensure the additional composite index exists in Postgres as well
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text ON messages (user_id, timestamp)")
             else:
                 await db.executescript(base_script)
                 await db.commit()
@@ -600,6 +606,7 @@ class DatabaseManager:
             # Create index on temp_id now that the column is guaranteed to exist
             if self.use_postgres:
                 await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_temp_id ON messages (temp_id)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text ON messages (user_id, timestamp)")
             else:
                 await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_temp_id ON messages (temp_id)")
                 await db.commit()
@@ -793,6 +800,41 @@ class DatabaseManager:
             # Reverse to chronological order for display
             ordered = [dict(r) for r in rows][::-1]
             return ordered
+
+    async def get_messages_since(self, user_id: str, since_timestamp: str, limit: int = 500) -> list[dict]:
+        """Return messages newer than the given ISO-8601 timestamp, ascending order.
+
+        Relies on ISO-8601 lexicographic ordering for TEXT timestamps.
+        """
+        async with self._conn() as db:
+            query = self._convert(
+                "SELECT * FROM messages WHERE user_id = ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?"
+            )
+            params = [user_id, since_timestamp, limit]
+            if self.use_postgres:
+                rows = await db.fetch(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_messages_before(self, user_id: str, before_timestamp: str, limit: int = 50) -> list[dict]:
+        """Return messages older than the given ISO-8601 timestamp, ascending order.
+
+        On the DB side we fetch newest-first (DESC) window older than the pivot,
+        then reverse to chronological order for display.
+        """
+        async with self._conn() as db:
+            query = self._convert(
+                "SELECT * FROM messages WHERE user_id = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?"
+            )
+            params = [user_id, before_timestamp, limit]
+            if self.use_postgres:
+                rows = await db.fetch(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                rows = await cur.fetchall()
+            return [dict(r) for r in rows][::-1]
 
     async def update_message_status(self, wa_message_id: str, status: str):
         await self.upsert_message({"wa_message_id": wa_message_id, "status": status})
@@ -1687,6 +1729,21 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
             "type": "conversation_history",
             "data": messages
         })
+    elif message_type == "resume_since":
+        since = data.get("since")
+        limit = int(data.get("limit", 500))
+        if since:
+            try:
+                messages = await db_manager.get_messages_since(user_id, since, limit=limit)
+                if messages:
+                    await websocket.send_json({"type": "conversation_history", "data": messages})
+            except Exception as e:
+                print(f"resume_since failed: {e}")
+    elif message_type == "ping":
+        try:
+            await websocket.send_json({"type": "pong", "ts": data.get("ts")})
+        except Exception:
+            pass
 
 @app.api_route("/webhook", methods=["GET", "POST"])
 async def webhook(request: Request):
@@ -1780,6 +1837,26 @@ async def get_conversation_messages(user_id: str, offset: int = 0, limit: int = 
     
     messages = await db_manager.get_messages(user_id, offset, limit)
     return {"messages": messages, "source": "database"}
+
+@app.get("/messages/{user_id}/since")
+async def get_messages_since_endpoint(user_id: str, since: str, limit: int = 500):
+    """Get messages newer than the given ISO-8601 timestamp."""
+    try:
+        messages = await db_manager.get_messages_since(user_id, since, limit)
+        return messages
+    except Exception as e:
+        print(f"Error fetching messages since: {e}")
+        return []
+
+@app.get("/messages/{user_id}/before")
+async def get_messages_before_endpoint(user_id: str, before: str, limit: int = 50):
+    """Get messages older than the given ISO-8601 timestamp."""
+    try:
+        messages = await db_manager.get_messages_before(user_id, before, limit)
+        return messages
+    except Exception as e:
+        print(f"Error fetching messages before: {e}")
+        return []
 
 @app.get("/users/online")
 async def get_online_users():
