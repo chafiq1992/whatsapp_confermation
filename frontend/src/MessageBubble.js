@@ -102,6 +102,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
 
   const isImage = msg.type === "image" && !isGroupedImages;
   const isVideo = msg.type === "video";
+  const isCatalogItem = msg.type === "catalog_item" || msg.type === "interactive_product";
+  const isCatalogSet = msg.type === "catalog_set";
   const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
 
   // Audio player state and refs
@@ -374,6 +376,22 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
               {order.product_items.map((item, i) => {
                 const product = catalogProducts[String(item.product_retailer_id)] || {};
                 const hasProductInfo = product.name || product.image;
+                // Try to infer size/color from common WhatsApp payload shapes
+                const customizations = item.customizations || item.variations || item.attributes || [];
+                const getFromArray = (arr, key) => {
+                  try {
+                    const found = (arr || []).find(
+                      (c) =>
+                        (c?.name || c?.type || c?.key || "").toString().toLowerCase() === key
+                        || (c?.title || "").toString().toLowerCase() === key
+                    );
+                    return (found?.value || found?.option || found?.selection || found?.text || "").toString();
+                  } catch {
+                    return "";
+                  }
+                };
+                const sizeVal = item.size || item.variant_size || getFromArray(customizations, "size");
+                const colorVal = item.color || item.variant_color || getFromArray(customizations, "color");
                 
                 return (
                   <li
@@ -418,6 +436,24 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                             {item.item_price} {item.currency || "MAD"}
                           </span>
                         </span>
+                        {sizeVal && (
+                          <>
+                            <span className="text-gray-400">|</span>
+                            <span className="flex items-center">
+                              <span className="font-medium text-blue-700">Size:</span>
+                              <span className="ml-1 font-semibold">{sizeVal}</span>
+                            </span>
+                          </>
+                        )}
+                        {colorVal && (
+                          <>
+                            <span className="text-gray-400">|</span>
+                            <span className="flex items-center">
+                              <span className="font-medium text-blue-700">Color:</span>
+                              <span className="ml-1 font-semibold">{colorVal}</span>
+                            </span>
+                          </>
+                        )}
                       </div>
                       
                       {product.price && product.price !== item.item_price && (
@@ -427,6 +463,27 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
                           </span>
                         </div>
                       )}
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded"
+                          onClick={() => {
+                            try {
+                              window.dispatchEvent(
+                                new CustomEvent("add-to-order", {
+                                  detail: {
+                                    variantId: String(item.product_retailer_id),
+                                    quantity: Number(item.quantity) || 1,
+                                  },
+                                })
+                              );
+                            } catch {}
+                          }}
+                          title="Add this item to the Shopify order panel"
+                        >
+                          Add to Order
+                        </button>
+                      </div>
                     </div>
                   </li>
                 );
@@ -474,6 +531,18 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
          isImage ? renderSingleImage(mediaUrl, "Product", msg.caption || msg.price) :
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
+         isCatalogItem ? (
+           <div className="whitespace-pre-line break-words leading-relaxed">
+             <div className="text-[10px] uppercase tracking-wide opacity-75 mb-0.5">Product</div>
+             {msg.message}
+           </div>
+         ) :
+         isCatalogSet ? (
+           <div className="whitespace-pre-line break-words leading-relaxed">
+             <div className="text-[10px] uppercase tracking-wide opacity-75 mb-0.5">Catalog Set</div>
+             {msg.message}
+           </div>
+         ) :
          isText ? (
            <div className="whitespace-pre-line break-words leading-relaxed">
              {msg.message}

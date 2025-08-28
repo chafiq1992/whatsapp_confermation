@@ -130,16 +130,24 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   }, [productSearch, API_BASE]);
 
   // Add product by variant id
-  const handleAddByVariantId = async () => {
-    if (!variantIdInput) return;
+  const addByVariantId = async (variantId, quantity = 1) => {
+    if (!variantId) return;
     try {
-      const res = await api.get(`${API_BASE}/shopify-variant/${variantIdInput}`);
+      const res = await api.get(`${API_BASE}/shopify-variant/${variantId}`);
       if (res.data) {
-        setSelectedItems(items => [...items, { variant: res.data, quantity: 1, discount: 0 }]);
+        setSelectedItems(items => [
+          ...items,
+          { variant: res.data, quantity: Number(quantity) || 1, discount: 0 },
+        ]);
       }
     } catch {
       setErrorMsg("Variant not found.");
     }
+  };
+
+  const handleAddByVariantId = async () => {
+    if (!variantIdInput) return;
+    await addByVariantId(variantIdInput, 1);
     setVariantIdInput("");
   };
 
@@ -158,6 +166,20 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const removeOrderItem = idx => {
     setSelectedItems(items => items.filter((_, i) => i !== idx));
   };
+
+  // Listen for "add-to-order" events dispatched from message bubbles
+  useEffect(() => {
+    const handler = (e) => {
+      const detail = e?.detail || {};
+      const variantId = detail.variantId || detail.productId || detail.id;
+      const quantity = detail.quantity || 1;
+      if (variantId) {
+        addByVariantId(String(variantId), Number(quantity) || 1);
+      }
+    };
+    window.addEventListener("add-to-order", handler);
+    return () => window.removeEventListener("add-to-order", handler);
+  }, [addByVariantId]);
 
   const handleCreateOrder = async () => {
     setErrorMsg("");
