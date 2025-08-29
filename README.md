@@ -59,6 +59,8 @@ this bucket and makes each object publicly accessible so it can be previewed in
 the frontend. The returned URLs follow the
 `https://storage.googleapis.com/<bucket>/<filename>` format.
 
+Optionally, you can separate user-uploaded media from other artifacts (like catalog cache) by setting `GCS_MEDIA_BUCKET_NAME`. When provided, media uploads go to this bucket, while other uploads continue using `GCS_BUCKET_NAME`.
+
 Create a service account in your Google Cloud project and grant it write access
 to the bucket. Download the JSON key for this account and either mount it on
 disk and set `GCS_CREDENTIALS_FILE` to its path or paste the contents into the
@@ -116,6 +118,80 @@ REACT_APP_API_BASE=https://api.example.com \
 REACT_APP_WS_URL=wss://api.example.com/ws/ \
 npm run build
 ```
+
+## Self-hosted Redis (Docker/local VM)
+
+This project uses Redis for:
+
+- Caching recent messages per user
+- WebSocket pub/sub fanout across instances
+- Optional HTTP rate limiting
+
+You can run Redis locally alongside the backend using Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+This starts two services:
+
+- `redis` on port 6379
+- `backend` on port 8080 with `REDIS_URL=redis://redis:6379`
+
+Environment variables you can override (see `env.example`):
+
+- `REDIS_URL` (default: `redis://redis:6379` in Compose, `redis://localhost:6379` otherwise)
+- `ENABLE_WS_PUBSUB` (default: `1`)
+- `SEND_TEXT_PER_MIN` and `SEND_MEDIA_PER_MIN` for rate limits
+
+If running the backend without Docker Compose but with a local Redis:
+
+```bash
+# Start Redis locally (Windows WSL, Linux, or macOS)
+redis-server
+
+# In another terminal, run the backend with REDIS_URL pointing to localhost
+set REDIS_URL=redis://localhost:6379  # PowerShell: $env:REDIS_URL="redis://localhost:6379"
+uvicorn backend.main:app --reload --port 8080
+```
+
+The backend attempts to connect to Redis at startup. If Redis is unavailable, the app continues to work but without caching, pub/sub, or rate limiting.
+
+## CI/CD to Cloud Run with Memorystore and GCS
+
+This repo includes a GitHub Actions workflow to build/push the Docker image to Artifact Registry and deploy to Cloud Run, wired to a Redis Memorystore instance and a GCS bucket.
+
+1. Create infrastructure (once):
+
+```bash
+./infra/memorystore-and-vpc-setup.sh <PROJECT_ID> <REGION> cr-redis my-redis
+# Note the Memorystore host printed at the end
+```
+
+2. Create a GCS bucket and grant your service account write access:
+
+```bash
+gsutil mb -l <REGION> gs://<GCS_BUCKET_NAME>
+```
+
+3. In GitHub repo settings, add secrets:
+
+- `GCP_PROJECT_ID`
+- `GCP_REGION` (e.g., `us-central1`)
+- `GAR_LOCATION` (e.g., `us-central1`)
+- `GCP_SA_KEY` (JSON key for a deploy service account)
+- `VPC_CONNECTOR` (e.g., `cr-redis`)
+- `REDIS_HOST` (Memorystore private IP, e.g., `10.0.0.5`)
+- `GCS_BUCKET_NAME`
+
+4. Push to `main` to trigger deployment (`.github/workflows/deploy-cloud-run.yml`).
+
+Alternatively, deploy locally with:
+
+```bash
+./infra/cloud-run-deploy.sh <PROJECT_ID> <REGION> whatsapp-backend <GAR_LOCATION> whatsapp cr-redis <REDIS_HOST> <GCS_BUCKET_NAME>
+```
+
 
 ## Building the Docker image
 

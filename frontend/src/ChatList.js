@@ -127,6 +127,7 @@ function ChatList({
               ? msg.message
               : msg.caption || msg.type || '';
           const time = msg.timestamp || new Date().toISOString();
+          const mtype = msg.type || (msg.url ? 'image' : 'text');
           setConversations((prev) => {
             const idx = prev.findIndex((c) => c.user_id === userId);
             if (idx !== -1) {
@@ -135,6 +136,7 @@ function ChatList({
                 ...current,
                 last_message: text,
                 last_message_time: time,
+                last_message_type: mtype,
                 unread_count:
                   activeUserRef.current?.user_id === userId
                     ? current.unread_count
@@ -151,6 +153,7 @@ function ChatList({
               name: msg.name || userId,
               last_message: text,
               last_message_time: time,
+              last_message_type: mtype,
               unread_count:
                 activeUserRef.current?.user_id === userId ? 0 : 1,
             };
@@ -424,8 +427,17 @@ const ConversationRow = memo(function Row({
 
         {/* Bottom line */}
         <div className="flex items-center justify-between">
-          <span className="truncate text-xs text-gray-300 flex-1">
-            {conv.last_message || "No messages yet"}
+          <span className="truncate text-xs text-gray-300 flex-1 flex items-center gap-1">
+            {(() => {
+              const t = (conv.last_message_type || '').toLowerCase();
+              if (t === 'image') return <><span aria-hidden>🖼️</span><span>Image</span></>;
+              if (t === 'audio') return <><span aria-hidden>🎵</span><span>Audio</span></>;
+              if (t === 'video') return <><span aria-hidden>🎬</span><span>Video</span></>;
+              if (t === 'catalog_item' || t === 'interactive_product') return <><span aria-hidden>🏷️</span><span>Product</span></>;
+              if (t === 'catalog_set') return <><span aria-hidden>📦</span><span>Catalog</span></>;
+              if (t === 'order') return <><span aria-hidden>🧾</span><span>Order</span></>;
+              return conv.last_message || "No messages yet";
+            })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">
             {selectedAgent && (

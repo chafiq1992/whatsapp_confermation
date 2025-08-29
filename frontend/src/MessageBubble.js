@@ -44,7 +44,7 @@ function formatTime(ts) {
   }
 }
 
-export default function MessageBubble({ msg, self, catalogProducts = {} }) {
+export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
   // Enhanced order data parsing with better error handling
   const getOrderData = () => {
@@ -525,6 +525,22 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
     </div>
   );
 
+  // Simple highlighter for text content
+  const highlightText = (text, query) => {
+    try {
+      const q = String(query || "").trim();
+      if (!q) return text;
+      const parts = String(text || "").split(new RegExp(`(${q.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")})`, 'ig'));
+      return parts.map((part, i) =>
+        part.toLowerCase() === q.toLowerCase()
+          ? <mark key={i} className="bg-yellow-300 text-black px-0.5 rounded">{part}</mark>
+          : <React.Fragment key={i}>{part}</React.Fragment>
+      );
+    } catch {
+      return text;
+    }
+  };
+
   // Main component render
   if (isOrder) {
     return (
@@ -542,12 +558,20 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
   return (
     <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-2`}>
       <div
-        className={`max-w-[80%] px-3 py-2 rounded-2xl shadow-md transition-all hover:shadow-lg ${
+        className={`relative max-w-[80%] px-3 py-2 rounded-2xl shadow-md transition-all hover:shadow-lg ${
           self 
             ? "bg-[#004AAD] text-white rounded-br-none" 
             : "bg-gray-700 text-white rounded-bl-none"
         }`}
       >
+        {!self && typeof onForward === 'function' && (
+          <button
+            type="button"
+            title="Forward"
+            onClick={(e) => { e.stopPropagation(); onForward(msg); }}
+            className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
+          >↪</button>
+        )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :
          isImage ? renderSingleImage(mediaUrl, "Product", msg.caption || msg.price) :
@@ -556,24 +580,24 @@ export default function MessageBubble({ msg, self, catalogProducts = {} }) {
          isCatalogItem ? (
            <div className="whitespace-pre-line break-words leading-relaxed">
              <div className="text-[10px] uppercase tracking-wide opacity-75 mb-0.5">Product</div>
-             {msg.message}
+             {highlightText(msg.message, highlightQuery)}
            </div>
          ) :
          isCatalogSet ? (
            <div className="whitespace-pre-line break-words leading-relaxed">
              <div className="text-[10px] uppercase tracking-wide opacity-75 mb-0.5">Catalog Set</div>
-             {msg.message}
+             {highlightText(msg.message, highlightQuery)}
            </div>
          ) :
          isText ? (
            <div className="whitespace-pre-line break-words leading-relaxed">
-             {msg.message}
+             {highlightText(msg.message, highlightQuery)}
            </div>
          ) : (
            <div className="text-xs italic text-gray-300">
              Unsupported message type: {msg.type}
            </div>
-         )}
+        )}
 
         {/* Message footer with timestamp and status */}
         <div className="flex items-center justify-end mt-1 text-xs opacity-75 space-x-1">

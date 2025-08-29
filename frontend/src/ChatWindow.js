@@ -80,6 +80,9 @@ function groupConsecutiveImages(messages) {
 
 export default function ChatWindow({ activeUser, ws }) {
   const [messages, setMessages] = useState([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHitIndexes, setSearchHitIndexes] = useState([]);
+  const [activeHitIdx, setActiveHitIdx] = useState(-1);
   const [text, setText] = useState("");
   const [pendingQueues, setPendingQueues] = useState({});
   const [sendingQueues, setSendingQueues] = useState({});
@@ -133,7 +136,32 @@ export default function ChatWindow({ activeUser, ws }) {
   const messagesEndRef = useRef(null);
   const canvasRef = useRef();
 
-  const groupedMessages = groupConsecutiveImages(messages);
+  // Insert date separators like WhatsApp Business
+  const formatDayLabel = (date) => {
+    const d = new Date(date);
+    const today = new Date();
+    const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+    const isSame = (a,b)=> a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+    if (isSame(d, today)) return 'Today';
+    if (isSame(d, yesterday)) return 'Yesterday';
+    return d.toLocaleDateString(undefined, { weekday: 'long' });
+  };
+
+  const withDateSeparators = (list = []) => {
+    const result = [];
+    let lastDay = '';
+    for (const m of list) {
+      const dayKey = new Date(m.timestamp).toDateString();
+      if (dayKey !== lastDay) {
+        result.push({ __separator: true, label: formatDayLabel(m.timestamp), key: `sep_${dayKey}` });
+        lastDay = dayKey;
+      }
+      result.push(m);
+    }
+    return result;
+  };
+
+  const groupedMessages = withDateSeparators(groupConsecutiveImages(messages));
 
   // Helpers for current user's pendingImages queue state
   const getUserId = () => activeUser?.user_id || "";
@@ -222,6 +250,20 @@ export default function ChatWindow({ activeUser, ws }) {
     const newest = messages[messages.length - 1]?.timestamp;
     if (newest) lastTimestampRef.current = newest;
   }, [messages]);
+
+  // Update search hits when query or messages change
+  useEffect(() => {
+    const q = String(searchQuery || '').trim().toLowerCase();
+    if (!q) { setSearchHitIndexes([]); setActiveHitIdx(-1); return; }
+    const hits = [];
+    groupedMessages.forEach((m, idx) => {
+      if (m.__separator) return;
+      const txt = (typeof m.message === 'string' ? m.message : m.caption || '').toLowerCase();
+      if (txt.includes(q)) hits.push(idx);
+    });
+    setSearchHitIndexes(hits);
+    setActiveHitIdx(hits.length ? 0 : -1);
+  }, [searchQuery, messages]);
 
   // Cleanup queues and revoke URLs for all except active user on conversation change
   useEffect(() => {
@@ -466,6 +508,17 @@ export default function ChatWindow({ activeUser, ws }) {
     }
   };
 
+  const scrollToHit = (hitListIndex) => {
+    if (hitListIndex < 0 || hitListIndex >= searchHitIndexes.length) return;
+    const container = messagesEndRef.current;
+    if (!container) return;
+    const childIndex = searchHitIndexes[hitListIndex];
+    const child = container.children[childIndex];
+    if (child) {
+      child.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
   useEffect(() => {
     if (preserveScroll) {
       setPreserveScroll(false);
@@ -524,6 +577,38 @@ export default function ChatWindow({ activeUser, ws }) {
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') sendMessage();
   };
+
+  // Listen to forwarded messages and open a simple picker UI
+  useEffect(() => {
+    const handler = (ev) => {
+      const payload = ev.detail || {};
+      const text = payload.message;
+      const type = payload.type || 'text';
+      // Show a lightweight prompt to choose a conversation id to forward to
+      const target = window.prompt('Forward to user_id (phone):');
+      if (!target) return;
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const temp_id = `temp_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+          const messageObj = {
+            id: temp_id,
+            temp_id,
+            user_id: target,
+            message: text,
+            type,
+            from_me: true,
+            status: 'sending',
+            timestamp: new Date().toISOString(),
+          };
+          ws.send(JSON.stringify({ type: 'send_message', data: messageObj }));
+        } else {
+          api.post(`${API_BASE}/send-message`, { user_id: target, message: text, type });
+        }
+      } catch {}
+    };
+    window.addEventListener('forward-message', handler);
+    return () => window.removeEventListener('forward-message', handler);
+  }, [ws]);
 
   // File handling functions remain the same
   const handleFiles = (files, options = {}) => {
@@ -688,8 +773,32 @@ export default function ChatWindow({ activeUser, ws }) {
       onDragOver={e => e.preventDefault()}
       onPaste={handlePaste}
     >
-      <div className="p-4 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
-        <strong>{activeUser?.name || activeUser?.user_id}</strong>
+      <div className="p-2 bg-gray-800 border-b border-gray-700 flex items-center justify-between gap-2">
+        <strong className="px-2">{activeUser?.name || activeUser?.user_id}</strong>
+        {/* Search box */}
+        <div className="flex items-center gap-1 flex-1 max-w-[420px]">
+          <input
+            className="flex-1 px-2 py-1 bg-gray-700 text-white rounded"
+            placeholder="Search in conversation"
+            value={searchQuery}
+            onChange={(e)=>setSearchQuery(e.target.value)}
+          />
+          <span className="text-xs text-gray-300 min-w-[70px] text-center">
+            {searchHitIndexes.length ? `${activeHitIdx+1}/${searchHitIndexes.length}` : ''}
+          </span>
+          <button
+            className="px-2 py-1 bg-gray-700 text-white rounded disabled:opacity-50"
+            disabled={searchHitIndexes.length===0}
+            onClick={()=>{ const next = (activeHitIdx - 1 + searchHitIndexes.length) % searchHitIndexes.length; setActiveHitIdx(next); scrollToHit(next); }}
+            title="Previous"
+          >↑</button>
+          <button
+            className="px-2 py-1 bg-gray-700 text-white rounded disabled:opacity-50"
+            disabled={searchHitIndexes.length===0}
+            onClick={()=>{ const next = (activeHitIdx + 1) % searchHitIndexes.length; setActiveHitIdx(next); scrollToHit(next); }}
+            title="Next"
+          >↓</button>
+        </div>
         <div className="flex items-center space-x-2">
           <div className={`w-3 h-3 rounded-full ${
             ws && ws.readyState === WebSocket.OPEN ? 'bg-green-500' : 'bg-red-500'
@@ -766,12 +875,38 @@ export default function ChatWindow({ activeUser, ws }) {
       
       <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-900" ref={messagesEndRef}>
         {groupedMessages.map((msg, index) => (
-          <React.Fragment key={msg.id || msg.temp_id || index}>
-            {index === unreadSeparatorIndex && (
-              <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
-            )}
-            <MessageBubble msg={msg} self={msg.from_me} catalogProducts={catalogProducts} />
-          </React.Fragment>
+          msg.__separator ? (
+            <div key={msg.key} className="sticky top-2 z-10 flex justify-center my-2">
+              <span className="px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-200 border border-gray-600">{msg.label}</span>
+            </div>
+          ) : (
+            <React.Fragment key={msg.id || msg.temp_id || index}>
+              {index === unreadSeparatorIndex && (
+                <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
+              )}
+              <MessageBubble
+                msg={msg}
+                self={msg.from_me}
+                catalogProducts={catalogProducts}
+                highlightQuery={searchQuery}
+                onForward={(forwardMsg)=>{
+                  const text = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[media]');
+                  let fType = forwardMsg.type || 'text';
+                  if (fType !== 'text' && fType !== 'order' && fType !== 'catalog_item' && fType !== 'catalog_set') {
+                    // For media, forward as text placeholder similar to WhatsApp preview
+                    fType = 'text';
+                    const label = forwardMsg.type === 'image' ? 'Image' : forwardMsg.type === 'audio' ? 'Audio' : forwardMsg.type === 'video' ? 'Video' : 'Media';
+                    if (!text || text === '[media]') {
+                      // Prefer a short label
+                      forwardMsg.message = label;
+                    }
+                  }
+                  const payload = { message: typeof forwardMsg.message === 'string' ? forwardMsg.message : text, type: fType };
+                  window.dispatchEvent(new CustomEvent('forward-message', { detail: payload }));
+                }}
+              />
+            </React.Fragment>
+          )
         ))}
       </div>
       

@@ -31,8 +31,9 @@ def _get_client():
     return storage.Client(credentials=credentials)
 
 
-def _upload_sync(file_path: str, content_type: str | None = None) -> str:
-    bucket_name = os.getenv("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
+def _upload_sync(file_path: str, content_type: str | None = None, bucket_name: str | None = None) -> str:
+    # Allow callers to explicitly choose a bucket; otherwise fall back to default
+    bucket_name = bucket_name or os.getenv("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
     if not bucket_name:
         raise RuntimeError("GCS_BUCKET_NAME is not set")
 
@@ -50,10 +51,14 @@ def _upload_sync(file_path: str, content_type: str | None = None) -> str:
     return blob.public_url
 
 
-async def upload_file_to_gcs(file_path: str, content_type: str | None = None) -> str:
-    """Upload a file to Google Cloud Storage and return a public URL."""
+async def upload_file_to_gcs(file_path: str, content_type: str | None = None, bucket_name: str | None = None) -> str:
+    """Upload a file to Google Cloud Storage and return a public URL.
+
+    If ``bucket_name`` is provided, the file will be uploaded to that bucket;
+    otherwise the default ``GCS_BUCKET_NAME`` will be used.
+    """
     loop = asyncio.get_event_loop()
-    func = partial(_upload_sync, file_path, content_type)
+    func = partial(_upload_sync, file_path, content_type, bucket_name)
     return await loop.run_in_executor(None, func)
 
 

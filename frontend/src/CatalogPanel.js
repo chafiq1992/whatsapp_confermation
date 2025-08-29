@@ -232,29 +232,7 @@ export default function CatalogPanel({
     }
   };
 
-  const sendEntireCatalog = async () => {
-    if (!activeUser?.user_id) return;
-    let ids = [];
-    try {
-      const res = await api.get(`${API_BASE}/catalog-all-products`);
-      ids = Array.isArray(res.data)
-        ? res.data.map(p => p.retailer_id).filter(Boolean)
-        : [];
-    } catch (err) {
-      console.error('Error fetching catalog:', err);
-    }
-    sendOptimisticMessage({ type: 'text', message: 'Sending full catalog…' });
-    try {
-      await api.post(
-        `${API_BASE}/send-catalog-all`,
-        new URLSearchParams({
-          user_id: activeUser.user_id,
-          product_ids: JSON.stringify(ids)
-        }),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-      );
-    } catch {}
-  };
+  // Removed legacy "Send entire catalog" action per product requirements
 
   // Send selected images (direct links)
   const sendSelectedImages = async () => {
@@ -436,14 +414,6 @@ export default function CatalogPanel({
         <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
         <div className="flex items-center gap-2">
           <RefreshCatalogButton onRefresh={fetchSets} />
-          <button
-            onClick={sendEntireCatalog}
-            disabled={!isWebSocketConnected || !activeUser?.user_id}
-            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
-            type="button"
-          >
-            Send entire catalog
-          </button>
           <div className={`w-2.5 h-2.5 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
         </div>
       </div>

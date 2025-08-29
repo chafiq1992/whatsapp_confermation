@@ -1585,7 +1585,9 @@ class MessageProcessor:
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(media_content)
 
-            drive_url = await upload_file_to_gcs(str(file_path), mime_type)
+            drive_url = await upload_file_to_gcs(
+                str(file_path), mime_type, bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+            )
             if not drive_url:
                 raise RuntimeError("GCS upload failed")
 
@@ -2196,7 +2198,9 @@ async def send_media(
                     raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
             # ---------- upload to Google Drive ----------
-            media_url = await upload_file_to_gcs(str(file_path))
+            media_url = await upload_file_to_gcs(
+                str(file_path), bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+            )
 
             # Build message payload using the public GCS URL instead of a local path
             message_data = {
@@ -2630,6 +2634,7 @@ class CatalogManager:
             json.dump(products, f, ensure_ascii=False)
         try:
             await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+            await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
         except Exception as exc:
             print(f"GCS upload failed: {exc}")
         return len(products)
@@ -2708,7 +2713,9 @@ async def cashin(
                 await f.write(content)
 
             # Upload to Google Cloud Storage
-            media_url = await upload_file_to_gcs(str(file_path))
+            media_url = await upload_file_to_gcs(
+                str(file_path), bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+            )
             media_path = str(file_path)
 
         # Build message payload
