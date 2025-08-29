@@ -10,6 +10,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [selectedCustomerId, setSelectedCustomerId] = useState(null);
   const [selectedAddressIdx, setSelectedAddressIdx] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [orders, setOrders] = useState([]);
 
   const normalizePhone = (phone) => {
     if (!phone) return "";
@@ -106,6 +107,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           province: addr.province || "",
           zip: addr.zip || "",
         });
+        // Fetch orders list
+        api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: first.customer_id, limit: 50 } })
+          .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
+          .catch(() => setOrders([]));
       } else if (single?.data) {
         const c = single.data;
         setCustomer(c);
@@ -118,9 +123,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           province: c.province || "",
           zip: c.zip || "",
         });
+        if (c.customer_id) {
+          api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
+            .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
+            .catch(() => setOrders([]));
+        } else {
+          setOrders([]);
+        }
       } else {
         setCustomer(null);
         setOrderData(prev => ({ ...prev, phone: activeUser.phone || "" }));
+        setOrders([]);
       }
     }).catch((err) => {
       const detail = err?.response?.data?.detail || err?.message || "";
@@ -294,38 +307,44 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                                 province: addr.province || "",
                                 zip: addr.zip || "",
                               }));
+                              api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
+                                .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
+                                .catch(() => setOrders([]));
                             }}
                           />
                           <span className="font-semibold">{c.name || '(no name)'} • {c.phone || ''}</span>
                         </label>
                         {Array.isArray(c.addresses) && c.addresses.length > 0 && (
-                          <div className="ml-6 mt-1">
-                            <div className="text-xs mb-1">Address:</div>
-                            <select
-                              className="bg-gray-800 text-white p-1 rounded"
-                              value={selectedCustomerId===c.customer_id ? selectedAddressIdx : 0}
-                              onChange={(e) => {
-                                const idx = Number(e.target.value) || 0;
-                                setSelectedCustomerId(c.customer_id);
-                                setSelectedAddressIdx(idx);
-                                const addr = c.addresses[idx] || {};
-                                setOrderData(d => ({
-                                  ...d,
-                                  address: addr.address1 || "",
-                                  city: addr.city || "",
-                                  province: addr.province || "",
-                                  zip: addr.zip || "",
-                                  phone: c.phone || activeUser.phone,
-                                  name: c.name || d.name,
-                                  email: c.email || d.email,
-                                }));
-                              }}
-                            >
-                              {c.addresses.map((a, idx) => (
-                                <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
-                              ))}
-                            </select>
-                          </div>
+                          <details className="ml-6 mt-1">
+                            <summary className="cursor-pointer text-xs text-gray-300">Addresses ({c.addresses.length})</summary>
+                            <div className="mt-1">
+                              <div className="text-xs mb-1">Select address:</div>
+                              <select
+                                className="bg-gray-800 text-white p-1 rounded"
+                                value={selectedCustomerId===c.customer_id ? selectedAddressIdx : 0}
+                                onChange={(e) => {
+                                  const idx = Number(e.target.value) || 0;
+                                  setSelectedCustomerId(c.customer_id);
+                                  setSelectedAddressIdx(idx);
+                                  const addr = c.addresses[idx] || {};
+                                  setOrderData(d => ({
+                                    ...d,
+                                    address: addr.address1 || "",
+                                    city: addr.city || "",
+                                    province: addr.province || "",
+                                    zip: addr.zip || "",
+                                    phone: c.phone || activeUser.phone,
+                                    name: c.name || d.name,
+                                    email: c.email || d.email,
+                                  }));
+                                }}
+                              >
+                                {c.addresses.map((a, idx) => (
+                                  <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </details>
                         )}
                       </div>
                     ))}
@@ -335,19 +354,64 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                     <p><strong>Name:</strong> {customer.name}</p>
                     <p><strong>Email:</strong> {customer.email}</p>
                     <p><strong>Phone:</strong> {customer.phone}</p>
-                    <p><strong>Address:</strong> {customer.address}</p>
+                    {Array.isArray(customer.addresses) && customer.addresses.length > 0 ? (
+                      <details>
+                        <summary className="cursor-pointer">Addresses ({customer.addresses.length})</summary>
+                        <div className="ml-4 mt-1">
+                          <div className="text-xs mb-1">Select address:</div>
+                          <select
+                            className="bg-gray-800 text-white p-1 rounded"
+                            value={selectedAddressIdx}
+                            onChange={(e) => {
+                              const idx = Number(e.target.value) || 0;
+                              setSelectedAddressIdx(idx);
+                              const addr = customer.addresses[idx] || {};
+                              setOrderData(d => ({
+                                ...d,
+                                address: addr.address1 || "",
+                                city: addr.city || "",
+                                province: addr.province || "",
+                                zip: addr.zip || "",
+                              }));
+                            }}
+                          >
+                            {customer.addresses.map((a, idx) => (
+                              <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </details>
+                    ) : (
+                      <p><strong>Address:</strong> {customer.address}</p>
+                    )}
                   </>
                 )}
                 <hr className="my-2" />
                 <p><strong>Total Orders:</strong> {(customer || customersList[0])?.total_orders}</p>
-                {(customer || customersList[0])?.last_order && (
-                  <div>
-                    <p><strong>Last Order Number:</strong> {(customer || customersList[0])?.last_order.order_number}</p>
-                    <p><strong>Order Total:</strong> {(customer || customersList[0])?.last_order.total_price}</p>
-                    <ul className="ml-4 list-disc">
-                      {(customer || customersList[0])?.last_order.line_items.map((li, idx) => (
-                        <li key={idx}>
-                          {li.quantity} x {li.title} {li.variant_title ? `(${li.variant_title})` : ""}
+                {/* Orders list */}
+                {Array.isArray(orders) && orders.length > 0 && (
+                  <div className="mt-2">
+                    <div className="font-semibold mb-1">Orders</div>
+                    <ul className="space-y-1 max-h-40 overflow-auto pr-1">
+                      {orders.map((o) => (
+                        <li key={o.id} className="text-sm flex justify-between gap-2 border-b border-gray-600 py-1">
+                          <div className="min-w-0">
+                            <a
+                              href={o.admin_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-300 hover:underline truncate inline-block"
+                              title="Open in Shopify admin"
+                            >
+                              {o.order_number}
+                            </a>
+                            <div className="text-xs text-gray-300">
+                              {new Date(o.created_at).toLocaleString()} • {o.financial_status || 'unpaid'}{o.fulfillment_status ? ` • ${o.fulfillment_status}` : ''}
+                            </div>
+                          </div>
+                          <div className="text-right text-sm whitespace-nowrap">
+                            {o.total_price} {o.currency || ''}
+                          </div>
                         </li>
                       ))}
                     </ul>

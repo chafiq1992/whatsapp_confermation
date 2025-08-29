@@ -473,36 +473,36 @@ export default function CatalogPanel({
       {/* Modal popup with grid and actions */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
-          <div className="relative bg-white rounded-xl p-3 w-[92vw] max-w-5xl max-h-[88vh] flex flex-col">
+          <div className="relative bg-white rounded-xl p-4 w-[96vw] max-w-6xl max-h-[90vh] flex flex-col">
             {/* Modal header */}
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-3 mb-3">
               {modalMode === 'products' && (
-                <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={() => { setModalMode('folders'); setProducts([]); setSelectedImages([]); }}>
+                <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={() => { setModalMode('folders'); setProducts([]); setSelectedImages([]); }}>
                   ← Back
                 </button>
               )}
-              <div className="font-semibold text-gray-800 text-sm flex-1 truncate">{modalTitle}</div>
+              <div className="font-semibold text-gray-800 text-base flex-1 truncate">{modalTitle}</div>
               {modalMode === 'products' ? (
                 <>
-                  <span className="text-xs text-gray-500 mr-2">Selected: {selectedCount}</span>
-                  <div className="flex items-center gap-1 mr-2">
-                    <span className="text-[11px] text-gray-600">Send as:</span>
-                    <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
-                    <button className={`px-2 py-0.5 text-[11px] rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
+                  <span className="text-sm text-gray-700 mr-2">Selected: {selectedCount}</span>
+                  <div className="flex items-center gap-2 mr-2">
+                    <span className="text-sm text-gray-700">Send as:</span>
+                    <button className={`px-3 py-1 text-sm rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
+                    <button className={`px-3 py-1 text-sm rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
                   </div>
-                  <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
-                  <button className="px-2 py-1 text-xs rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
-                  <button className="px-2 py-1 text-xs rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
-                  <button className="px-2 py-1 text-xs rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+                  <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
+                  <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
+                  <button className="px-3 py-2 text-sm rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
+                  <button className="px-3 py-2 text-sm rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
                 </>
               ) : (
-                <span className="text-xs text-gray-500">Select a set</span>
+                <span className="text-sm text-gray-700">Select a set</span>
               )}
-              <button className="ml-2 px-2 py-1 text-xs rounded bg-red-600 text-white" onClick={() => setModalOpen(false)}>Close</button>
+              <button className="ml-2 px-3 py-2 text-sm rounded bg-red-600 text-white" onClick={() => setModalOpen(false)}>Close</button>
             </div>
 
-            {/* Grid */}
-            <div ref={gridRef} className="flex-1 min-h-0 overflow-y-auto">
+            {/* Grid (ensure scroll area) */}
+            <div ref={gridRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
               {modalMode === 'folders' ? (
                 <div className="grid grid-cols-4 gap-3">
                   {folderSets.length === 0 ? (
@@ -533,22 +533,22 @@ export default function CatalogPanel({
                   ) : products.length === 0 ? (
                     <div className="text-center text-gray-500 text-sm py-6">No products in this set.</div>
                   ) : (
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-4 gap-3">
                       {products.map((p, idx) => {
                         const url = p.images?.[0]?.url;
                         const checked = url && selectedImages.includes(url);
                         return (
                           <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
                             {url && (
-                              <input type="checkbox" className="absolute top-1 right-1 z-10 scale-110" checked={checked} onChange={() => toggleSelect(url)} />
+                              <input type="checkbox" className="absolute top-2 right-2 z-10 scale-150 cursor-pointer" checked={checked} onChange={() => toggleSelect(url)} />
                             )}
-                            <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
+                            <div className="w-full h-32 bg-gray-100 flex items-center justify-center">
                               {url ? (
                                 <img
                                   src={url}
                                   data-src={url}
                                   alt={p.name}
-                                  className="w-full h-24 object-cover"
+                                  className="w-full h-32 object-cover"
                                   loading="lazy"
                                   onError={(e) => {
                                     const el = e.currentTarget;
@@ -562,8 +562,8 @@ export default function CatalogPanel({
                                 <span className="text-xs text-gray-400">No Image</span>
                               )}
                             </div>
-                            <div className="absolute left-1 bottom-1 flex gap-1">
-                              <button className="px-1.5 py-0.5 text-[10px] rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
+                            <div className="absolute left-2 bottom-2 flex gap-2">
+                              <button className="px-2.5 py-1 text-xs rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
                             </div>
                           </div>
                         );
@@ -571,7 +571,7 @@ export default function CatalogPanel({
                     </div>
                   )}
                   {loadingProducts && products.length > 0 && (
-                    <div className="text-center text-gray-500 text-xs py-2">Loading…</div>
+                    <div className="text-center text-gray-600 text-sm py-3">Loading…</div>
                   )}
                 </>
               )}

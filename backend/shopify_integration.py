@@ -314,6 +314,34 @@ async def search_customers_all(phone_number: str):
 
     return list(results_by_id.values())
 
+@router.get("/shopify-orders")
+async def shopify_orders(customer_id: str, limit: int = 50):
+    """Return recent orders for a Shopify customer (admin-simplified list)."""
+    params = {
+        "customer_id": customer_id,
+        "status": "any",
+        "order": "created_at desc",
+        "limit": max(1, min(int(limit), 250)),
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(ORDERS_ENDPOINT, params=params, timeout=15, **_client_args())
+        resp.raise_for_status()
+        orders = resp.json().get("orders", [])
+        domain = STORE_URL.replace("https://", "").replace("http://", "")
+        simplified = []
+        for o in orders:
+            simplified.append({
+                "id": o.get("id"),
+                "order_number": o.get("name"),
+                "created_at": o.get("created_at"),
+                "financial_status": o.get("financial_status"),
+                "fulfillment_status": o.get("fulfillment_status"),
+                "total_price": o.get("total_price"),
+                "currency": o.get("currency"),
+                "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
+            })
+        return simplified
+
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/shipping_zones.json"
