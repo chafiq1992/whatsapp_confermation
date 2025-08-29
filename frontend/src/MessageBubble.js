@@ -14,7 +14,7 @@ const ICONS = {
 // Enhanced media URL utility with better error handling
 export function getSafeMediaUrl(raw) {
   if (!raw) return "";
-  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^(https?:|blob:|data:)/i.test(raw)) return raw;
   if (raw.startsWith("/app/")) {
     raw = raw.replace(/^\/app\/(media\/)?/, "/media/");
   }

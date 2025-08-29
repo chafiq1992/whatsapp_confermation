@@ -233,8 +233,19 @@ export default function ChatWindow({ activeUser, ws }) {
             return mergeAndDedupe(prev, [data.data]);
           });
         } else if (data.type === 'message_received') {
-          if (data.data.from_me) return;
-          setMessages(prev => mergeAndDedupe(prev, [data.data]));
+          setMessages(prev => {
+            const incoming = data.data || {};
+            if (incoming.from_me) {
+              // Try to merge into the earliest optimistic placeholder of same type
+              const idx = prev.findIndex(m => m.from_me && !m.wa_message_id && (m.status === 'sending' || m.status === 'sent') && m.type === incoming.type);
+              if (idx !== -1) {
+                const updated = [...prev];
+                updated[idx] = sortByTime([{ ...updated[idx], ...incoming }])[0];
+                return sortByTime(updated);
+              }
+            }
+            return mergeAndDedupe(prev, [incoming]);
+          });
         } else if (data.type === 'message_status_update') {
           setMessages(prev => sortByTime(prev.map(msg => {
             const matchesTemp = data.data.temp_id && msg.temp_id === data.data.temp_id;
@@ -503,32 +514,34 @@ export default function ChatWindow({ activeUser, ws }) {
   const handleAudioFile = async (file) => {
     if (!activeUser || !file) return alert("No active user or audio file!");
     
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      // For audio, we still need to use HTTP upload but could optimize this later
-      const formData = new FormData();
-      formData.append('files', file);
-      formData.append('user_id', activeUser.user_id);
-      formData.append('media_type', 'audio');
-      try {
-        await api.post(`${API_BASE}/send-media`, formData);
-        // WebSocket will handle the real-time update
-      } catch (err) {
-        console.error("Audio upload error:", err);
-        alert("Audio upload failed");
-      }
-    } else {
-      // Fallback
-      const formData = new FormData();
-      formData.append('files', file);
-      formData.append('user_id', activeUser.user_id);
-      formData.append('media_type', 'audio');
-      try {
-        await api.post(`${API_BASE}/send-media`, formData);
-        fetchMessages();
-      } catch (err) {
-        console.error("Audio upload error:", err);
-        alert("Audio upload failed");
-      }
+    // Optimistic audio bubble
+    const temp_id = generateTempId();
+    const optimistic = {
+      id: temp_id,
+      temp_id,
+      user_id: activeUser.user_id,
+      type: 'audio',
+      from_me: true,
+      status: 'sending',
+      timestamp: new Date().toISOString(),
+      client_ts: Date.now(),
+      url: URL.createObjectURL(file),
+    };
+    setMessages(prev => sortByTime([...prev, optimistic]));
+
+    const formData = new FormData();
+    formData.append('files', file);
+    formData.append('user_id', activeUser.user_id);
+    formData.append('media_type', 'audio');
+    try {
+      const res = await api.post(`${API_BASE}/send-media`, formData);
+      const waId = res?.data?.wa_message_id;
+      const serverUrl = res?.data?.url || res?.data?.file_path;
+      setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(waId ? { id: waId } : {}), ...(serverUrl ? { url: serverUrl } : {}) } : m));
+    } catch (err) {
+      console.error("Audio upload error:", err);
+      setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
+      alert("Audio upload failed");
     }
   };
 
