@@ -284,70 +284,67 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               <>
                 {customersList.length > 0 ? (
                   <div className="space-y-2">
-                    <div className="text-sm text-gray-300">Multiple customers found for this phone:</div>
-                    {customersList.map((c) => (
-                      <div key={c.customer_id} className={`p-2 rounded border ${selectedCustomerId===c.customer_id? 'border-green-500':'border-gray-600'}`}>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="radio"
-                            name="customerChoice"
-                            checked={selectedCustomerId === c.customer_id}
-                            onChange={() => {
-                              setSelectedCustomerId(c.customer_id);
-                              setSelectedAddressIdx(0);
-                              setCustomer(c);
-                              const addr = (c.primary_address || c.addresses?.[0] || {});
+                    <div className="text-sm text-gray-300">Select customer for this phone:</div>
+                    <select
+                      className="w-full bg-gray-800 text-white p-2 rounded"
+                      value={selectedCustomerId || ''}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        const c = customersList.find(x => String(x.customer_id) === String(id));
+                        if (!c) return;
+                        setSelectedCustomerId(c.customer_id);
+                        setSelectedAddressIdx(0);
+                        setCustomer(c);
+                        const addr = (c.primary_address || c.addresses?.[0] || {});
+                        setOrderData(d => ({
+                          ...d,
+                          name: c.name || "",
+                          email: c.email || "",
+                          phone: c.phone || activeUser.phone,
+                          address: addr.address1 || "",
+                          city: addr.city || "",
+                          province: addr.province || "",
+                          zip: addr.zip || "",
+                        }));
+                        api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
+                          .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
+                          .catch(() => setOrders([]));
+                      }}
+                    >
+                      {customersList.map((c) => (
+                        <option key={c.customer_id} value={c.customer_id}>
+                          {(c.name || '(no name)')} • {(c.phone || '')}
+                        </option>
+                      ))}
+                    </select>
+                    {Array.isArray(customer?.addresses) && customer.addresses.length > 0 && (
+                      <details>
+                        <summary className="cursor-pointer text-xs text-gray-300">Addresses ({customer.addresses.length})</summary>
+                        <div className="mt-1">
+                          <div className="text-xs mb-1">Select address:</div>
+                          <select
+                            className="bg-gray-800 text-white p-1 rounded"
+                            value={selectedAddressIdx}
+                            onChange={(e) => {
+                              const idx = Number(e.target.value) || 0;
+                              setSelectedAddressIdx(idx);
+                              const addr = customer.addresses[idx] || {};
                               setOrderData(d => ({
                                 ...d,
-                                name: c.name || "",
-                                email: c.email || "",
-                                phone: c.phone || activeUser.phone,
                                 address: addr.address1 || "",
                                 city: addr.city || "",
                                 province: addr.province || "",
                                 zip: addr.zip || "",
                               }));
-                              api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
-                                .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
-                                .catch(() => setOrders([]));
                             }}
-                          />
-                          <span className="font-semibold">{c.name || '(no name)'} • {c.phone || ''}</span>
-                        </label>
-                        {Array.isArray(c.addresses) && c.addresses.length > 0 && (
-                          <details className="ml-6 mt-1">
-                            <summary className="cursor-pointer text-xs text-gray-300">Addresses ({c.addresses.length})</summary>
-                            <div className="mt-1">
-                              <div className="text-xs mb-1">Select address:</div>
-                              <select
-                                className="bg-gray-800 text-white p-1 rounded"
-                                value={selectedCustomerId===c.customer_id ? selectedAddressIdx : 0}
-                                onChange={(e) => {
-                                  const idx = Number(e.target.value) || 0;
-                                  setSelectedCustomerId(c.customer_id);
-                                  setSelectedAddressIdx(idx);
-                                  const addr = c.addresses[idx] || {};
-                                  setOrderData(d => ({
-                                    ...d,
-                                    address: addr.address1 || "",
-                                    city: addr.city || "",
-                                    province: addr.province || "",
-                                    zip: addr.zip || "",
-                                    phone: c.phone || activeUser.phone,
-                                    name: c.name || d.name,
-                                    email: c.email || d.email,
-                                  }));
-                                }}
-                              >
-                                {c.addresses.map((a, idx) => (
-                                  <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </details>
-                        )}
-                      </div>
-                    ))}
+                          >
+                            {customer.addresses.map((a, idx) => (
+                              <option key={idx} value={idx}>{a.address1 || ''} {a.city ? `, ${a.city}`: ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </details>
+                    )}
                   </div>
                 ) : (
                   <>

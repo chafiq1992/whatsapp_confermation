@@ -42,6 +42,7 @@ export default function CatalogPanel({
 
   // Temporary status for sending an entire set
   const [sendingSet, setSendingSet] = useState(false);
+  const autoLoadAttemptsRef = useRef(0);
 
   // Fetch sets list with SWR (cache first, then refresh)
   const fetchSets = async () => {
@@ -145,6 +146,18 @@ export default function CatalogPanel({
     if (!modalOpen || modalMode !== 'products' || !selectedSet) return;
     fetchProducts(selectedSet, fetchLimit);
   }, [fetchLimit]);
+
+  // Auto-load more until scroll is available (bounded attempts)
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'products') return;
+    const el = gridRef.current;
+    if (!el) return;
+    const canScroll = el.scrollHeight > el.clientHeight + 20;
+    if (!canScroll && hasMore && products.length >= fetchLimit && autoLoadAttemptsRef.current < 6) {
+      autoLoadAttemptsRef.current += 1;
+      setFetchLimit((l) => l + PAGE_SIZE);
+    }
+  }, [products, hasMore, modalOpen, modalMode, fetchLimit]);
 
   const generateTempId = () => `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -359,6 +372,7 @@ export default function CatalogPanel({
     setModalTitle(setObj.name || setObj.id);
     setModalMode('products');
     setFetchLimit(PAGE_SIZE);
+    autoLoadAttemptsRef.current = 0;
     setSelectedImages([]);
     setLoadingProducts(true);
     setModalOpen(true);
@@ -502,7 +516,7 @@ export default function CatalogPanel({
             </div>
 
             {/* Grid (ensure scroll area) */}
-            <div ref={gridRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
+            <div ref={gridRef} className="flex-1 min-h-0 overflow-y-auto pr-1 h-[72vh]">
               {modalMode === 'folders' ? (
                 <div className="grid grid-cols-4 gap-3">
                   {folderSets.length === 0 ? (
@@ -572,6 +586,18 @@ export default function CatalogPanel({
                   )}
                   {loadingProducts && products.length > 0 && (
                     <div className="text-center text-gray-600 text-sm py-3">Loading…</div>
+                  )}
+                  {!loadingProducts && hasMore && (
+                    <div className="flex justify-center py-3">
+                      <button
+                        type="button"
+                        className="px-4 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300"
+                        onClick={() => setFetchLimit((l) => l + PAGE_SIZE)}
+                        title="Load more items"
+                      >
+                        Load more
+                      </button>
+                    </div>
                   )}
                 </>
               )}
