@@ -14,16 +14,34 @@ const WS_BASE =
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
 const sortByTime = (list = []) => {
-  // Normalize timestamps so ISO strings and numeric/Date are both handled
+  // Normalize timestamps across types; treat naive ISO as UTC for consistency
   const toMs = (t) => {
     if (!t) return 0;
     if (t instanceof Date) return t.getTime();
     if (typeof t === 'number') return t;
-    // some payloads may carry seconds since epoch as string
-    if (/^\d+$/.test(String(t))) return Number(t) * (String(t).length <= 10 ? 1000 : 1);
-    return new Date(t).getTime();
+    const s = String(t);
+    if (/^\d+$/.test(s)) return Number(s) * (s.length <= 10 ? 1000 : 1);
+    // If ISO-like and missing timezone (no 'Z' or +/-), assume UTC
+    if (s.includes('T') && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      const ms = Date.parse(s + 'Z');
+      if (!Number.isNaN(ms)) return ms;
+    }
+    const ms = Date.parse(s);
+    return Number.isNaN(ms) ? 0 : ms;
   };
-  return [...list].sort((a, b) => toMs(a.timestamp) - toMs(b.timestamp));
+  return [...list].sort((a, b) => {
+    const aMs = toMs(a.timestamp);
+    const bMs = toMs(b.timestamp);
+    if (aMs !== bMs) return aMs - bMs;
+    // Tie-breaker using client-side monotonic ts if available
+    const aCt = a.client_ts || 0;
+    const bCt = b.client_ts || 0;
+    if (aCt !== bCt) return aCt - bCt;
+    // Final tie-break on temp_id/id to keep stable ordering
+    const ak = a.temp_id || a.id || '';
+    const bk = b.temp_id || b.id || '';
+    return String(ak).localeCompare(String(bk));
+  });
 };
 
 // Helper: format seconds as mm:ss for audio recording timer
@@ -206,7 +224,7 @@ export default function ChatWindow({ activeUser, ws }) {
           setMessages(prev => mergeAndDedupe(prev, Array.isArray(data.data) ? data.data : []));
         } else if (data.type === 'message_sent') {
           setMessages(prev => {
-            const idx = prev.findIndex(m => m.temp_id && m.temp_id === data.data.temp_id);
+            const idx = prev.findIndex(m => (m.temp_id && m.temp_id === data.data.temp_id) || (m.id && m.id === data.data.id));
             if (idx !== -1) {
               const updated = [...prev];
               updated[idx] = { ...prev[idx], ...data.data };
@@ -218,11 +236,19 @@ export default function ChatWindow({ activeUser, ws }) {
           if (data.data.from_me) return;
           setMessages(prev => mergeAndDedupe(prev, [data.data]));
         } else if (data.type === 'message_status_update') {
-          setMessages(prev => sortByTime(prev.map(msg =>
-            msg.temp_id === data.data.temp_id || msg.wa_message_id === data.data.wa_message_id
-              ? { ...msg, ...data.data }
-              : msg
-          )));
+          setMessages(prev => sortByTime(prev.map(msg => {
+            const matchesTemp = data.data.temp_id && msg.temp_id === data.data.temp_id;
+            const matchesWa = data.data.wa_message_id && msg.wa_message_id === data.data.wa_message_id;
+            if (matchesTemp || matchesWa) {
+              const merged = { ...msg, ...data.data };
+              // If final wa_message_id arrives, promote id to stable WA id to stabilise keys
+              if (data.data.wa_message_id) {
+                merged.id = data.data.wa_message_id;
+              }
+              return merged;
+            }
+            return msg;
+          })));
         }
       } catch (e) {
         console.error('WS parse error', e);
@@ -399,13 +425,14 @@ export default function ChatWindow({ activeUser, ws }) {
       from_me: true,
       status: "sending",
       timestamp: new Date().toISOString(),
+      client_ts: Date.now(),
       // Include caption and price if provided
       ...(caption && { caption }),
       ...(price && { price })
     };
 
     // Optimistically add to UI
-    setMessages(prev => [...prev, messageObj]);
+    setMessages(prev => sortByTime([...prev, messageObj]));
 
     // Send through WebSocket
     ws.send(
@@ -978,7 +1005,9 @@ export default function ChatWindow({ activeUser, ws }) {
         activeUser={activeUser}
         websocket={ws}
         onMessageSent={(optimistic) => {
-          setMessages(prev => sortByTime([...prev, optimistic]));
+          // Ensure optimistic entries are sortable with tie-breakers
+          const enriched = { ...optimistic, client_ts: optimistic.client_ts || Date.now() };
+          setMessages(prev => sortByTime([...prev, enriched]));
         }}
       />
       <ForwardDialog
