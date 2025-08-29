@@ -88,6 +88,32 @@ export default function App() {
     // return () => clearInterval(interval);
   }, []);
 
+  // Read agent/channel from URL hash for deep links: #agent=alice&assigned=1 | #dm=alice | #team=sales
+  useEffect(() => {
+    const applyFromHash = () => {
+      try {
+        const raw = window.location.hash || '';
+        const h = raw.startsWith('#') ? raw.slice(1) : raw;
+        const params = new URLSearchParams(h);
+        const agent = params.get('agent');
+        const assigned = params.get('assigned');
+        const dm = params.get('dm');
+        const team = params.get('team');
+
+        if (agent) setCurrentAgent(agent);
+        if (assigned != null) setMyAssignedOnly(assigned === '1' || assigned === 'true');
+        if (dm) {
+          setActiveUser({ user_id: `dm:${dm}`, name: `@${dm}` });
+        } else if (team) {
+          setActiveUser({ user_id: `team:${team}`, name: `#${team}` });
+        }
+      } catch {}
+    };
+    applyFromHash();
+    window.addEventListener('hashchange', applyFromHash);
+    return () => window.removeEventListener('hashchange', applyFromHash);
+  }, []);
+
   // Open a persistent WebSocket for admin notifications (with reconnection)
   useEffect(() => {
     let retry = 0;
