@@ -45,12 +45,13 @@ function ChatList({
   activeUser,
   onlineUsers = [],
   defaultAssignedFilter: defaultAssignedFilterProp,
+  wsConnected = false,
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [conversations, setConversations] = useState(initialConversations);
-  const [wsConnected, setWsConnected] = useState(false);
+  // wsConnected is now controlled by parent App via admin WS
   const [agents, setAgents] = useState([]);
   const [assignedFilter, setAssignedFilter] = useState('all'); // 'all' | 'unassigned' | username
   const [tagOptions, setTagOptions] = useState([]);
@@ -116,60 +117,7 @@ function ChatList({
     return () => controller.abort();
   }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
 
-  useEffect(() => {
-    const ws = new WebSocket(`${WS_BASE}admin`);
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'message_received') {
-          const msg = data.data || {};
-          const userId = msg.user_id;
-          const text =
-            typeof msg.message === 'string'
-              ? msg.message
-              : msg.caption || msg.type || '';
-          const time = msg.timestamp || new Date().toISOString();
-          const mtype = msg.type || (msg.url ? 'image' : 'text');
-          setConversations((prev) => {
-            const idx = prev.findIndex((c) => c.user_id === userId);
-            if (idx !== -1) {
-              const current = prev[idx];
-              const updated = {
-                ...current,
-                last_message: text,
-                last_message_time: time,
-                last_message_type: mtype,
-                unread_count:
-                  activeUserRef.current?.user_id === userId
-                    ? current.unread_count
-                    : (current.unread_count || 0) + 1,
-              };
-              return [
-                updated,
-                ...prev.slice(0, idx),
-                ...prev.slice(idx + 1),
-              ];
-            }
-            const newConv = {
-              user_id: userId,
-              name: msg.name || userId,
-              last_message: text,
-              last_message_time: time,
-              last_message_type: mtype,
-              unread_count:
-                activeUserRef.current?.user_id === userId ? 0 : 1,
-            };
-            return [newConv, ...prev];
-          });
-        }
-      } catch (err) {
-        console.error('WS message parsing failed', err);
-      }
-    };
-    return () => ws.close();
-  }, []);
+  // Admin WebSocket handled in App; avoid duplicate WS here to prevent double updates
 
   /* ─── Derived data (memoised) ─── */
   const filteredConversations = useMemo(() => {

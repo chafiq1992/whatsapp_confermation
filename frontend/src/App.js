@@ -19,6 +19,7 @@ export default function App() {
   const [activeUser, setActiveUser] = useState(null);
   const [currentAgent, setCurrentAgent] = useState("");
   const [myAssignedOnly, setMyAssignedOnly] = useState(false);
+  const [adminWsConnected, setAdminWsConnected] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
@@ -127,13 +128,16 @@ export default function App() {
       adminWsRef.current = ws;
       ws.addEventListener('open', () => {
         retry = 0;
+        setAdminWsConnected(true);
         try { ws.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
       });
       ws.addEventListener('close', () => {
+        setAdminWsConnected(false);
         const delay = Math.min(30000, 1000 * Math.pow(2, retry++)) + Math.floor(Math.random() * 500);
         timer = setTimeout(connectAdmin, delay);
       });
       ws.addEventListener('error', () => {
+        setAdminWsConnected(false);
         try { ws.close(); } catch {}
       });
       ws.addEventListener('message', (e) => {
@@ -193,6 +197,7 @@ export default function App() {
     return () => {
       clearTimeout(timer);
       if (adminWsRef.current) try { adminWsRef.current.close(); } catch {}
+      setAdminWsConnected(false);
     };
   }, []);
 
@@ -221,10 +226,7 @@ export default function App() {
       ws.addEventListener('error', () => {
         try { ws.close(); } catch {}
       });
-      ws.addEventListener('message', () => {
-        // Keep conversations in sync with new events
-        fetchConversations();
-      });
+      // No global conversation refetch on every WS event; admins WS updates the list
     };
 
     connectUser();
@@ -252,6 +254,7 @@ export default function App() {
           conversations={conversations}
           setActiveUser={setActiveUser}
           activeUser={activeUser}
+          wsConnected={adminWsConnected}
           defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
         />
       </div>
