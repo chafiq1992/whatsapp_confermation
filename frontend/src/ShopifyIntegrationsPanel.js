@@ -33,6 +33,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     city: "",
     province: "",
     zip: "",
+    order_note: "",
+    order_image_url: "",
+    complete_now: false,
   });
 
   // Automation Studio navigates to separate page
@@ -48,6 +51,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [market] = useState("Moroccan market");
   const [isCreating, setIsCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [lastResult, setLastResult] = useState(null);
 
   const MOROCCO_PROVINCES = [
     'Marrakech-Safi','Casablanca-Settat','Rabat-Salé-Kénitra','Fès-Meknès','Tanger-Tétouan-Al Hoceïma',
@@ -79,6 +83,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         city: "",
         province: "",
         zip: "",
+        order_note: "",
+        order_image_url: "",
+        complete_now: false,
       });
       return;
     }
@@ -106,6 +113,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           city: addr.city || "",
           province: addr.province || "",
           zip: addr.zip || "",
+          order_note: "",
+          order_image_url: "",
+          complete_now: false,
         });
         // Fetch orders list
         api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: first.customer_id, limit: 50 } })
@@ -122,6 +132,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           city: c.city || "",
           province: c.province || "",
           zip: c.zip || "",
+          order_note: "",
+          order_image_url: "",
+          complete_now: false,
         });
         if (c.customer_id) {
           api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
@@ -216,6 +229,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
   const handleCreateOrder = async () => {
     setErrorMsg("");
+    setLastResult(null);
     if (
       !orderData.address?.trim() ||
       !orderData.city?.trim() ||
@@ -247,9 +261,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     setIsCreating(true);
     try {
-      await api.post(`${API_BASE}/create-shopify-order`, orderPayload);
+      const res = await api.post(`${API_BASE}/create-shopify-order`, orderPayload);
       setSelectedItems([]);
       setErrorMsg("");
+      setLastResult(res?.data || null);
       alert("Order created successfully!");
     } catch (e) {
       setErrorMsg("Error creating order.");
@@ -519,6 +534,23 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 autoComplete="off"
                 required
               />
+              {/* Optional note and image URL */}
+              <label className="block text-xs font-bold mt-2">Order note (timeline text)</label>
+              <textarea
+                className="w-full p-1 rounded bg-gray-800 text-white"
+                rows={3}
+                placeholder="e.g. Customer requested gift wrap."
+                value={orderData.order_note}
+                onChange={e => handleOrderDataChange('order_note', e.target.value)}
+              />
+              <label className="block text-xs font-bold">Image URL (will be saved in note)</label>
+              <input
+                className="w-full p-1 rounded bg-gray-800 text-white"
+                placeholder="https://..."
+                value={orderData.order_image_url}
+                onChange={e => handleOrderDataChange('order_image_url', e.target.value)}
+                autoComplete="off"
+              />
             </div>
             {/* Product search and add section */}
             <hr className="my-2" />
@@ -635,6 +667,19 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 Payment due later
               </label>
             </div>
+            {/* Complete Now */}
+            <div className="mt-2 flex items-center">
+              <input
+                id="completeNow"
+                type="checkbox"
+                checked={orderData.complete_now}
+                onChange={e => handleOrderDataChange('complete_now', e.target.checked)}
+                className="mr-2"
+              />
+              <label htmlFor="completeNow" className="font-bold text-xs">
+                Complete draft now (creates order as payment pending)
+              </label>
+            </div>
             {/* Market */}
             <div className="mt-2 text-xs text-gray-400">
               <span>Market: Moroccan default (auto)</span>
@@ -648,6 +693,25 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             >
               {isCreating ? "Creating..." : "Create Shopify Order"}
             </button>
+
+            {lastResult && (
+              <div className="mt-3 text-xs bg-gray-800 p-2 rounded">
+                <div className="font-bold">Result</div>
+                {lastResult.shopify_admin_link && (
+                  <div>
+                    Draft: <a className="text-blue-300 underline" href={lastResult.shopify_admin_link} target="_blank" rel="noreferrer">Open draft</a>
+                  </div>
+                )}
+                {lastResult.order_admin_link && (
+                  <div>
+                    Order: <a className="text-blue-300 underline" href={lastResult.order_admin_link} target="_blank" rel="noreferrer">Open order</a>
+                  </div>
+                )}
+                {lastResult.message && (
+                  <div className="text-gray-300 mt-1">{lastResult.message}</div>
+                )}
+              </div>
+            )}
           </form>
         )}
       </div>

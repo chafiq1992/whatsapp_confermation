@@ -388,6 +388,14 @@ async def create_shopify_order(data: dict = Body(...)):
         "price": 0.00,
         "code": "STANDARD"
     }]
+    # Optional order note and image URL (stored as note and note_attributes)
+    order_note = (data.get("order_note") or data.get("note") or "").strip()
+    order_image_url = (data.get("order_image_url") or data.get("image_url") or "").strip()
+    note_attributes: list[dict] = []
+    if order_image_url:
+        note_attributes.append({"name": "image_url", "value": order_image_url})
+    if order_note:
+        note_attributes.append({"name": "note_text", "value": order_note})
     order_block = {}
     if data.get("customer_id"):
         order_block["customer_id"] = data["customer_id"]
@@ -429,6 +437,8 @@ async def create_shopify_order(data: dict = Body(...)):
             "shipping_lines": shipping_lines,
             "email": data.get("email", ""),
             "phone": normalize_phone(data.get("phone", "")),
+            **({"note": order_note} if order_note else {}),
+            **({"note_attributes": note_attributes} if note_attributes else {}),
             **order_block
         }
     }
@@ -439,13 +449,72 @@ async def create_shopify_order(data: dict = Body(...)):
         draft_data = resp.json()
         draft_id = draft_data["draft_order"]["id"]
 
-        # Return admin link for easy manual completion
-        admin_url = f"https://{STORE_URL.replace('https://', '')}/admin/draft_orders/{draft_id}"
+        # Draft admin URL
+        domain = STORE_URL.replace("https://", "").replace("http://", "")
+        draft_admin_url = f"https://{domain}/admin/draft_orders/{draft_id}"
+
+        # If not asked to complete now, return draft info
+        if not bool(data.get("complete_now")):
+            return {
+                "ok": True,
+                "draft_order_id": draft_id,
+                "shopify_admin_link": draft_admin_url,
+                "completed": False,
+                "message": (
+                    "Draft order created. Open the link in Shopify admin, and click 'Create order' with 'Payment due later' when customer pays."
+                )
+            }
+
+        # Complete the draft order (payment pending)
+        COMPLETE_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/draft_orders/{draft_id}/complete.json"
+        comp_resp = await client.post(COMPLETE_ENDPOINT, params={"payment_pending": "true"}, **_client_args())
+        comp_resp.raise_for_status()
+        comp_json = comp_resp.json() or {}
+        order_id = (
+            (comp_json.get("draft_order") or {}).get("order_id")
+            or (comp_json.get("order") or {}).get("id")
+        )
+
+        order_admin_link = None
+        if order_id:
+            order_admin_link = f"https://{domain}/admin/orders/{order_id}"
+
+            # Write metafields if provided
+            metafields_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/orders/{order_id}/metafields.json"
+            metafields_payloads = []
+            if order_image_url:
+                metafields_payloads.append({
+                    "metafield": {
+                        "namespace": "custom",
+                        "key": "image_url",
+                        "type": "url",
+                        "value": order_image_url,
+                    }
+                })
+            if order_note:
+                metafields_payloads.append({
+                    "metafield": {
+                        "namespace": "custom",
+                        "key": "note_text",
+                        "type": "single_line_text_field",
+                        "value": order_note,
+                    }
+                })
+            for payload in metafields_payloads:
+                try:
+                    mf_resp = await client.post(metafields_endpoint, json=payload, **_client_args())
+                    # Do not raise if forbidden; continue best-effort
+                    if mf_resp.status_code >= 400:
+                        logger.warning("Metafield write failed: %s", mf_resp.text)
+                except Exception as e:
+                    logger.warning("Metafield write exception: %s", e)
+
         return {
             "ok": True,
+            "completed": True,
             "draft_order_id": draft_id,
-            "shopify_admin_link": admin_url,
-            "message": (
-                "Draft order created. Open the link in Shopify admin, and click 'Create order' with 'Payment due later' when customer pays."
-            )
+            **({"order_id": order_id} if order_id else {}),
+            "shopify_admin_link": draft_admin_url,
+            **({"order_admin_link": order_admin_link} if order_admin_link else {}),
+            "message": "Draft order completed with payment pending." if order_id else "Draft order created, but completion response did not include order id.",
         }
