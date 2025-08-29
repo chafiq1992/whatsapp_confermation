@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import api from './api';
 import MessageBubble from './MessageBubble';
+import ForwardDialog from './ForwardDialog';
 import useAudioRecorder from './useAudioRecorder';
 import EmojiPicker from 'emoji-picker-react';
 import CatalogPanel from "./CatalogPanel";
@@ -94,6 +95,8 @@ export default function ChatWindow({ activeUser, ws }) {
   const [hasMore, setHasMore] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const conversationIdRef = useRef(null);
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const forwardPayloadRef = useRef(null);
 
   // Helper to merge and deduplicate messages by stable identifiers
   const mergeAndDedupe = useCallback((prevList, incomingList) => {
@@ -584,27 +587,8 @@ export default function ChatWindow({ activeUser, ws }) {
       const payload = ev.detail || {};
       const text = payload.message;
       const type = payload.type || 'text';
-      // Show a lightweight prompt to choose a conversation id to forward to
-      const target = window.prompt('Forward to user_id (phone) or team:channel');
-      if (!target) return;
-      try {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          const temp_id = `temp_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
-          const messageObj = {
-            id: temp_id,
-            temp_id,
-            user_id: target,
-            message: text,
-            type,
-            from_me: true,
-            status: 'sending',
-            timestamp: new Date().toISOString(),
-          };
-          ws.send(JSON.stringify({ type: 'send_message', data: messageObj }));
-        } else {
-          api.post(`${API_BASE}/send-message`, { user_id: target, message: text, type });
-        }
-      } catch {}
+      forwardPayloadRef.current = { message: text, type };
+      setForwardOpen(true);
     };
     window.addEventListener('forward-message', handler);
     return () => window.removeEventListener('forward-message', handler);
@@ -893,16 +877,14 @@ export default function ChatWindow({ activeUser, ws }) {
                   const text = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[media]');
                   let fType = forwardMsg.type || 'text';
                   if (fType !== 'text' && fType !== 'order' && fType !== 'catalog_item' && fType !== 'catalog_set') {
-                    // For media, forward as text placeholder similar to WhatsApp preview
                     fType = 'text';
                     const label = forwardMsg.type === 'image' ? 'Image' : forwardMsg.type === 'audio' ? 'Audio' : forwardMsg.type === 'video' ? 'Video' : 'Media';
                     if (!text || text === '[media]') {
-                      // Prefer a short label
                       forwardMsg.message = label;
                     }
                   }
-                  const payload = { message: typeof forwardMsg.message === 'string' ? forwardMsg.message : text, type: fType };
-                  window.dispatchEvent(new CustomEvent('forward-message', { detail: payload }));
+                  forwardPayloadRef.current = { message: typeof forwardMsg.message === 'string' ? forwardMsg.message : text, type: fType };
+                  setForwardOpen(true);
                 }}
               />
             </React.Fragment>
@@ -997,6 +979,33 @@ export default function ChatWindow({ activeUser, ws }) {
         websocket={ws}
         onMessageSent={(optimistic) => {
           setMessages(prev => sortByTime([...prev, optimistic]));
+        }}
+      />
+      <ForwardDialog
+        open={forwardOpen}
+        onClose={()=> setForwardOpen(false)}
+        onSelect={(target) => {
+          const payload = forwardPayloadRef.current || {};
+          if (!target || !payload.message) { setForwardOpen(false); return; }
+          try {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const temp_id = `temp_${Date.now()}_${Math.random().toString(36).substr(2,5)}`;
+              const messageObj = {
+                id: temp_id,
+                temp_id,
+                user_id: target,
+                message: payload.message,
+                type: payload.type || 'text',
+                from_me: true,
+                status: 'sending',
+                timestamp: new Date().toISOString(),
+              };
+              ws.send(JSON.stringify({ type: 'send_message', data: messageObj }));
+            } else {
+              api.post(`${API_BASE}/send-message`, { user_id: target, message: payload.message, type: payload.type || 'text' });
+            }
+          } catch {}
+          setForwardOpen(false);
         }}
       />
     </div>

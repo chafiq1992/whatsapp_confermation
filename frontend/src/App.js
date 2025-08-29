@@ -2,6 +2,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
+import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
 import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
 import api from './api';
@@ -16,6 +17,8 @@ export default function App() {
   const [catalogProducts, setCatalogProducts] = useState({});
   const [conversations, setConversations] = useState([]);
   const [activeUser, setActiveUser] = useState(null);
+  const [currentAgent, setCurrentAgent] = useState("");
+  const [myAssignedOnly, setMyAssignedOnly] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
@@ -207,13 +210,23 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
-      {/* LEFT: Chat list */}
+      {/* LEFT: Agent header + Chat list */}
       <div className="w-1/3 border-r border-gray-700 overflow-hidden">
-        <InternalChannelsBar onSelectChannel={(ch)=> setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` })} />
+        <AgentHeaderBar
+          currentAgent={currentAgent}
+          onAgentChange={setCurrentAgent}
+          myAssignedOnly={myAssignedOnly}
+          onToggleMyAssigned={setMyAssignedOnly}
+        />
+        <InternalChannelsBar
+          onSelectChannel={(ch)=> setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` })}
+          onSelectAgent={(username)=> setActiveUser({ user_id: `dm:${username}`, name: `@${username}` })}
+        />
         <ChatList
           conversations={conversations}
           setActiveUser={setActiveUser}
           activeUser={activeUser}
+          defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
         />
       </div>
       {/* MIDDLE: Chat window */}

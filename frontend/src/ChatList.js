@@ -45,6 +45,7 @@ function ChatList({
   setActiveUser,
   activeUser,
   onlineUsers = [],
+  defaultAssignedFilter: defaultAssignedFilterProp,
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
@@ -79,6 +80,10 @@ function ChatList({
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (defaultAssignedFilterProp) setAssignedFilter(defaultAssignedFilterProp);
+  }, [defaultAssignedFilterProp]);
 
   // Load tag options from settings
   useEffect(() => {

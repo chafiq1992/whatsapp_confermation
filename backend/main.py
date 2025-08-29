@@ -1299,8 +1299,10 @@ class MessageProcessor:
         """Background task to send message to WhatsApp and update status"""
         temp_id = message["temp_id"]
         user_id = message["user_id"]
-        # Internal team channels: user_id starting with "team:" are NOT sent to WhatsApp
-        if isinstance(user_id, str) and user_id.startswith("team:"):
+        # Internal channels: user_id starting with "team:", "agent:", or "dm:" are NOT sent to WhatsApp
+        if isinstance(user_id, str) and (
+            user_id.startswith("team:") or user_id.startswith("agent:") or user_id.startswith("dm:")
+        ):
             try:
                 # Mark as sent immediately for internal channels
                 await self.connection_manager.send_to_user(
