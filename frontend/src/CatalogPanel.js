@@ -502,7 +502,7 @@ export default function CatalogPanel({
             </div>
 
             {/* Grid */}
-            <div ref={gridRef} className="flex-1 overflow-y-auto">
+            <div ref={gridRef} className="flex-1 min-h-0 overflow-y-auto">
               {modalMode === 'folders' ? (
                 <div className="grid grid-cols-4 gap-3">
                   {folderSets.length === 0 ? (

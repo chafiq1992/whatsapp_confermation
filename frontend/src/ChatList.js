@@ -7,7 +7,6 @@ import React, {
   memo,
 } from "react";
 import api from './api';
-import AdminDashboard from './AdminDashboard';
 import { FixedSizeList as List } from "react-window";
 
 /* ───────────── Helpers ───────────── */
@@ -57,7 +56,7 @@ function ChatList({
   const [tagOptions, setTagOptions] = useState([]);
   const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [tagFilters, setTagFilters] = useState([]);
-  const [showAdmin, setShowAdmin] = useState(false);
+  // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const activeUserRef = useRef(activeUser);
 
@@ -176,6 +175,9 @@ function ChatList({
   const filteredConversations = useMemo(() => {
     const list = Array.isArray(conversations) ? conversations : [];
     return list.filter((c) => {
+      // Hide internal team and DM conversations from the chat list
+      const uid = String(c.user_id || '');
+      if (uid.startsWith('dm:') || uid.startsWith('team:')) return false;
       const txt = (c.name || c.user_id || "").toLowerCase();
       const matches = txt.includes(search.toLowerCase());
       const unreadOK = !showUnreadOnly || c.unread_count > 0;
@@ -352,26 +354,7 @@ function ChatList({
           </List>
         </div>
       )}
-      {/* Bottom-left settings */}
-      <div className="p-2 border-t border-gray-800 flex items-center gap-2">
-        <button
-          className="px-3 py-2 rounded bg-gray-200 text-gray-800 hover:bg-gray-300"
-          onClick={() => setShowAdmin(true)}
-          title="Admin settings"
-        >
-          ⚙️ Settings
-        </button>
-        <button
-          className="px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
-          onClick={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
-          title="Open Automation Studio"
-        >
-          🛠️ Automation
-        </button>
-      </div>
-      {showAdmin && (
-        <AdminDashboard onClose={() => setShowAdmin(false)} />
-      )}
+      {/* Settings/Automation controls moved to header */}
     </div>
   );
 }
