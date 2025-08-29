@@ -466,20 +466,35 @@ export default function ChatWindow({ activeUser, ws }) {
       setShowEmojiPicker(false);
       inputRef.current?.focus();
     } else {
-      // Fallback to HTTP
+      // Fallback to HTTP with optimistic UI as well
+      const temp_id = generateTempId();
+      const optimistic = {
+        id: temp_id,
+        temp_id,
+        user_id: activeUser.user_id,
+        message: text,
+        type: 'text',
+        from_me: true,
+        status: 'sending',
+        timestamp: new Date().toISOString(),
+        client_ts: Date.now(),
+      };
+      setMessages(prev => sortByTime([...prev, optimistic]));
+      const toSend = text;
+      setText('');
+      setShowEmojiPicker(false);
+      inputRef.current?.focus();
       try {
-        await api.post(`${API_BASE}/send-message`, {
+        const res = await api.post(`${API_BASE}/send-message`, {
           user_id: activeUser.user_id,
           type: 'text',
-          message: text,
+          message: toSend,
           from_me: true
         });
-        setText('');
-        fetchMessages();
-        setShowEmojiPicker(false);
-        inputRef.current?.focus();
+        setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) } : m));
       } catch (err) {
         console.error("Failed to send message:", err);
+        setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
       }
     }
   };
