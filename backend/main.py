@@ -2419,6 +2419,31 @@ async def proxy_audio(url: str):
         print(f"Proxy audio error: {exc}")
         raise HTTPException(status_code=502, detail="Proxy fetch failed")
 
+
+@app.get("/proxy-image")
+async def proxy_image(url: str):
+    """Proxy remote images to avoid CORS/expired signed URLs and enable caching.
+
+    Accepts an absolute image URL and streams it back with cache headers.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid url")
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        media_type = resp.headers.get("Content-Type", "image/jpeg")
+        return StarletteResponse(
+            content=resp.content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "Vary": "Accept",
+            },
+        )
+    except Exception as exc:
+        print(f"Proxy image error: {exc}")
+        raise HTTPException(status_code=502, detail="Proxy fetch failed")
+
 # Serve React build after all routes
 app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
 

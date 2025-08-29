@@ -22,6 +22,7 @@ export default function CatalogPanel({
   const [fetchLimit, setFetchLimit] = useState(PAGE_SIZE);
   const gridRef = useRef(null);
   const abortRef = useRef(null);
+  const requestIdRef = useRef(0);
 
   // Selected images (URLs)
   const [selectedImages, setSelectedImages] = useState([]);
@@ -95,23 +96,31 @@ export default function CatalogPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     setLoadingProducts(true);
+    const reqId = ++requestIdRef.current;
     try {
       const res = await api.get(`${API_BASE}/catalog-set-products`, {
         params: { set_id: setId, limit: limit || PAGE_SIZE },
         signal: controller.signal,
       });
       const list = Array.isArray(res.data) ? res.data : [];
-      setProducts(list);
+      // Only update if this is the latest request and the same set is still selected
+      if (reqId === requestIdRef.current && selectedSet === setId) {
+        setProducts(list);
+        setHasMore(list.length >= (limit || PAGE_SIZE));
+      }
       try { await saveCatalogSetProducts(setId, list); } catch {}
-      setHasMore(list.length >= (limit || PAGE_SIZE));
       return list;
     } catch (err) {
       if (err?.name !== "CanceledError") console.error("Error fetching set products:", err);
-      setProducts([]);
-      setHasMore(false);
+      if (reqId === requestIdRef.current && selectedSet === setId) {
+        // Preserve existing items; just stop further pagination on error
+        setHasMore(false);
+      }
       return [];
     } finally {
-      setLoadingProducts(false);
+      if (reqId === requestIdRef.current) {
+        setLoadingProducts(false);
+      }
     }
   };
 
@@ -535,7 +544,20 @@ export default function CatalogPanel({
                             )}
                             <div className="w-full h-24 bg-gray-100 flex items-center justify-center">
                               {url ? (
-                                <img src={url} alt={p.name} className="w-full h-24 object-cover" loading="lazy" />
+                                <img
+                                  src={url}
+                                  data-src={url}
+                                  alt={p.name}
+                                  className="w-full h-24 object-cover"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    const el = e.currentTarget;
+                                    if (el.dataset.fallback === '1') return;
+                                    el.dataset.fallback = '1';
+                                    const original = el.getAttribute('data-src') || el.src;
+                                    el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}`;
+                                  }}
+                                />
                               ) : (
                                 <span className="text-xs text-gray-400">No Image</span>
                               )}
