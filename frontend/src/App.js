@@ -1,6 +1,7 @@
 // /frontend/src/App.jsx
 import React, { useEffect, useState, useRef } from 'react';
 import ChatList from './ChatList';
+import InternalChannelsBar from './InternalChannelsBar';
 import ChatWindow from './ChatWindow';
 import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
 import api from './api';
@@ -208,6 +209,7 @@ export default function App() {
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Chat list */}
       <div className="w-1/3 border-r border-gray-700 overflow-hidden">
+        <InternalChannelsBar onSelectChannel={(ch)=> setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` })} />
         <ChatList
           conversations={conversations}
           setActiveUser={setActiveUser}

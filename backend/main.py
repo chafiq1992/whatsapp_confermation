@@ -1299,6 +1299,27 @@ class MessageProcessor:
         """Background task to send message to WhatsApp and update status"""
         temp_id = message["temp_id"]
         user_id = message["user_id"]
+        # Internal team channels: user_id starting with "team:" are NOT sent to WhatsApp
+        if isinstance(user_id, str) and user_id.startswith("team:"):
+            try:
+                # Mark as sent immediately for internal channels
+                await self.connection_manager.send_to_user(
+                    user_id,
+                    {"type": "message_status_update", "data": {"temp_id": temp_id, "status": "sent"}},
+                )
+                final_record = {**message, "status": "sent"}
+                await self.db_manager.upsert_message(final_record)
+                await self.redis_manager.cache_message(user_id, final_record)
+                # Let admin dashboards update their lists
+                try:
+                    await self.connection_manager.broadcast_to_admins(
+                        {"type": "message_received", "data": final_record}
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"Internal channel processing error: {exc}")
+            return
         
         try:
             # Send to WhatsApp API with concurrency guard

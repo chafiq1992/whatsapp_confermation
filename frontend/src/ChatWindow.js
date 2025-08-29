@@ -585,7 +585,7 @@ export default function ChatWindow({ activeUser, ws }) {
       const text = payload.message;
       const type = payload.type || 'text';
       // Show a lightweight prompt to choose a conversation id to forward to
-      const target = window.prompt('Forward to user_id (phone):');
+      const target = window.prompt('Forward to user_id (phone) or team:channel');
       if (!target) return;
       try {
         if (ws && ws.readyState === WebSocket.OPEN) {
