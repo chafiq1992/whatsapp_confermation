@@ -214,7 +214,7 @@ export default function CatalogPanel({
     sendOptimisticMessage({
       type: 'catalog_item',
       message: caption || 'Product',
-      product_retailer_id: String(product.retailer_id),
+      product_retailer_id: String(product.retailer_id || product.product_retailer_id || product.id),
       caption,
     });
   };

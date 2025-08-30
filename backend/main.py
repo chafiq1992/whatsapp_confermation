@@ -817,6 +817,9 @@ class DatabaseManager:
                 else:
                     await db.execute(query, merged)
             else:
+                # Avoid inserting placeholder rows without a user_id (would violate NOT NULL)
+                if not data.get("user_id"):
+                    return
                 cols = ", ".join(data.keys())
                 qs   = ", ".join("?" for _ in data)
                 query = self._convert(f"INSERT INTO messages ({cols}) VALUES ({qs})")
@@ -1501,7 +1504,7 @@ class MessageProcessor:
             if not wa_id or not status:
                 continue
 
-            # Update DB and fetch temp_id
+            # Update DB and fetch temp_id/user_id (skip if user_id unknown)
             temp_id = await self.db_manager.update_message_status(wa_id, status)
             user_id = await self.db_manager.get_user_for_message(wa_id)
             if not user_id:
@@ -1526,7 +1529,9 @@ class MessageProcessor:
         print("📨 _handle_incoming_message CALLED")
         print(json.dumps(message, indent=2))
         
-        sender = message["from"]
+        sender = message.get("from") or (message.get("contact_info") or {}).get("wa_id")
+        if not sender:
+            raise RuntimeError("incoming message missing sender id")
         msg_type = message["type"]
         wa_message_id = message.get("id")
         timestamp = datetime.utcfromtimestamp(int(message.get("timestamp", 0))).isoformat()
