@@ -2584,22 +2584,31 @@ class CatalogManager:
         Graph API: /{catalog_id}/product_sets?fields=id,name
         """
         url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/product_sets"
-        params = {"fields": "id,name", "limit": 50}
+        params = {"fields": "id,name", "limit": 200}
         headers = await get_whatsapp_headers()
 
+        # Always include the whole catalog as a fallback option
+        result: List[Dict[str, Any]] = [{"id": CATALOG_ID, "name": "All Products"}]
+        seen: set[str] = {CATALOG_ID}
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=headers, params=params)
-            data = response.json()
-            sets = data.get("data", [])
-            # Always include the whole catalog as a fallback option
-            all_set = {"id": CATALOG_ID, "name": "All Products"}
-            result = [all_set]
-            # Avoid duplicates if API already returns the full catalog
-            for s in sets:
-                if s and s.get("id") and s.get("name"):
-                    if s["id"] != CATALOG_ID:
-                        result.append({"id": s["id"], "name": s["name"]})
-            return result
+            while url:
+                response = await client.get(url, headers=headers, params=params)
+                data = response.json()
+                sets = data.get("data", [])
+                for s in sets:
+                    try:
+                        sid = str(s.get("id"))
+                        name = s.get("name")
+                        if sid and name and sid not in seen:
+                            seen.add(sid)
+                            result.append({"id": sid, "name": name})
+                    except Exception:
+                        continue
+                # Follow pagination if present
+                url = data.get("paging", {}).get("next")
+                params = None
+        return result
 
     @staticmethod
     async def get_catalog_products() -> List[Dict[str, Any]]:
