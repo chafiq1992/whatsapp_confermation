@@ -37,8 +37,7 @@ export default function CatalogPanel({
   const [folderSets, setFolderSets] = useState([]); // sets shown as folders in folder view
   const [activeFilter, setActiveFilter] = useState(null); // 'girls' | 'boys' | 'all'
 
-  // Send mode: 'product' (interactive) or 'image'
-  const [sendMode, setSendMode] = useState('product');
+  // All selections send as images (product toggle removed per requirements)
 
   // Temporary status for sending an entire set
   const [sendingSet, setSendingSet] = useState(false);
@@ -256,30 +255,15 @@ export default function CatalogPanel({
 
   // Removed legacy "Send entire catalog" action per product requirements
 
-  // Send selected images (direct links)
+  // Send selected items strictly as images
   const sendSelectedImages = async () => {
     if (!activeUser?.user_id || selectedImages.length === 0) {
       alert("Please select at least one image.");
       return;
     }
-    if (sendMode === 'product') {
-      // Map URLs back to products by first image URL
-      const urlToProduct = new Map();
-      for (const p of products) {
-        const u = p.images?.[0]?.url;
-        if (u) urlToProduct.set(u, p);
-      }
-      const items = selectedImages.map(u => urlToProduct.get(u)).filter(Boolean);
-      // Send each as interactive product (fast)
-      for (const p of items) {
-        await sendInteractiveProduct(p);
-        await new Promise(r => setTimeout(r, 30));
-      }
-    } else {
-      for (const url of selectedImages) {
-        sendImageUrl(url);
-        await new Promise(r => setTimeout(r, 40));
-      }
+    for (const url of selectedImages) {
+      sendImageUrl(url);
+      await new Promise(r => setTimeout(r, 40));
     }
   };
 
@@ -499,11 +483,6 @@ export default function CatalogPanel({
               {modalMode === 'products' ? (
                 <>
                   <span className="text-sm text-gray-700 mr-2">Selected: {selectedCount}</span>
-                  <div className="flex items-center gap-2 mr-2">
-                    <span className="text-sm text-gray-700">Send as:</span>
-                    <button className={`px-3 py-1 text-sm rounded ${sendMode==='product'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('product')}>Product</button>
-                    <button className={`px-3 py-1 text-sm rounded ${sendMode==='image'?'bg-blue-600 text-white':'bg-gray-200 text-black'}`} onClick={()=>setSendMode('image')}>Image</button>
-                  </div>
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
                   <button className="px-3 py-2 text-sm rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
@@ -576,9 +555,7 @@ export default function CatalogPanel({
                                 <span className="text-xs text-gray-400">No Image</span>
                               )}
                             </div>
-                            <div className="absolute left-2 bottom-2 flex gap-2">
-                              <button className="px-2.5 py-1 text-xs rounded bg-blue-600 text-white" title="Send product" onClick={()=>sendInteractiveProduct(p)}>Product</button>
-                            </div>
+                            {/* Quick action buttons removed per new requirements */}
                           </div>
                         );
                       })}

@@ -18,6 +18,7 @@ export default function App() {
   const [conversations, setConversations] = useState([]);
   const [activeUser, setActiveUser] = useState(null);
   const [currentAgent, setCurrentAgent] = useState("");
+  const [agentInboxMode, setAgentInboxMode] = useState(false);
   const [myAssignedOnly, setMyAssignedOnly] = useState(false);
   const [adminWsConnected, setAdminWsConnected] = useState(false);
   const activeUserRef = useRef(activeUser);
@@ -101,7 +102,12 @@ export default function App() {
         const dm = params.get('dm');
         const team = params.get('team');
 
-        if (agent) setCurrentAgent(agent);
+        if (agent) {
+          setCurrentAgent(agent);
+          setAgentInboxMode(true);
+        } else {
+          setAgentInboxMode(false);
+        }
         if (assigned != null) setMyAssignedOnly(assigned === '1' || assigned === 'true');
         if (dm) {
           setActiveUser({ user_id: `dm:${dm}`, name: `@${dm}` });
@@ -249,14 +255,17 @@ export default function App() {
         <InternalChannelsBar
           onSelectChannel={(ch)=> setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` })}
           onSelectAgent={(username)=> setActiveUser({ user_id: `dm:${username}`, name: `@${username}` })}
+          excludeAgent={currentAgent}
         />
-        <ChatList
-          conversations={conversations}
-          setActiveUser={setActiveUser}
-          activeUser={activeUser}
-          wsConnected={adminWsConnected}
-          defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
-        />
+        {!agentInboxMode && (
+          <ChatList
+            conversations={conversations}
+            setActiveUser={setActiveUser}
+            activeUser={activeUser}
+            wsConnected={adminWsConnected}
+            defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
+          />
+        )}
       </div>
       {/* MIDDLE: Chat window */}
       <div className="flex-1 overflow-hidden">
@@ -265,6 +274,7 @@ export default function App() {
           activeUser={activeUser}
           catalogProducts={catalogProducts}
           ws={wsRef.current}
+          currentAgent={currentAgent}
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}

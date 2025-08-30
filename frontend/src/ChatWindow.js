@@ -97,7 +97,7 @@ function groupConsecutiveImages(messages) {
   return grouped;
 }
 
-export default function ChatWindow({ activeUser, ws }) {
+export default function ChatWindow({ activeUser, ws, currentAgent }) {
   const [messages, setMessages] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHitIndexes, setSearchHitIndexes] = useState([]);
@@ -928,7 +928,18 @@ export default function ChatWindow({ activeUser, ws }) {
               )}
               <MessageBubble
                 msg={msg}
-                self={msg.from_me}
+                self={(function() {
+                  // Default to backend-provided flag
+                  if (msg.from_me) return true;
+                  // Heuristic for internal DMs: align current agent's messages to the right
+                  try {
+                    const isDm = typeof activeUser?.user_id === 'string' && activeUser.user_id.startsWith('dm:');
+                    if (!isDm) return false;
+                    const agentLower = String(currentAgent || '').toLowerCase();
+                    const sender = String(msg.agent || msg.sender || msg.from || msg.name || '').toLowerCase();
+                    return agentLower && sender && agentLower === sender;
+                  } catch { return false; }
+                })()}
                 catalogProducts={catalogProducts}
                 highlightQuery={searchQuery}
                 onForward={(forwardMsg)=>{
