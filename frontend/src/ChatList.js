@@ -59,6 +59,7 @@ function ChatList({
   const [tagFilters, setTagFilters] = useState([]);
   // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   useEffect(() => {
@@ -135,7 +136,9 @@ function ChatList({
         c.assigned_agent === assignedFilter;
       const tagsOK = tagFilters.length === 0 || (c.tags || []).some(t => tagFilters.includes(t));
       const needsReplyOK = !needsReplyOnly || (c.unresponded_count || 0) > 0;
-      return matches && unreadOK && assignedOK && tagsOK && needsReplyOK;
+      const isDone = (c.tags || []).some(t => String(t || '').toLowerCase() === 'done');
+      const archiveOK = showArchive ? isDone : !isDone;
+      return matches && unreadOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
     });
   }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
 
@@ -185,6 +188,18 @@ function ChatList({
       {/* Top-bar */
       }
       <div className="flex flex-col gap-2 p-2">
+        <div className="flex gap-2 items-center">
+          <button
+            className={`px-3 py-1 rounded text-sm font-medium ${!showArchive ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800'}`}
+            onClick={() => setShowArchive(false)}
+            title="Show active inbox"
+          >📥 Inbox</button>
+          <button
+            className={`px-3 py-1 rounded text-sm font-medium ${showArchive ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800'}`}
+            onClick={() => setShowArchive(true)}
+            title="Show archived (done) chats"
+          >🗄️ Archive</button>
+        </div>
         <div className="flex gap-2 items-center">
           <input
             className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"

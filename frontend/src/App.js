@@ -242,6 +242,14 @@ export default function App() {
     };
   }, [activeUser?.user_id]);
 
+  // Helper to update tags on a conversation and keep activeUser in sync
+  const handleUpdateConversationTags = (userId, tags) => {
+    setConversations(prev => prev.map(c => c.user_id === userId ? { ...c, tags } : c));
+    if (activeUserRef.current?.user_id === userId) {
+      setActiveUser(prev => prev ? { ...prev, tags } : prev);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Agent header + Chat list */}
@@ -275,6 +283,8 @@ export default function App() {
           catalogProducts={catalogProducts}
           ws={wsRef.current}
           currentAgent={currentAgent}
+          adminWs={adminWsRef.current}
+          onUpdateConversationTags={handleUpdateConversationTags}
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}
