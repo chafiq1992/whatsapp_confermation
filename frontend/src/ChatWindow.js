@@ -97,7 +97,7 @@ function groupConsecutiveImages(messages) {
   return grouped;
 }
 
-export default function ChatWindow({ activeUser, ws, currentAgent }) {
+export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversationTags }) {
   const [messages, setMessages] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHitIndexes, setSearchHitIndexes] = useState([]);
@@ -260,6 +260,16 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
             }
             return msg;
           })));
+        } else if (data.type === 'messages_marked_read') {
+          const ids = (data.data && Array.isArray(data.data.message_ids)) ? data.data.message_ids : [];
+          setMessages(prev => sortByTime(prev.map(msg => {
+            if (msg.from_me) return msg;
+            if (ids.length === 0) {
+              return { ...msg, status: 'read' };
+            }
+            const matches = (msg.wa_message_id && ids.includes(msg.wa_message_id)) || (msg.id && ids.includes(msg.id));
+            return matches ? { ...msg, status: 'read' } : msg;
+          })));
         }
       } catch (e) {
         console.error('WS parse error', e);
@@ -284,12 +294,41 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
     };
   }, [ws, activeUser?.user_id]);
 
+  // On conversation open, proactively mark everything as read (server will broadcast update)
+  useEffect(() => {
+    const uid = activeUser?.user_id;
+    if (!uid) return;
+    try {
+      // Fire-and-forget HTTP call to mark conversation as read
+      api.post(`${API_BASE}/conversations/${uid}/mark-read`, {})
+        .catch(() => {});
+    } catch {}
+  }, [activeUser?.user_id]);
+
   // Track latest timestamp whenever messages change
   useEffect(() => {
     if (!messages || messages.length === 0) return;
     const newest = messages[messages.length - 1]?.timestamp;
     if (newest) lastTimestampRef.current = newest;
   }, [messages]);
+
+  // Also listen to admin-wide WebSocket for instant updates to active chat
+  useEffect(() => {
+    if (!adminWs || !activeUser?.user_id) return;
+    const uid = activeUser.user_id;
+    const handleAdmin = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'message_received' && data.data?.user_id === uid) {
+          setMessages(prev => mergeAndDedupe(prev, [data.data]));
+        }
+      } catch {}
+    };
+    adminWs.addEventListener('message', handleAdmin);
+    return () => {
+      try { adminWs.removeEventListener('message', handleAdmin); } catch {}
+    };
+  }, [adminWs, activeUser?.user_id]);
 
   // Update search hits when query or messages change
   useEffect(() => {
@@ -869,6 +908,32 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
           >↓</button>
         </div>
         <div className="flex items-center space-x-2">
+          {(() => {
+            const isDone = (activeUser?.tags || []).some(t => String(t || '').toLowerCase() === 'done');
+            const userId = activeUser?.user_id;
+            const toggleDone = async () => {
+              if (!userId) return;
+              try {
+                const current = Array.isArray(activeUser?.tags) ? activeUser.tags : [];
+                const newTags = isDone
+                  ? current.filter(t => String(t || '').toLowerCase() !== 'done')
+                  : [...current, 'done'];
+                await api.post(`/conversations/${userId}/tags`, { tags: newTags });
+                if (typeof onUpdateConversationTags === 'function') {
+                  onUpdateConversationTags(userId, newTags);
+                }
+              } catch (e) {}
+            };
+            return (
+              <button
+                className={`px-2 py-1 rounded ${isDone ? 'bg-yellow-600 text-black' : 'bg-green-600 text-white'}`}
+                onClick={toggleDone}
+                title={isDone ? 'Clear Done (move back to Inbox)' : 'Mark as Done (Archive)'}
+              >
+                {isDone ? '↩︎ Clear Done' : '✓ Done'}
+              </button>
+            );
+          })()}
           <div className={`w-3 h-3 rounded-full ${
             ws && ws.readyState === WebSocket.OPEN ? 'bg-green-500' : 'bg-red-500'
           }`} title={`WebSocket ${ws && ws.readyState === WebSocket.OPEN ? 'connected' : 'disconnected'}`}></div>
