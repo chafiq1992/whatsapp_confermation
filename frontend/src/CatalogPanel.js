@@ -556,7 +556,19 @@ export default function CatalogPanel({
                                 <span className="text-xs text-gray-400">No Image</span>
                               )}
                             </div>
-                            {/* Quick action buttons removed per new requirements */}
+                            {/* Quick action: send as catalog item (interactive product) */}
+                            <div className="p-2 flex items-center justify-between bg-white">
+                              <div className="text-xs text-gray-700 truncate pr-2" title={p.name}>{p.name}</div>
+                              <button
+                                type="button"
+                                className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                                disabled={!isWebSocketConnected}
+                                onClick={() => { sendInteractiveProduct(p); setModalOpen(false); }}
+                                title="Send as catalog product"
+                              >
+                                Send Product
+                              </button>
+                            </div>
                           </div>
                         );
                       })}

@@ -31,6 +31,12 @@ export default function App() {
     activeUserRef.current = activeUser;
   }, [activeUser]);
 
+  // Clear unread count in chat list when opening a conversation
+  useEffect(() => {
+    if (!activeUser?.user_id) return;
+    setConversations(prev => prev.map(c => c.user_id === activeUser.user_id ? { ...c, unread_count: 0 } : c));
+  }, [activeUser?.user_id]);
+
   // Fetch all conversations for chat list
   const fetchConversations = async () => {
     try {

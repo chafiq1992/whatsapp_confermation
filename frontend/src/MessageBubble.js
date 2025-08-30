@@ -413,7 +413,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
                 // Image fallbacks from order payload
                 const orderImage = item.product_image_url || item.image_url || item.image?.url || item.product?.image?.url;
-                const effectiveImage = product.image || orderImage || "";
+                const effectiveImage = orderImage || product.image || "";
                 
                 return (
                   <li
