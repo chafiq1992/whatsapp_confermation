@@ -340,7 +340,7 @@ class WhatsAppMessenger:
             "Content-Type": "application/json"
         }
     
-    async def send_text_message(self, to: str, message: str) -> dict:
+    async def send_text_message(self, to: str, message: str, context_message_id: str | None = None) -> dict:
         """Send text message via WhatsApp API"""
         url = f"{self.base_url}/messages"
         payload = {
@@ -349,6 +349,8 @@ class WhatsAppMessenger:
             "type": "text",
             "text": {"body": message}
         }
+        if context_message_id:
+            payload["context"] = {"message_id": context_message_id}
         
         print(f"🚀 Sending WhatsApp message to {to}: {message}")
         async with httpx.AsyncClient() as client:
@@ -356,6 +358,20 @@ class WhatsAppMessenger:
             result = response.json()
             print(f"📱 WhatsApp API Response: {result}")
             return result
+
+    async def send_reaction(self, to: str, target_message_id: str, emoji: str, action: str = "react") -> dict:
+        """Send a reaction to a specific message via WhatsApp API."""
+        data = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "reaction",
+            "reaction": {
+                "message_id": target_message_id,
+                "emoji": emoji,
+                "action": action or "react",
+            },
+        }
+        return await self._make_request("messages", data)
 
     async def _make_request(self, endpoint: str, data: dict) -> dict:
         """Helper to send POST requests to WhatsApp API"""
@@ -449,7 +465,7 @@ class WhatsAppMessenger:
 
         return await self.send_catalog_products(user_id, product_ids)
     
-    async def send_media_message(self, to: str, media_type: str, media_id_or_url: str, caption: str = "") -> dict:
+    async def send_media_message(self, to: str, media_type: str, media_id_or_url: str, caption: str = "", context_message_id: str | None = None) -> dict:
         """Send media message - handles both media_id and URL"""
         url = f"{self.base_url}/messages"
         
@@ -468,6 +484,8 @@ class WhatsAppMessenger:
             "type": media_type,
             media_type: media_payload
         }
+        if context_message_id:
+            payload["context"] = {"message_id": context_message_id}
         
         print(f"🚀 Sending WhatsApp media to {to}: {media_type} - {media_id_or_url}")
         async with httpx.AsyncClient() as client:
@@ -551,6 +569,12 @@ class DatabaseManager:
             "media_path",
             "timestamp",
             "url",  # store public URL for media
+            # reply / reactions metadata
+            "reply_to",            # wa_message_id of the quoted/original message
+            "quoted_text",         # optional cached snippet of the quoted message
+            "reaction_to",         # wa_message_id of the message this reaction targets
+            "reaction_emoji",      # emoji character (e.g. "👍")
+            "reaction_action",     # add/remove per WhatsApp payload
         }
 
     async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
@@ -628,6 +652,12 @@ class DatabaseManager:
                     caption        TEXT,
                     url            TEXT,
                     media_path     TEXT,
+                    -- replies & reactions
+                    reply_to       TEXT,
+                    quoted_text    TEXT,
+                    reaction_to    TEXT,
+                    reaction_emoji TEXT,
+                    reaction_action TEXT,
                     timestamp      TEXT  DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -700,6 +730,12 @@ class DatabaseManager:
             # Ensure newer columns exist for deployments created before they were added
             await self._add_column_if_missing(db, "messages", "temp_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "url", "TEXT")
+            # reply/reactions columns (idempotent)
+            await self._add_column_if_missing(db, "messages", "reply_to", "TEXT")
+            await self._add_column_if_missing(db, "messages", "quoted_text", "TEXT")
+            await self._add_column_if_missing(db, "messages", "reaction_to", "TEXT")
+            await self._add_column_if_missing(db, "messages", "reaction_emoji", "TEXT")
+            await self._add_column_if_missing(db, "messages", "reaction_action", "TEXT")
 
             # Create index on temp_id now that the column is guaranteed to exist
             if self.use_postgres:
@@ -1324,6 +1360,8 @@ class MessageProcessor:
             # Preserve raw fields as well for debugging/DB if present
             "retailer_id": message_data.get("retailer_id"),
             "product_id": message_data.get("product_id"),
+            # reply/reactions passthrough
+            "reply_to": message_data.get("reply_to"),
         }
         
         # For media messages, add URL field
@@ -1383,7 +1421,7 @@ class MessageProcessor:
             async with wa_semaphore:
                 if message["type"] == "text":
                     wa_response = await self.whatsapp_messenger.send_text_message(
-                        user_id, message["message"]
+                        user_id, message["message"], context_message_id=message.get("reply_to")
                     )
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
@@ -1411,13 +1449,23 @@ class MessageProcessor:
                     if media_path and Path(media_path).exists():
                         print(f"📤 Uploading media: {media_path}")
                         media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
-                        wa_response = await self.whatsapp_messenger.send_media_message(
-                            user_id, message["type"], media_id, message.get("caption", "")
-                        )
+                        if message.get("reply_to"):
+                            wa_response = await self.whatsapp_messenger.send_media_message(
+                                user_id, message["type"], media_id, message.get("caption", ""), context_message_id=message.get("reply_to")
+                            )
+                        else:
+                            wa_response = await self.whatsapp_messenger.send_media_message(
+                                user_id, message["type"], media_id, message.get("caption", "")
+                            )
                     elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
-                        wa_response = await self.whatsapp_messenger.send_media_message(
-                            user_id, message["type"], media_url, message.get("caption", "")
-                        )
+                        if message.get("reply_to"):
+                            wa_response = await self.whatsapp_messenger.send_media_message(
+                                user_id, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
+                            )
+                        else:
+                            wa_response = await self.whatsapp_messenger.send_media_message(
+                                user_id, message["type"], media_url, message.get("caption", "")
+                            )
                     else:
                         raise Exception("No media found: require url http(s) or valid media_path")
             
@@ -1594,6 +1642,44 @@ class MessageProcessor:
         
         await self.db_manager.upsert_user(sender, contact_name, sender)
         
+        # Special case: reactions are not normal bubbles – broadcast an update instead
+        if msg_type == "reaction":
+            reaction = message.get("reaction", {})
+            target_id = reaction.get("message_id")
+            emoji = reaction.get("emoji")
+            action = reaction.get("action", "react")
+            reaction_event = {
+                "type": "reaction_update",
+                "data": {
+                    "user_id": sender,
+                    "target_wa_message_id": target_id,
+                    "emoji": emoji,
+                    "action": action,
+                    "from_me": False,
+                    "wa_message_id": wa_message_id,
+                    "timestamp": timestamp,
+                },
+            }
+            try:
+                # Persist a lightweight record for auditing/history
+                await self.db_manager.upsert_message({
+                    "wa_message_id": wa_message_id,
+                    "user_id": sender,
+                    "type": "reaction",
+                    "from_me": 0,
+                    "status": "received",
+                    "timestamp": timestamp,
+                    "reaction_to": target_id,
+                    "reaction_emoji": emoji,
+                    "reaction_action": action,
+                })
+            except Exception:
+                pass
+            # Notify UI
+            await self.connection_manager.send_to_user(sender, reaction_event)
+            await self.connection_manager.broadcast_to_admins(reaction_event, exclude_user=sender)
+            return
+
         # Create message object with proper URL field
         message_obj = {
             "id": wa_message_id,
@@ -1613,6 +1699,18 @@ class MessageProcessor:
             message_obj["message"] = image_path
             message_obj["url"] = drive_url
             message_obj["caption"] = message["image"].get("caption", "")
+        elif msg_type == "sticker":
+            # Treat stickers as images for display purposes
+            try:
+                sticker_path, drive_url = await self._download_media(message["sticker"]["id"], "image")
+                message_obj["type"] = "image"
+                message_obj["message"] = sticker_path
+                message_obj["url"] = drive_url
+                message_obj["caption"] = ""
+            except Exception:
+                # Fallback to a text label if download fails
+                message_obj["type"] = "text"
+                message_obj["message"] = "[sticker]"
         elif msg_type == "audio":
             audio_path, drive_url = await self._download_media(message["audio"]["id"], "audio")
             message_obj["message"] = audio_path
@@ -1625,6 +1723,14 @@ class MessageProcessor:
             message_obj["caption"] = message["video"].get("caption", "")
         elif msg_type == "order":
             message_obj["message"] = json.dumps(message.get("order", {}))
+
+        # Replies: capture quoted message id if present
+        try:
+            ctx = message.get("context") or {}
+            if isinstance(ctx, dict) and ctx.get("id"):
+                message_obj["reply_to"] = ctx.get("id")
+        except Exception:
+            pass
         
         # Send to UI and process...
         await self.connection_manager.send_to_user(sender, {
@@ -2016,6 +2122,45 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
             typing_event, exclude_user=user_id
         )
         
+    elif message_type == "react":
+        # Send a reaction to a specific message
+        target_id = data.get("target_wa_message_id") or data.get("message_id")
+        emoji = data.get("emoji")
+        action = data.get("action") or "react"
+        if not (target_id and emoji):
+            return
+        try:
+            await messenger.send_reaction(user_id, target_id, emoji, action)
+        except Exception as e:
+            print(f"Failed to send reaction: {e}")
+            return
+        event = {
+            "type": "reaction_update",
+            "data": {
+                "user_id": user_id,
+                "target_wa_message_id": target_id,
+                "emoji": emoji,
+                "action": action,
+                "from_me": True,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        }
+        await connection_manager.send_to_user(user_id, event)
+        await connection_manager.broadcast_to_admins(event, exclude_user=user_id)
+        try:
+            await db_manager.upsert_message({
+                "user_id": user_id,
+                "type": "reaction",
+                "from_me": 1,
+                "status": "sent",
+                "timestamp": event["data"]["timestamp"],
+                "reaction_to": target_id,
+                "reaction_emoji": emoji,
+                "reaction_action": action,
+            })
+        except Exception:
+            pass
+
     elif message_type == "get_conversation_history":
         offset = data.get("offset", 0)
         limit = data.get("limit", 50)

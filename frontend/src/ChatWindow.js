@@ -107,6 +107,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const [sendingQueues, setSendingQueues] = useState({});
   const [unreadSeparatorIndex, setUnreadSeparatorIndex] = useState(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [replyTarget, setReplyTarget] = useState(null);
   const [catalogProducts, setCatalogProducts] = useState({});
   const MESSAGE_LIMIT = 50;
   const [offset, setOffset] = useState(0);
@@ -259,6 +260,22 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               return merged;
             }
             return msg;
+          })));
+        } else if (data.type === 'reaction_update') {
+          const { target_wa_message_id, emoji, action } = data.data || {};
+          if (!target_wa_message_id || !emoji) return;
+          setMessages(prev => sortByTime(prev.map(m => {
+            const matches = (m.wa_message_id && m.wa_message_id === target_wa_message_id) || (m.id && m.id === target_wa_message_id);
+            if (!matches) return m;
+            const summary = { ...(m.reactionsSummary || {}) };
+            const prevCount = Number(summary[emoji] || 0);
+            const nextCount = action === 'remove' ? Math.max(0, prevCount - 1) : prevCount + 1;
+            if (nextCount <= 0) {
+              delete summary[emoji];
+            } else {
+              summary[emoji] = nextCount;
+            }
+            return { ...m, reactionsSummary: summary };
           })));
         } else if (data.type === 'messages_marked_read') {
           const ids = (data.data && Array.isArray(data.data.message_ids)) ? data.data.message_ids : [];
@@ -480,6 +497,9 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
       ...(caption && { caption }),
       ...(price && { price })
     };
+    if (replyTarget && (replyTarget.wa_message_id || replyTarget.id)) {
+      messageObj.reply_to = replyTarget.wa_message_id || replyTarget.id;
+    }
 
     // Optimistically add to UI
     setMessages(prev => sortByTime([...prev, messageObj]));
@@ -491,6 +511,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         data: messageObj,
       })
     );
+    setReplyTarget(null);
   };
 
   
@@ -529,6 +550,9 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         timestamp: new Date().toISOString(),
         client_ts: Date.now(),
       };
+      if (replyTarget && (replyTarget.wa_message_id || replyTarget.id)) {
+        optimistic.reply_to = replyTarget.wa_message_id || replyTarget.id;
+      }
       setMessages(prev => sortByTime([...prev, optimistic]));
       const toSend = text;
       setText('');
@@ -539,13 +563,15 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
           user_id: activeUser.user_id,
           type: 'text',
           message: toSend,
-          from_me: true
+          from_me: true,
+          ...(optimistic.reply_to ? { reply_to: optimistic.reply_to } : {})
         });
         setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) } : m));
       } catch (err) {
         console.error("Failed to send message:", err);
         setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
       }
+      setReplyTarget(null);
     }
   };
 
@@ -1034,6 +1060,21 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
                 })()}
                 catalogProducts={catalogProducts}
                 highlightQuery={searchQuery}
+                quotedMessage={(function(){
+                  try {
+                    const qid = msg.reply_to;
+                    if (!qid) return null;
+                    return messages.find(m => (m.wa_message_id && m.wa_message_id === qid) || (m.id && m.id === qid)) || null;
+                  } catch { return null; }
+                })()}
+                onReply={(m)=> setReplyTarget(m)}
+                onReact={(m, emoji)=>{
+                  try {
+                    const targetId = m.wa_message_id || m.id;
+                    if (!targetId || !ws || ws.readyState !== WebSocket.OPEN) return;
+                    ws.send(JSON.stringify({ type: 'react', target_wa_message_id: targetId, emoji }));
+                  } catch {}
+                }}
                 onForward={(forwardMsg)=>{
                   // Build a proper forward payload that preserves media links
                   const originalType = forwardMsg.type || 'text';
@@ -1081,6 +1122,28 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
       
       {activeUser && (
         <div className="p-2 border-t border-gray-700 bg-gray-800 flex flex-col space-y-2 relative">
+          {replyTarget && (
+            <div className="flex items-center justify-between bg-gray-700 text-white px-2 py-1 rounded">
+              <div className="text-xs truncate max-w-[80%]">
+                <span className="opacity-70 mr-1">Replying to:</span>
+                <span className="font-semibold">
+                  {(() => {
+                    const t = replyTarget;
+                    const label = t.type;
+                    if (label === 'text') return String(t.message).slice(0, 80);
+                    if (label === 'image') return 'Image';
+                    if (label === 'audio') return 'Audio';
+                    if (label === 'video') return 'Video';
+                    return label || 'Message';
+                  })()}
+                </span>
+              </div>
+              <button
+                className="ml-2 px-2 py-0.5 bg-gray-600 rounded text-xs"
+                onClick={() => setReplyTarget(null)}
+              >Cancel</button>
+            </div>
+          )}
           {isRecording && (
             <div className="bg-black p-2 rounded text-white flex items-center justify-between">
               <span className="text-green-400">🎙️ Recording... {formatTime(recordingTime)}</span>

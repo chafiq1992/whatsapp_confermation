@@ -44,8 +44,9 @@ function formatTime(ts) {
   }
 }
 
-export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward }) {
+export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
+  const [showReactPicker, setShowReactPicker] = useState(false);
   // Helpers to extract and classify URLs inside text messages
   const extractUrls = (text) => {
     try {
@@ -595,6 +596,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             : "bg-gray-700 text-white rounded-bl-none"
         }`}
       >
+        {/* Quick actions */}
+        {typeof onReply === 'function' && (
+          <button
+            type="button"
+            title="Reply"
+            onClick={(e) => { e.stopPropagation(); onReply(msg); }}
+            className="absolute -top-2 -left-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
+          >↩</button>
+        )}
         {!self && typeof onForward === 'function' && (
           <button
             type="button"
@@ -602,6 +612,41 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             onClick={(e) => { e.stopPropagation(); onForward(msg); }}
             className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
           >↪</button>
+        )}
+        {typeof onReact === 'function' && (
+          <div className="absolute -bottom-3 left-2">
+            <button
+              type="button"
+              title="React"
+              onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(v=>!v); }}
+              className="bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
+            >😊</button>
+            {showReactPicker && (
+              <div className="mt-1 bg-gray-800 text-white rounded shadow px-1 py-1 flex space-x-1 select-none">
+                {['👍','❤️','😂','😮','😢','🙏'].map((emj)=>(
+                  <button key={emj} className="hover:bg-gray-700 rounded px-1" onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(false); onReact(msg, emj); }}>{emj}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {/* Quoted preview */}
+        {quotedMessage && (
+          <div className={`mb-2 px-2 py-1 rounded border ${self ? 'border-white/30 bg-white/10' : 'border-gray-500 bg-black/10'}`}>
+            <div className="text-[10px] opacity-70 mb-0.5">Replying to</div>
+            <div className="text-xs truncate max-w-[280px]">
+              {(() => {
+                try {
+                  const t = quotedMessage;
+                  if (t.type === 'text') return String(t.message || '').slice(0, 120);
+                  if (t.type === 'image') return '🖼️ Image';
+                  if (t.type === 'audio') return '🎙️ Audio';
+                  if (t.type === 'video') return '🎞️ Video';
+                  return String(t.type || 'message');
+                } catch { return 'message'; }
+              })()}
+            </div>
+          </div>
         )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :
@@ -698,9 +743,17 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         )}
 
         {/* Message footer with timestamp and status */}
-        <div className="flex items-center justify-end mt-1 text-xs opacity-75 space-x-1">
-          <span>{formatTime(msg.timestamp)}</span>
-          {renderTick(msg, self)}
+        <div className="flex items-center justify-between mt-1 text-xs opacity-75 space-x-2">
+          {/* Reactions summary */}
+          <div className="flex items-center gap-1">
+            {Object.entries(msg.reactionsSummary || {}).map(([emj, cnt]) => (
+              <span key={emj} className={`px-1 py-0.5 rounded ${self ? 'bg-white/20' : 'bg-black/20'}`}>{emj} {cnt}</span>
+            ))}
+          </div>
+          <div className="flex items-center space-x-1">
+            <span>{formatTime(msg.timestamp)}</span>
+            {renderTick(msg, self)}
+          </div>
         </div>
       </div>
     </div>
