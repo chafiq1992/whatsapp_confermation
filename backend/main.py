@@ -134,6 +134,13 @@ PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
 
+# Feature flags: auto-reply with catalog match
+AUTO_REPLY_CATALOG_MATCH = os.getenv("AUTO_REPLY_CATALOG_MATCH", "0") == "1"
+try:
+    AUTO_REPLY_MIN_SCORE = float(os.getenv("AUTO_REPLY_MIN_SCORE", "0.6"))
+except Exception:
+    AUTO_REPLY_MIN_SCORE = 0.6
+
 _vlog(f"🔧 Configuration loaded:")
 _vlog(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
 _vlog(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
@@ -381,7 +388,7 @@ class WhatsAppMessenger:
                 "interactive": {
                     "type": "product_list",
                     "header": {"type": "text", "text": "Products"},
-                    "body": {"text": "Check out these products!"},
+                    "body": {"text": "Découvrez ces produits !\nتفقد هذه المنتجات!"},
                     "action": {
                         "catalog_id": config.CATALOG_ID,
                         "sections": [
@@ -407,7 +414,7 @@ class WhatsAppMessenger:
             "type": "interactive",
             "interactive": {
                 "type": "product",
-                "body": {"text": caption or "Check out this product!"},
+                "body": {"text": caption or "Découvrez ce produit !\nتفقد هذا المنتج!"},
                 "action": {
                     "catalog_id": config.CATALOG_ID,
                     "product_retailer_id": product_retailer_id
@@ -1627,7 +1634,93 @@ class MessageProcessor:
         db_data = {k: v for k, v in message_obj.items() if k != "id"}
         await self.redis_manager.cache_message(sender, db_data)
         await self.db_manager.upsert_message(db_data)
-    
+        
+        # Auto-reply with catalog match for text messages
+        try:
+            if msg_type == "text":
+                await self._maybe_auto_reply_with_catalog(sender, message_obj.get("message", ""))
+        except Exception as _exc:
+            # Never break incoming flow due to auto-reply errors
+            print(f"Auto-reply failed: {_exc}")
+
+    # ------------------------- auto-reply helpers -------------------------
+    def _normalize_for_match(self, text: str) -> list[str]:
+        text_lc = (text or "").lower()
+        # Replace non-alphanumerics with space and split
+        tokens = re.split(r"[^a-z0-9]+", text_lc)
+        return [t for t in tokens if len(t) >= 2]
+
+    def _score_product_name_match(self, text_tokens: list[str], product_name: Optional[str]) -> float:
+        if not product_name:
+            return 0.0
+        name_tokens = self._normalize_for_match(product_name)
+        if not name_tokens:
+            return 0.0
+        name_token_set = set(name_tokens)
+        text_token_set = set(text_tokens)
+        common = name_token_set.intersection(text_token_set)
+        # Base score: token overlap ratio relative to product name tokens
+        score = len(common) / max(1, len(name_token_set))
+        # Bonus if full normalized name appears as substring of text
+        text_joined = " ".join(text_tokens)
+        name_joined = " ".join(name_tokens)
+        if name_joined and name_joined in text_joined:
+            score += 0.2
+        return min(score, 1.0)
+
+    def _best_catalog_match(self, text: str) -> Optional[dict]:
+        try:
+            products = catalog_manager.get_cached_products()
+        except Exception:
+            products = []
+        if not products:
+            return None
+        text_tokens = self._normalize_for_match(text)
+        if not text_tokens:
+            return None
+        best: tuple[float, dict] | None = None
+        for product in products:
+            score = self._score_product_name_match(text_tokens, product.get("name"))
+            if score <= 0:
+                continue
+            # Require at least one image to reply
+            images = product.get("images") or []
+            if not images:
+                continue
+            if not best or score > best[0]:
+                best = (score, product)
+        if not best:
+            return None
+        if best[0] < AUTO_REPLY_MIN_SCORE:
+            return None
+        return best[1]
+
+    async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
+        if not AUTO_REPLY_CATALOG_MATCH:
+            return
+        product = self._best_catalog_match(text)
+        if not product:
+            return
+        images = product.get("images") or []
+        if not images:
+            return
+        image_url = images[0].get("url")
+        if not image_url:
+            return
+        caption_parts = [p for p in [product.get("name"), product.get("price")] if p]
+        caption = " - ".join(caption_parts)
+        message_data = {
+            "user_id": user_id,
+            "message": image_url,
+            "url": image_url,
+            "type": "image",
+            "from_me": True,
+            "caption": caption,
+            "price": product.get("price", ""),
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        await self.process_outgoing_message(message_data)
+
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
         """Download media from WhatsApp and upload it to Google Cloud Storage.
 

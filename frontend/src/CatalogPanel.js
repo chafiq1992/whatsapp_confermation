@@ -227,9 +227,10 @@ export default function CatalogPanel({
     const captionDetails = [];
     if (setInfo?.name) captionDetails.push(setInfo.name);
     if (setInfo?.item_count) captionDetails.push(`${setInfo.item_count} items`);
+    const baseDetails = captionDetails.join(' • ');
     const captionText = captionDetails.length
-      ? `Sending entire set: ${captionDetails.join(' • ')}…`
-      : 'Sending entire set…';
+      ? `Envoi de l'ensemble complet : ${baseDetails}…\nإرسال المجموعة كاملة: ${baseDetails}…`
+      : `Envoi de l'ensemble complet…\nإرسال المجموعة كاملة…`;
 
     // Optimistic bubble before hitting the API
     const tempId = sendOptimisticMessage({ type: 'text', message: captionText });
