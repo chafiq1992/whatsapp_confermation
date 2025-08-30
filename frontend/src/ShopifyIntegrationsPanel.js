@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { FaShopify } from "react-icons/fa";
 import api from "./api";
+import { saveCart, loadCart } from "./chatStorage";
 
 export default function ShopifyIntegrationsPanel({ activeUser }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
@@ -227,6 +228,23 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     return () => window.removeEventListener("add-to-order", handler);
   }, [addByVariantId]);
 
+  // Load saved cart for this conversation (2-hour TTL enforced in storage)
+  useEffect(() => {
+    if (!activeUser?.user_id) return;
+    let mounted = true;
+    loadCart(activeUser.user_id).then(items => {
+      if (!mounted) return;
+      setSelectedItems(Array.isArray(items) ? items : []);
+    }).catch(() => setSelectedItems([]));
+    return () => { mounted = false; };
+  }, [activeUser?.user_id]);
+
+  // Persist cart on every change
+  useEffect(() => {
+    if (!activeUser?.user_id) return;
+    saveCart(activeUser.user_id, selectedItems).catch(() => {});
+  }, [selectedItems, activeUser?.user_id]);
+
   const handleCreateOrder = async () => {
     setErrorMsg("");
     setLastResult(null);
@@ -263,6 +281,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     try {
       const res = await api.post(`${API_BASE}/create-shopify-order`, orderPayload);
       setSelectedItems([]);
+      try { if (activeUser?.user_id) await saveCart(activeUser.user_id, []); } catch {}
       setErrorMsg("");
       setLastResult(res?.data || null);
       alert("Order created successfully!");
@@ -551,6 +570,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 onChange={e => handleOrderDataChange('order_image_url', e.target.value)}
                 autoComplete="off"
               />
+              {orderData.order_image_url && (
+                <div className="mt-2">
+                  <div className="text-xs text-gray-300 mb-1">Preview:</div>
+                  <img
+                    src={orderData.order_image_url}
+                    alt="Order reference"
+                    className="w-24 h-24 object-cover rounded border border-gray-600 bg-gray-900"
+                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  />
+                </div>
+              )}
             </div>
             {/* Product search and add section */}
             <hr className="my-2" />
@@ -593,22 +623,42 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 Add Variant
               </button>
             </div>
-            {/* Selected items table */}
+            {/* Selected items table with images and pricing */}
             <table className="w-full text-xs mt-2">
               <thead>
                 <tr>
-                  <th>Product</th>
+                  <th className="text-left">Item</th>
                   <th>Variant</th>
+                  <th>Price</th>
                   <th>Qty</th>
                   <th>Discount</th>
+                  <th>Subtotal</th>
                   <th>Remove</th>
                 </tr>
               </thead>
               <tbody>
-                {selectedItems.map((item, idx) => (
-                  <tr key={item.variant.id}>
-                    <td>{item.variant.product_title || "--"}</td>
+                {selectedItems.map((item, idx) => {
+                  const img = item.variant.image_src;
+                  const priceNum = Number(item.variant.price || 0);
+                  const qtyNum = Number(item.quantity || 1);
+                  const discountNum = Number(item.discount || 0);
+                  const subtotal = Math.max(0, priceNum * qtyNum - discountNum);
+                  return (
+                  <tr key={item.variant.id} className="align-middle">
+                    <td>
+                      <div className="flex items-center gap-2">
+                        {img ? (
+                          <img src={img} alt={item.variant.title} className="w-10 h-10 object-cover rounded" />
+                        ) : (
+                          <div className="w-10 h-10 rounded bg-gray-600 flex items-center justify-center">🛒</div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-semibold truncate max-w-[140px]">{item.variant.product_title || "--"}</div>
+                        </div>
+                      </div>
+                    </td>
                     <td>{item.variant.title}</td>
+                    <td className="text-center">{priceNum} MAD</td>
                     <td>
                       <input
                         type="number"
@@ -628,6 +678,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                         placeholder="MAD"
                       />
                     </td>
+                    <td className="text-center font-semibold">{subtotal} MAD</td>
                     <td>
                       <button
                         type="button"
@@ -636,9 +687,22 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                       >✖</button>
                     </td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
+            {selectedItems.length > 0 && (
+              <div className="mt-2 text-right font-bold text-sm">
+                {(() => {
+                  const total = selectedItems.reduce((sum, item) => {
+                    const p = Number(item.variant.price || 0);
+                    const q = Number(item.quantity || 1);
+                    const d = Number(item.discount || 0);
+                    return sum + Math.max(0, p * q - d);
+                  }, 0);
+                  return <span>Total: {total} MAD</span>;
+                })()}
+              </div>
+            )}
             {/* Delivery Option */}
             <div className="mt-2">
               <label className="block font-bold text-xs mb-1">Delivery</label>

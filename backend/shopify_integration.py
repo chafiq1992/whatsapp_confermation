@@ -100,14 +100,30 @@ async def shopify_variant(variant_id: str):
         resp = await client.get(endpoint, **_client_args())
         resp.raise_for_status()
         variant = resp.json().get("variant")
-        # Try to fetch product title for display
+        # Try to fetch product title and resolve variant image for display
         if variant:
             product_id = variant.get("product_id")
             prod_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products/{product_id}.json"
             p_resp = await client.get(prod_endpoint, **_client_args())
             if p_resp.status_code == 200:
-                prod = p_resp.json().get("product")
+                prod = p_resp.json().get("product") or {}
                 variant["product_title"] = prod.get("title", "")
+                # Resolve image URL for the variant
+                image_src = None
+                image_id = variant.get("image_id")
+                images = prod.get("images") or []
+                if image_id and images:
+                    try:
+                        match = next((img for img in images if str(img.get("id")) == str(image_id)), None)
+                        if match and match.get("src"):
+                            image_src = match["src"]
+                    except Exception:
+                        image_src = None
+                # Fallbacks: product featured image or first image
+                if not image_src:
+                    image_src = (prod.get("image") or {}).get("src") or (images[0].get("src") if images else None)
+                if image_src:
+                    variant["image_src"] = image_src
         return variant
 
 # =============== CUSTOMER BY PHONE ===============

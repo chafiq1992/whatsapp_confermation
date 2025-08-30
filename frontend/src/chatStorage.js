@@ -5,7 +5,8 @@ const STORE_MESSAGES = 'messages';
 const STORE_CONVERSATIONS = 'conversations';
 const STORE_CATALOG_SETS = 'catalog_sets';
 const STORE_CATALOG_SET_PRODUCTS = 'catalog_set_products';
-const DB_VERSION = 3;
+const STORE_CARTS = 'carts';
+const DB_VERSION = 4;
 
 async function getDB() {
   return openDB(DB_NAME, DB_VERSION, {
@@ -23,6 +24,9 @@ async function getDB() {
         if (!db.objectStoreNames.contains(STORE_CATALOG_SET_PRODUCTS)) {
           db.createObjectStore(STORE_CATALOG_SET_PRODUCTS);
         }
+      }
+      if (oldVersion < 4 && !db.objectStoreNames.contains(STORE_CARTS)) {
+        db.createObjectStore(STORE_CARTS);
       }
     }
   });
@@ -79,4 +83,37 @@ export async function loadCatalogSetProducts(setId) {
   const db = await getDB();
   const products = await db.get(STORE_CATALOG_SET_PRODUCTS, String(setId));
   return Array.isArray(products) ? products : [];
+}
+
+// Carts per conversation with TTL
+const CART_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+export async function saveCart(userId, items) {
+  if (!userId) return;
+  const db = await getDB();
+  const payload = {
+    items: Array.isArray(items) ? items : [],
+    updatedAt: Date.now(),
+  };
+  await db.put(STORE_CARTS, payload, String(userId));
+}
+
+export async function loadCart(userId) {
+  if (!userId) return [];
+  const db = await getDB();
+  const entry = await db.get(STORE_CARTS, String(userId));
+  if (!entry) return [];
+  try {
+    if (Date.now() - (entry.updatedAt || 0) > CART_TTL_MS) {
+      await db.delete(STORE_CARTS, String(userId));
+      return [];
+    }
+  } catch {}
+  return Array.isArray(entry.items) ? entry.items : [];
+}
+
+export async function clearCart(userId) {
+  if (!userId) return;
+  const db = await getDB();
+  try { await db.delete(STORE_CARTS, String(userId)); } catch {}
 }
