@@ -66,18 +66,26 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-# Configuration
-class Config:
-    PHONE_NUMBER_ID = "639720275894706"
-    CATALOG_ID = "581487491181000"
-    VERIFY_TOKEN = "chafiq"
-    CATALOG_CACHE_FILE = "catalog_cache.json"
-    UPLOADS_DIR = "uploads"
-    WHATSAPP_API_VERSION = "v19.0"
-    MAX_CATALOG_ITEMS = 30
-    RATE_LIMIT_DELAY = 0
+# Configuration is sourced from environment variables below. Removed duplicate static Config.
+CATALOG_CACHE_FILE = "catalog_cache.json"
+UPLOADS_DIR = "uploads"
+WHATSAPP_API_VERSION = "v19.0"
+MAX_CATALOG_ITEMS = 30
+RATE_LIMIT_DELAY = 0
 
-config = Config()
+# Backwards-compatibility shim for tests and existing imports expecting `main.config`
+try:
+    from types import SimpleNamespace
+    config = SimpleNamespace(
+        WHATSAPP_API_VERSION=WHATSAPP_API_VERSION,
+        MAX_CATALOG_ITEMS=MAX_CATALOG_ITEMS,
+        CATALOG_ID=None,  # set below after env load
+        CATALOG_CACHE_FILE=CATALOG_CACHE_FILE,
+        RATE_LIMIT_DELAY=RATE_LIMIT_DELAY,
+        UPLOADS_DIR=UPLOADS_DIR,
+    )
+except Exception:
+    config = None  # type: ignore
 # Verbose logging flag (minimize noisy logs when off)
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
 
@@ -133,6 +141,13 @@ ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
+
+# Sync CATALOG_ID into compatibility shim, if present
+try:
+    if config is not None:
+        config.CATALOG_ID = CATALOG_ID  # type: ignore[attr-defined]
+except Exception:
+    pass
 
 # Feature flags: auto-reply with catalog match
 AUTO_REPLY_CATALOG_MATCH = os.getenv("AUTO_REPLY_CATALOG_MATCH", "0") == "1"
@@ -334,7 +349,7 @@ class WhatsAppMessenger:
     def __init__(self):
         self.access_token = ACCESS_TOKEN
         self.phone_number_id = PHONE_NUMBER_ID
-        self.base_url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{self.phone_number_id}"
+        self.base_url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{self.phone_number_id}"
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
@@ -396,7 +411,7 @@ class WhatsAppMessenger:
     async def send_catalog_products(self, user_id: str, product_ids: List[str]) -> List[Dict[str, Any]]:
         """Send multiple catalog products in chunks"""
         results = []
-        for chunk in chunk_list(product_ids, config.MAX_CATALOG_ITEMS):
+        for chunk in chunk_list(product_ids, MAX_CATALOG_ITEMS):
             data = {
                 "messaging_product": "whatsapp",
                 "to": user_id,
@@ -406,7 +421,7 @@ class WhatsAppMessenger:
                     "header": {"type": "text", "text": "Products"},
                     "body": {"text": "Découvrez ces produits !\nتفقد هذه المنتجات!"},
                     "action": {
-                        "catalog_id": config.CATALOG_ID,
+                        "catalog_id": CATALOG_ID,
                         "sections": [
                             {
                                 "title": "Default",
@@ -432,7 +447,7 @@ class WhatsAppMessenger:
                 "type": "product",
                 "body": {"text": caption or "Découvrez ce produit !\nتفقد هذا المنتج!"},
                 "action": {
-                    "catalog_id": config.CATALOG_ID,
+                    "catalog_id": CATALOG_ID,
                     "product_retailer_id": product_retailer_id
                 }
             }
@@ -513,7 +528,7 @@ class WhatsAppMessenger:
         bytes of the file and ``mime_type`` comes from the ``Content-Type``
         header of the media response.
         """
-        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{media_id}"
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{media_id}"
 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=self.headers)
@@ -1520,7 +1535,7 @@ class MessageProcessor:
         if not Path(file_path).exists():
             raise Exception(f"Media file not found: {file_path}")
         
-        upload_url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{self.whatsapp_messenger.phone_number_id}/media"
+        upload_url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{self.whatsapp_messenger.phone_number_id}/media"
         
         try:
             # Read file content
@@ -1980,14 +1995,14 @@ async def startup():
     # Catalog cache: avoid blocking startup in production
     try:
         # Try hydrate from GCS quickly if missing
-        if not os.path.exists(config.CATALOG_CACHE_FILE):
+        if not os.path.exists(CATALOG_CACHE_FILE):
             try:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
                     None,
                     download_file_from_gcs,
-                    config.CATALOG_CACHE_FILE,
-                    config.CATALOG_CACHE_FILE,
+                    CATALOG_CACHE_FILE,
+                    CATALOG_CACHE_FILE,
                 )
             except Exception:
                 pass
@@ -2860,7 +2875,7 @@ class CatalogManager:
 
         Graph API: /{catalog_id}/product_sets?fields=id,name
         """
-        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/product_sets"
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{CATALOG_ID}/product_sets"
         params = {"fields": "id,name", "limit": 200}
         headers = await get_whatsapp_headers()
 
@@ -2890,7 +2905,7 @@ class CatalogManager:
     @staticmethod
     async def get_catalog_products() -> List[Dict[str, Any]]:
         products: List[Dict[str, Any]] = []
-        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{config.CATALOG_ID}/products"
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{CATALOG_ID}/products"
         params = {
             # Ask Graph for image URLs explicitly to ensure we receive usable links
             "fields": "retailer_id,name,price,images{url},availability,quantity",
@@ -2924,10 +2939,10 @@ class CatalogManager:
             # Fallback to live fetch if cache empty; also persist to cache for next requests
             products_live = await CatalogManager.get_catalog_products()
             try:
-                with open(config.CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
+                with open(CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
                     json.dump(products_live, f, ensure_ascii=False)
                 try:
-                    await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+                    await upload_file_to_gcs(CATALOG_CACHE_FILE)
                 except Exception as _exc:
                     print(f"GCS upload failed after live fetch: {_exc}")
             except Exception as _exc:
@@ -2948,7 +2963,7 @@ class CatalogManager:
                 return cached_list[: max(1, int(limit))]
 
         products: List[Dict[str, Any]] = []
-        url = f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{set_id}/products"
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{set_id}/products"
         params = {
             "fields": "retailer_id,name,price,images{url},availability,quantity",
             "limit": 25,
@@ -3032,33 +3047,33 @@ class CatalogManager:
     @staticmethod
     async def refresh_catalog_cache() -> int:
         products = await CatalogManager.get_catalog_products()
-        with open(config.CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
+        with open(CATALOG_CACHE_FILE, "w", encoding="utf8") as f:
             json.dump(products, f, ensure_ascii=False)
         try:
-            await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
-            await upload_file_to_gcs(config.CATALOG_CACHE_FILE)
+            await upload_file_to_gcs(CATALOG_CACHE_FILE)
+            await upload_file_to_gcs(CATALOG_CACHE_FILE)
         except Exception as exc:
             print(f"GCS upload failed: {exc}")
         return len(products)
 
     @staticmethod
     def get_cached_products() -> List[Dict[str, Any]]:
-        if not os.path.exists(config.CATALOG_CACHE_FILE):
+        if not os.path.exists(CATALOG_CACHE_FILE):
             try:
                 download_file_from_gcs(
-                    config.CATALOG_CACHE_FILE, config.CATALOG_CACHE_FILE
+                    CATALOG_CACHE_FILE, CATALOG_CACHE_FILE
                 )
             except Exception:
                 return []
         # If file exists but is empty or invalid, return empty list gracefully
         try:
-            if os.path.getsize(config.CATALOG_CACHE_FILE) == 0:
+            if os.path.getsize(CATALOG_CACHE_FILE) == 0:
                 return []
         except Exception:
             return []
 
         try:
-            with open(config.CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
+            with open(CATALOG_CACHE_FILE, "r", encoding="utf8") as f:
                 products = json.load(f)
         except Exception:
             return []

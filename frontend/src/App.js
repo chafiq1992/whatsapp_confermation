@@ -4,7 +4,7 @@ import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
 import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
-import ShopifyIntegrationsPanel from './ShopifyIntegrationsPanel';
+const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
 import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
 
@@ -295,7 +295,9 @@ export default function App() {
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}
       <div className="w-96 border-l border-gray-800 bg-gray-900 overflow-y-auto">
-        <ShopifyIntegrationsPanel activeUser={activeUser} />
+        <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading Shopify panel…</div>}>
+          <ShopifyIntegrationsPanel activeUser={activeUser} />
+        </Suspense>
       </div>
     </div>
   );

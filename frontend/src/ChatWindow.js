@@ -1,10 +1,11 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, Suspense } from 'react';
 import api from './api';
 import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
 import useAudioRecorder from './useAudioRecorder';
-import EmojiPicker from 'emoji-picker-react';
-import CatalogPanel from "./CatalogPanel";
+import { VariableSizeList as List } from 'react-window';
+const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
+const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
 import { saveMessages, loadMessages } from './chatStorage';
 
 // API and WebSocket endpoints
@@ -156,6 +157,9 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const fileInputRef = useRef();
   const inputRef = useRef();
   const messagesEndRef = useRef(null);
+  const listRef = useRef(null);
+  const itemHeights = useRef({});
+  const [listHeight, setListHeight] = useState(0);
   const canvasRef = useRef();
 
   // Insert date separators like WhatsApp Business
@@ -626,20 +630,19 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const [preserveScroll, setPreserveScroll] = useState(false);
 
   const scrollToBottom = () => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollTop = messagesEndRef.current.scrollHeight;
-    }
+    try {
+      if (listRef.current && groupedMessages.length > 0) {
+        listRef.current.scrollToItem(groupedMessages.length - 1, 'end');
+      }
+    } catch {}
   };
 
   const scrollToHit = (hitListIndex) => {
     if (hitListIndex < 0 || hitListIndex >= searchHitIndexes.length) return;
-    const container = messagesEndRef.current;
-    if (!container) return;
     const childIndex = searchHitIndexes[hitListIndex];
-    const child = container.children[childIndex];
-    if (child) {
-      child.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    try {
+      listRef.current?.scrollToItem(childIndex, 'center');
+    } catch {}
   };
 
   useEffect(() => {
@@ -651,16 +654,16 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   }, [messages, preserveScroll]);
 
   useEffect(() => {
-    const container = messagesEndRef.current;
-    if (!container) return;
-    const handleScroll = () => {
-      if (container.scrollTop <= 100 && hasMore && !loadingOlder) {
-        loadOlderMessages();
-      }
+    const el = messagesEndRef.current;
+    if (!el) return;
+    const update = () => setListHeight(el.clientHeight || 0);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      try { ro.disconnect(); } catch {}
     };
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [hasMore, loadingOlder, loadOlderMessages]);
+  }, [messagesEndRef.current]);
 
   // Persist messages to IndexedDB whenever they change
   useEffect(() => {
@@ -1033,91 +1036,116 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         </div>
       )}
       
-      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-y-auto p-4 space-y-2 bg-gray-900" ref={messagesEndRef}>
-        {groupedMessages.map((msg, index) => (
-          msg.__separator ? (
-            <div key={msg.key} className="sticky top-2 z-10 flex justify-center my-2">
-              <span className="px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-200 border border-gray-600">{msg.label}</span>
-            </div>
-          ) : (
-            <React.Fragment key={msg.id || msg.temp_id || index}>
-              {index === unreadSeparatorIndex && (
-                <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
-              )}
-              <MessageBubble
-                msg={msg}
-                self={(function() {
-                  // Default to backend-provided flag
-                  if (msg.from_me) return true;
-                  // Heuristic for internal DMs: align current agent's messages to the right
-                  try {
-                    const isDm = typeof activeUser?.user_id === 'string' && activeUser.user_id.startsWith('dm:');
-                    if (!isDm) return false;
-                    const agentLower = String(currentAgent || '').toLowerCase();
-                    const sender = String(msg.agent || msg.sender || msg.from || msg.name || '').toLowerCase();
-                    return agentLower && sender && agentLower === sender;
-                  } catch { return false; }
-                })()}
-                catalogProducts={catalogProducts}
-                highlightQuery={searchQuery}
-                quotedMessage={(function(){
-                  try {
-                    const qid = msg.reply_to;
-                    if (!qid) return null;
-                    return messages.find(m => (m.wa_message_id && m.wa_message_id === qid) || (m.id && m.id === qid)) || null;
-                  } catch { return null; }
-                })()}
-                onReply={(m)=> setReplyTarget(m)}
-                onReact={(m, emoji)=>{
-                  try {
-                    const targetId = m.wa_message_id || m.id;
-                    if (!targetId || !ws || ws.readyState !== WebSocket.OPEN) return;
-                    ws.send(JSON.stringify({ type: 'react', target_wa_message_id: targetId, emoji }));
-                  } catch {}
-                }}
-                onForward={(forwardMsg)=>{
-                  // Build a proper forward payload that preserves media links
-                  const originalType = forwardMsg.type || 'text';
-                  const isMedia = originalType === 'image' || originalType === 'audio' || originalType === 'video';
-
-                  let messageValue = '';
-                  let urlValue = '';
-
-                  if (isMedia) {
-                    // Prefer explicit url provided by backend (e.g., GCS public link)
-                    urlValue = (forwardMsg.url && typeof forwardMsg.url === 'string') ? forwardMsg.url : '';
-                    if (urlValue) {
-                      messageValue = urlValue;
-                    } else if (typeof forwardMsg.message === 'string') {
-                      // Fallbacks: if message already an absolute URL use as-is; if it is a local path like /media/..., make it absolute
-                      const raw = forwardMsg.message;
-                      if (/^https?:\/\//i.test(raw)) {
-                        messageValue = raw;
-                      } else if (/^\/?media\//i.test(raw) || /^\/app\/media\//i.test(raw) || raw.startsWith('/media/')) {
-                        const base = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
-                        messageValue = `${base}${raw.startsWith('/') ? '' : '/'}${raw.replace(/^\/app\//, '')}`;
-                      } else {
-                        // As a last resort, keep the raw string (backend may resolve it)
-                        messageValue = raw;
-                      }
-                    } else {
-                      // If no usable media reference, degrade gracefully to a label
-                      messageValue = forwardMsg.caption || '[media]';
-                    }
-                  } else {
-                    // Non-media: forward text or a stringified representation
-                    messageValue = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[message]');
+      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-4 bg-gray-900" ref={messagesEndRef}>
+        {listHeight > 0 && (
+          <List
+            ref={listRef}
+            height={listHeight}
+            width={'100%'}
+            itemCount={groupedMessages.length}
+            itemSize={(index) => itemHeights.current[index] || 72}
+            onScroll={({ scrollOffset }) => {
+              if (scrollOffset <= 100 && hasMore && !loadingOlder) {
+                (async () => {
+                  const loaded = await fetchMessages({ offset, append: true });
+                  if (loaded && loaded.length) {
+                    try { listRef.current?.scrollToItem(loaded.length, 'start'); } catch {}
                   }
-
-                  const payload = { message: messageValue, type: isMedia ? originalType : (originalType || 'text') };
-                  if (isMedia && urlValue) payload.url = urlValue;
-                  forwardPayloadRef.current = payload;
-                  setForwardOpen(true);
-                }}
-              />
-            </React.Fragment>
-          )
-        ))}
+                })();
+              }
+            }}
+          >
+            {({ index, style }) => {
+              const msg = groupedMessages[index];
+              const setRowRef = (el) => {
+                if (!el) return;
+                const h = el.getBoundingClientRect().height;
+                if (Math.abs((itemHeights.current[index] || 0) - h) > 1) {
+                  itemHeights.current[index] = h;
+                  try { listRef.current?.resetAfterIndex(index); } catch {}
+                }
+              };
+              if (msg.__separator) {
+                return (
+                  <div style={style}>
+                    <div ref={setRowRef} className="flex justify-center my-2">
+                      <span className="px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-200 border border-gray-600">{msg.label}</span>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div style={style}>
+                  <div ref={setRowRef} className="space-y-2">
+                    {index === unreadSeparatorIndex && (
+                      <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
+                    )}
+                    <MessageBubble
+                      msg={msg}
+                      self={(function() {
+                        if (msg.from_me) return true;
+                        try {
+                          const isDm = typeof activeUser?.user_id === 'string' && activeUser.user_id.startsWith('dm:');
+                          if (!isDm) return false;
+                          const agentLower = String(currentAgent || '').toLowerCase();
+                          const sender = String(msg.agent || msg.sender || msg.from || msg.name || '').toLowerCase();
+                          return agentLower && sender && agentLower === sender;
+                        } catch { return false; }
+                      })()}
+                      catalogProducts={catalogProducts}
+                      highlightQuery={searchQuery}
+                      quotedMessage={(function(){
+                        try {
+                          const qid = msg.reply_to;
+                          if (!qid) return null;
+                          return messages.find(m => (m.wa_message_id && m.wa_message_id === qid) || (m.id && m.id === qid)) || null;
+                        } catch { return null; }
+                      })()}
+                      onReply={(m)=> setReplyTarget(m)}
+                      onReact={(m, emoji)=>{
+                        try {
+                          const targetId = m.wa_message_id || m.id;
+                          if (!targetId || !ws || ws.readyState !== WebSocket.OPEN) return;
+                          ws.send(JSON.stringify({ type: 'react', target_wa_message_id: targetId, emoji }));
+                        } catch {}
+                      }}
+                      onForward={(forwardMsg)=>{
+                        const originalType = forwardMsg.type || 'text';
+                        const isMedia = originalType === 'image' || originalType === 'audio' || originalType === 'video';
+                        let messageValue = '';
+                        let urlValue = '';
+                        if (isMedia) {
+                          urlValue = (forwardMsg.url && typeof forwardMsg.url === 'string') ? forwardMsg.url : '';
+                          if (urlValue) {
+                            messageValue = urlValue;
+                          } else if (typeof forwardMsg.message === 'string') {
+                            const raw = forwardMsg.message;
+                            if (/^https?:\/\//i.test(raw)) {
+                              messageValue = raw;
+                            } else if (/^\/?media\//i.test(raw) || /^\/?app\/media\//i.test(raw) || raw.startsWith('/media/')) {
+                              const base = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
+                              messageValue = `${base}${raw.startsWith('/') ? '' : '/'}${raw.replace(/^\/app\//, '')}`;
+                            } else {
+                              messageValue = raw;
+                            }
+                          } else {
+                            messageValue = forwardMsg.caption || '[media]';
+                          }
+                        } else {
+                          messageValue = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[message]');
+                        }
+                        const payload = { message: messageValue, type: isMedia ? originalType : (originalType || 'text') };
+                        if (isMedia && urlValue) payload.url = urlValue;
+                        forwardPayloadRef.current = payload;
+                        setForwardOpen(true);
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            }}
+          </List>
+        )}
       </div>
       
       {activeUser && (
@@ -1164,7 +1192,9 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
           )}
           {showEmojiPicker && (
             <div className="absolute bottom-16 left-2 z-10 bg-white rounded shadow">
-              <EmojiPicker onEmojiClick={emojiData => setText((prev) => prev + emojiData.emoji)} />
+              <Suspense fallback={<div className="p-2 text-sm">Loading…</div>}>
+                <EmojiPicker onEmojiClick={emojiData => setText((prev) => prev + emojiData.emoji)} />
+              </Suspense>
             </div>
           )}
           <div className="flex items-center">
@@ -1224,15 +1254,16 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         </div>
       )}
       
-      <CatalogPanel
-        activeUser={activeUser}
-        websocket={ws}
-        onMessageSent={(optimistic) => {
-          // Ensure optimistic entries are sortable with tie-breakers
-          const enriched = { ...optimistic, client_ts: optimistic.client_ts || Date.now() };
-          setMessages(prev => sortByTime([...prev, enriched]));
-        }}
-      />
+      <Suspense fallback={<div className="p-2 text-sm text-gray-400">Loading catalog…</div>}>
+        <CatalogPanel
+          activeUser={activeUser}
+          websocket={ws}
+          onMessageSent={(optimistic) => {
+            const enriched = { ...optimistic, client_ts: optimistic.client_ts || Date.now() };
+            setMessages(prev => sortByTime([...prev, enriched]));
+          }}
+        />
+      </Suspense>
       <ForwardDialog
         open={forwardOpen}
         onClose={()=> setForwardOpen(false)}

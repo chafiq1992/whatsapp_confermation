@@ -413,7 +413,7 @@ async def create_shopify_order(data: dict = Body(...)):
     if order_note:
         note_attributes.append({"name": "note_text", "value": order_note})
     # Attach customer to draft order. Shopify expects `customer` object (with id),
-    # not `customer_id` at the root of draft_order.
+    # not `customer_id` at the root of draft_order. Optionally create the customer first.
     order_block = {}
     customer_id = data.get("customer_id")
     # If no explicit id provided, try to resolve by phone best-effort
@@ -424,6 +424,45 @@ async def create_shopify_order(data: dict = Body(...)):
                 customer_id = resolved["customer_id"]
         except Exception:
             customer_id = None
+
+    # Optionally create a new Shopify customer if missing
+    create_if_missing = bool(data.get("create_customer_if_missing", True))
+    if not customer_id and create_if_missing:
+        try:
+            first_name = (data.get("name") or "").strip()
+            last_name = ""
+            if first_name and " " in first_name:
+                parts = first_name.split(" ", 1)
+                first_name, last_name = parts[0], parts[1]
+            customer_payload = {
+                "customer": {
+                    "first_name": first_name or "",
+                    "last_name": last_name,
+                    "email": data.get("email") or "",
+                    "phone": normalize_phone(data.get("phone", "")),
+                    "addresses": [
+                        {
+                            "address1": data.get("address", ""),
+                            "city": data.get("city", ""),
+                            "province": data.get("province", ""),
+                            "zip": data.get("zip", ""),
+                            "country": "Morocco",
+                            "phone": normalize_phone(data.get("phone", "")),
+                            "name": data.get("name", ""),
+                        }
+                    ],
+                }
+            }
+            CUSTOMERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers.json"
+            async with httpx.AsyncClient() as client:
+                c_resp = await client.post(CUSTOMERS_ENDPOINT, json=customer_payload, **_client_args())
+                if c_resp.status_code in (201, 200):
+                    c_json = c_resp.json() or {}
+                    created = (c_json.get("customer") or {})
+                    if created.get("id"):
+                        customer_id = created["id"]
+        except Exception as e:
+            logger.warning("Failed to auto-create customer: %s", e)
 
     if customer_id:
         order_block["customer"] = {"id": customer_id}

@@ -54,6 +54,12 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [errorMsg, setErrorMsg] = useState("");
   const [lastResult, setLastResult] = useState(null);
 
+  // Customer search and creation options
+  const [customerSearchInput, setCustomerSearchInput] = useState("");
+  const [customerSearchResults, setCustomerSearchResults] = useState([]);
+  const [isSearchingCustomers, setIsSearchingCustomers] = useState(false);
+  const [createCustomerIfMissing, setCreateCustomerIfMissing] = useState(true);
+
   const MOROCCO_PROVINCES = [
     'Marrakech-Safi','Casablanca-Settat','Rabat-Salé-Kénitra','Fès-Meknès','Tanger-Tétouan-Al Hoceïma',
     'Drâa-Tafilalet','Souss-Massa','Beni Mellal-Khénifra','Oriental','Guelmim-Oued Noun',
@@ -274,6 +280,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       delivery: deliveryOption,
       payment_term: paymentTerm,
       ...(customer?.customer_id ? { customer_id: customer.customer_id } : {}),
+      create_customer_if_missing: !!createCustomerIfMissing,
       market,
     };
 
@@ -469,6 +476,74 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 ) : (
                   <p className="text-red-400">No customer found.</p>
                 )}
+                {/* Search bar for other numbers/emails */}
+                <div className="mt-2 p-2 bg-gray-800 rounded">
+                  <div className="text-xs text-gray-300 mb-1">Search customers by phone or email (different from WhatsApp):</div>
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 p-1 rounded bg-gray-900 text-white"
+                      placeholder="Enter phone or email"
+                      value={customerSearchInput}
+                      onChange={e => setCustomerSearchInput(e.target.value)}
+                    />
+                    <button
+                      className="px-2 py-1 bg-blue-600 rounded text-white"
+                      onClick={async () => {
+                        if (!customerSearchInput.trim()) return;
+                        setIsSearchingCustomers(true);
+                        setCustomerSearchResults([]);
+                        try {
+                          const res = await api.get(`${API_BASE}/search-customers-all?phone_number=${encodeURIComponent(customerSearchInput.trim())}`);
+                          const list = Array.isArray(res.data) ? res.data : [];
+                          setCustomerSearchResults(list);
+                        } catch {
+                          setCustomerSearchResults([]);
+                        } finally {
+                          setIsSearchingCustomers(false);
+                        }
+                      }}
+                      type="button"
+                    >Search</button>
+                  </div>
+                  {isSearchingCustomers && <div className="text-xs text-gray-400 mt-1">Searching…</div>}
+                  {customerSearchResults.length > 0 && (
+                    <ul className="mt-2 space-y-1 max-h-40 overflow-auto pr-1">
+                      {customerSearchResults.map((c) => (
+                        <li key={c.customer_id} className="flex justify-between items-center gap-2 bg-gray-900 p-2 rounded">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-sm truncate">{c.name || "(no name)"}</div>
+                            <div className="text-xs text-gray-300 truncate">{c.phone || c.email || ""}</div>
+                          </div>
+                          <button
+                            className="px-2 py-1 bg-green-600 rounded text-white text-xs whitespace-nowrap"
+                            type="button"
+                            onClick={() => {
+                              setCustomer(c);
+                              setSelectedCustomerId(c.customer_id);
+                              setSelectedAddressIdx(0);
+                              const addr = (c.primary_address || c.addresses?.[0] || {});
+                              setOrderData(d => ({
+                                ...d,
+                                name: c.name || "",
+                                email: c.email || "",
+                                phone: c.phone || orderData.phone,
+                                address: addr.address1 || "",
+                                city: addr.city || "",
+                                province: addr.province || "",
+                                zip: addr.zip || "",
+                              }));
+                              setCustomerSearchResults([]);
+                              setCustomerSearchInput("");
+                              api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
+                                .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
+                                .catch(() => setOrders([]));
+                            }}
+                          >Select</button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -742,6 +817,19 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               />
               <label htmlFor="completeNow" className="font-bold text-xs">
                 Complete draft now (creates order as payment pending)
+              </label>
+            </div>
+            {/* Create customer if missing */}
+            <div className="mt-2 flex items-center">
+              <input
+                id="createCustomerIfMissing"
+                type="checkbox"
+                checked={createCustomerIfMissing}
+                onChange={e => setCreateCustomerIfMissing(e.target.checked)}
+                className="mr-2"
+              />
+              <label htmlFor="createCustomerIfMissing" className="font-bold text-xs">
+                Create Shopify customer if none found
               </label>
             </div>
             {/* Market */}

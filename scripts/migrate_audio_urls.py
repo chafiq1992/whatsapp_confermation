@@ -1,10 +1,20 @@
 import asyncio
 import logging
 import os
+import sys
 from pathlib import Path
 
-from .main import DatabaseManager
-from .google_cloud_storage import _get_client, GCS_BUCKET_NAME, upload_file_to_gcs
+# Ensure project root is on sys.path to import backend package
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.main import DatabaseManager  # type: ignore
+from backend.google_cloud_storage import (  # type: ignore
+    _get_client,
+    GCS_BUCKET_NAME,
+    upload_file_to_gcs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +66,7 @@ async def migrate_audio_urls() -> None:
                 continue
 
             if url:
-                await conn.execute("UPDATE messages SET url=? WHERE id=?", (url, msg_id))
+                await conn.execute("UPDATE messages SET url=? WHERE id= ?", (url, msg_id))
 
         if not db.use_postgres:
             await conn.commit()
@@ -65,3 +75,5 @@ async def migrate_audio_urls() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(migrate_audio_urls())
+
+
