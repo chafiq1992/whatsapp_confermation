@@ -718,6 +718,24 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
       
       let imgObj = (getPendingImages() || [])[idx];
       if (!imgObj) return resolve({ success: false, idx });
+      // Create an optimistic message for this image immediately
+      const temp_id = generateTempId();
+      imgObj.temp_id = temp_id;
+      try {
+        const optimisticMsg = {
+          id: temp_id,
+          temp_id,
+          user_id: getUserId(),
+          type: 'image',
+          from_me: true,
+          status: 'sending',
+          timestamp: new Date().toISOString(),
+          client_ts: Date.now(),
+          // Use local blob URL so it renders instantly
+          message: imgObj.url,
+        };
+        setMessages(prev => sortByTime([...prev, optimisticMsg]));
+      } catch {}
       
       const formData = new FormData();
       formData.append('files', imgObj.file);
@@ -749,6 +767,11 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
           };
           return copy;
         });
+        // Update the optimistic message with final URL and mark as sent
+        try {
+          const finalUrl = response.data?.url || response.data?.file_path || '';
+          setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(finalUrl ? { url: finalUrl } : {}) } : m));
+        } catch {}
         
         resolve({ success: true, idx });
       } catch (err) {
@@ -758,6 +781,10 @@ export default function ChatWindow({ activeUser, ws, currentAgent }) {
           copy[idx] = { ...copy[idx], status: "error", error: (err?.message || "Upload failed") };
           return copy;
         });
+        // Mark optimistic message as failed
+        try {
+          setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
+        } catch {}
         resolve({ success: false, idx });
       }
     });
