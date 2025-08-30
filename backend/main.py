@@ -1314,7 +1314,16 @@ class MessageProcessor:
             "temp_id": temp_id,
             "price": message_data.get("price", ""),
             "caption": message_data.get("caption", ""),
-            "media_path": message_data.get("media_path")  # Add this field
+            "media_path": message_data.get("media_path"),  # Add this field
+            # Pass-through identifiers for catalog items so background sender can use them
+            "product_retailer_id": (
+                message_data.get("product_retailer_id")
+                or message_data.get("retailer_id")
+                or message_data.get("product_id")
+            ),
+            # Preserve raw fields as well for debugging/DB if present
+            "retailer_id": message_data.get("retailer_id"),
+            "product_id": message_data.get("product_id"),
         }
         
         # For media messages, add URL field
