@@ -4,9 +4,9 @@ import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
 import useAudioRecorder from './useAudioRecorder';
 import { VariableSizeList as List } from 'react-window';
+import { saveMessages, loadMessages } from './chatStorage';
 const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
-import { saveMessages, loadMessages } from './chatStorage';
 
 // API and WebSocket endpoints
 const API_BASE = process.env.REACT_APP_API_BASE || '';

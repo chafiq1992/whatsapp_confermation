@@ -1,12 +1,12 @@
 // /frontend/src/App.jsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, Suspense } from 'react';
 import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
 import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
-const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
 import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
+const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
 
 // Read API base from env for production/dev compatibility
 // Default to relative paths if not provided
