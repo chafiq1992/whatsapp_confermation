@@ -590,7 +590,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   return (
     <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-2`}>
       <div
-        className={`relative max-w-[80%] px-3 py-2 rounded-2xl shadow-md transition-all hover:shadow-lg ${
+        className={`group relative max-w-[80%] px-3 py-2 rounded-2xl shadow-md transition-all hover:shadow-lg ${
           self 
             ? "bg-[#004AAD] text-white rounded-br-none" 
             : "bg-gray-700 text-white rounded-bl-none"
@@ -613,23 +613,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
           >↪</button>
         )}
-        {typeof onReact === 'function' && (
-          <div className="absolute -bottom-3 left-2">
-            <button
-              type="button"
-              title="React"
-              onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(v=>!v); }}
-              className="bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
-            >😊</button>
-            {showReactPicker && (
-              <div className="mt-1 bg-gray-800 text-white rounded shadow px-1 py-1 flex space-x-1 select-none">
-                {['👍','❤️','😂','😮','😢','🙏'].map((emj)=>(
-                  <button key={emj} className="hover:bg-gray-700 rounded px-1" onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(false); onReact(msg, emj); }}>{emj}</button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        {/* React button moved to footer to avoid overlaying media */}
         {/* Quoted preview */}
         {quotedMessage && (
           <div className={`mb-2 px-2 py-1 rounded border ${self ? 'border-white/30 bg-white/10' : 'border-gray-500 bg-black/10'}`}>
@@ -742,8 +726,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
            </div>
         )}
 
-        {/* Message footer with timestamp and status */}
-        <div className="flex items-center justify-between mt-1 text-xs opacity-75 space-x-2">
+        {/* Message footer with reactions, timestamp and status */}
+        <div className="relative flex items-center justify-between mt-1 text-xs opacity-75 space-x-2">
           {/* Reactions summary */}
           <div className="flex items-center gap-1">
             {Object.entries(msg.reactionsSummary || {}).map(([emj, cnt]) => (
@@ -751,6 +735,25 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             ))}
           </div>
           <div className="flex items-center space-x-1">
+            {typeof onReact === 'function' && (
+              <div className="relative mr-1">
+                <button
+                  type="button"
+                  title="React"
+                  onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(v=>!v); }}
+                  className={`rounded px-1 py-0.5 ${self ? 'bg-white/10 hover:bg-white/20' : 'bg-black/20 hover:bg-black/30'} transition-opacity opacity-0 group-hover:opacity-100`}
+                >😊</button>
+                {showReactPicker && (
+                  <div className={`absolute bottom-full mb-1 left-0 z-10 bg-gray-800 text-white rounded shadow px-1 py-1 flex space-x-1 select-none`}
+                    onClick={(e)=>e.stopPropagation()}
+                  >
+                    {['👍','❤️','😂','😮','😢','🙏'].map((emj)=>(
+                      <button key={emj} className="hover:bg-gray-700 rounded px-1" onClick={()=>{ setShowReactPicker(false); onReact(msg, emj); }}>{emj}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <span>{formatTime(msg.timestamp)}</span>
             {renderTick(msg, self)}
           </div>
