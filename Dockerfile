@@ -8,7 +8,19 @@ RUN npm run build
 
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Install system dependencies required for building Python packages like
+# ``uvloop`` and ``httptools`` which rely on C extensions.  ``build-essential``
+# and ``gcc`` provide the toolchain, while the development libraries supply the
+# necessary headers for compilation.
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    libffi-dev \
+    libuv1 \
+    libuv1-dev \
+    python3-dev \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
