@@ -412,9 +412,21 @@ async def create_shopify_order(data: dict = Body(...)):
         note_attributes.append({"name": "image_url", "value": order_image_url})
     if order_note:
         note_attributes.append({"name": "note_text", "value": order_note})
+    # Attach customer to draft order. Shopify expects `customer` object (with id),
+    # not `customer_id` at the root of draft_order.
     order_block = {}
-    if data.get("customer_id"):
-        order_block["customer_id"] = data["customer_id"]
+    customer_id = data.get("customer_id")
+    # If no explicit id provided, try to resolve by phone best-effort
+    if not customer_id:
+        try:
+            resolved = await fetch_customer_by_phone(data.get("phone", ""))
+            if isinstance(resolved, dict) and resolved.get("customer_id"):
+                customer_id = resolved["customer_id"]
+        except Exception:
+            customer_id = None
+
+    if customer_id:
+        order_block["customer"] = {"id": customer_id}
     else:
         order_block["customer"] = {
             "first_name": data.get("name", ""),
