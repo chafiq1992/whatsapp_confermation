@@ -486,7 +486,7 @@ export default function CatalogPanel({
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={selectAllVisible}>Select all</button>
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
                   <button className="px-3 py-2 text-sm rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
-                  <button className="px-3 py-2 text-sm rounded bg-green-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || products.length === 0} onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+                  <button className="px-3 py-2 text-sm rounded bg-green-600 text-white" onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
                 </>
               ) : (
                 <span className="text-sm text-gray-700">Select a set</span>
