@@ -236,7 +236,17 @@ function ChatList({
             <select
               className="flex-1 p-2 bg-gray-100 rounded text-black"
               value={selectedTagFilter}
-              onChange={(e) => setSelectedTagFilter(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedTagFilter(val);
+                if (val && !tagFilters.includes(val)) {
+                  setTagFilters([...tagFilters, val]);
+                  // Auto-clear to "close" the native dropdown experience
+                  setTimeout(() => setSelectedTagFilter(""), 0);
+                }
+                // Remove focus to collapse on mobile
+                e.target.blur();
+              }}
             >
               <option value="">Select tag to filter…</option>
               {tagOptions.map(opt => (
@@ -416,7 +426,7 @@ const ConversationRow = memo(function Row({
                   <div className="mb-2">
                     <label className="text-xs text-gray-400">Assign to</label>
                     <div className="flex gap-2 mt-1">
-                      <select className="flex-1 bg-gray-800 text-white p-2 rounded" value={selectedAgent} onChange={(e)=>{ const v = e.target.value; setSelectedAgent(v); (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/assign`, { agent: v || null }); } catch(e) {} })(); }}>
+                      <select className="flex-1 bg-gray-800 text-white p-2 rounded" value={selectedAgent} onChange={(e)=>{ const v = e.target.value; setSelectedAgent(v); (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/assign`, { agent: v || null }); } catch(e) {} })(); setAssignOpen(false); }}>
                         <option value="">Unassigned</option>
                         {agents.map(a => (
                           <option key={a.username} value={a.username}>{a.name || a.username}</option>
@@ -438,6 +448,7 @@ const ConversationRow = memo(function Row({
                             setTags(newTags);
                             setTagsInput('');
                             (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
+                            setAssignOpen(false);
                           }
                         }}
                       >

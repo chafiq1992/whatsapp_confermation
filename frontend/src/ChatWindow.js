@@ -642,7 +642,10 @@ export default function ChatWindow({ activeUser, ws }) {
       const payload = ev.detail || {};
       const text = payload.message;
       const type = payload.type || 'text';
-      forwardPayloadRef.current = { message: text, type };
+      const url = payload.url;
+      const out = { message: text, type };
+      if (url) out.url = url;
+      forwardPayloadRef.current = out;
       setForwardOpen(true);
     };
     window.addEventListener('forward-message', handler);
@@ -929,16 +932,42 @@ export default function ChatWindow({ activeUser, ws }) {
                 catalogProducts={catalogProducts}
                 highlightQuery={searchQuery}
                 onForward={(forwardMsg)=>{
-                  const text = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[media]');
-                  let fType = forwardMsg.type || 'text';
-                  if (fType !== 'text' && fType !== 'order' && fType !== 'catalog_item' && fType !== 'catalog_set') {
-                    fType = 'text';
-                    const label = forwardMsg.type === 'image' ? 'Image' : forwardMsg.type === 'audio' ? 'Audio' : forwardMsg.type === 'video' ? 'Video' : 'Media';
-                    if (!text || text === '[media]') {
-                      forwardMsg.message = label;
+                  // Build a proper forward payload that preserves media links
+                  const originalType = forwardMsg.type || 'text';
+                  const isMedia = originalType === 'image' || originalType === 'audio' || originalType === 'video';
+
+                  let messageValue = '';
+                  let urlValue = '';
+
+                  if (isMedia) {
+                    // Prefer explicit url provided by backend (e.g., GCS public link)
+                    urlValue = (forwardMsg.url && typeof forwardMsg.url === 'string') ? forwardMsg.url : '';
+                    if (urlValue) {
+                      messageValue = urlValue;
+                    } else if (typeof forwardMsg.message === 'string') {
+                      // Fallbacks: if message already an absolute URL use as-is; if it is a local path like /media/..., make it absolute
+                      const raw = forwardMsg.message;
+                      if (/^https?:\/\//i.test(raw)) {
+                        messageValue = raw;
+                      } else if (/^\/?media\//i.test(raw) || /^\/app\/media\//i.test(raw) || raw.startsWith('/media/')) {
+                        const base = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
+                        messageValue = `${base}${raw.startsWith('/') ? '' : '/'}${raw.replace(/^\/app\//, '')}`;
+                      } else {
+                        // As a last resort, keep the raw string (backend may resolve it)
+                        messageValue = raw;
+                      }
+                    } else {
+                      // If no usable media reference, degrade gracefully to a label
+                      messageValue = forwardMsg.caption || '[media]';
                     }
+                  } else {
+                    // Non-media: forward text or a stringified representation
+                    messageValue = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[message]');
                   }
-                  forwardPayloadRef.current = { message: typeof forwardMsg.message === 'string' ? forwardMsg.message : text, type: fType };
+
+                  const payload = { message: messageValue, type: isMedia ? originalType : (originalType || 'text') };
+                  if (isMedia && urlValue) payload.url = urlValue;
+                  forwardPayloadRef.current = payload;
                   setForwardOpen(true);
                 }}
               />
@@ -1057,8 +1086,12 @@ export default function ChatWindow({ activeUser, ws }) {
                 status: 'sending',
                 timestamp: new Date().toISOString(),
               };
+              if (payload.url && typeof payload.url === 'string') {
+                messageObj.url = payload.url;
+              }
               ws.send(JSON.stringify({ type: 'send_message', data: messageObj }));
             } else {
+              // HTTP fallback: pass the best available message value (URL for media)
               api.post(`${API_BASE}/send-message`, { user_id: target, message: payload.message, type: payload.type || 'text' });
             }
           } catch {}
