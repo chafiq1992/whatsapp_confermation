@@ -2614,6 +2614,36 @@ async def proxy_image(url: str):
         print(f"Proxy image error: {exc}")
         raise HTTPException(status_code=502, detail="Proxy fetch failed")
 
+# Lightweight link preview endpoint to extract OG metadata (title/image)
+@app.get("/link-preview")
+async def link_preview(url: str):
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid url")
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        html = resp.text or ""
+        # Local import to avoid global dependency if unused on cold paths
+        try:
+            from bs4 import BeautifulSoup  # type: ignore
+        except Exception:
+            BeautifulSoup = None  # type: ignore
+        title = ""
+        description = ""
+        image = ""
+        if html and BeautifulSoup is not None:
+            soup = BeautifulSoup(html, "html.parser")
+            def get_meta(name: str):
+                tag = soup.find("meta", {"property": name}) or soup.find("meta", {"name": name})
+                return (tag.get("content") or "").strip() if tag else ""
+            title = get_meta("og:title") or (soup.title.string.strip() if getattr(soup, "title", None) and getattr(soup.title, "string", None) else "")
+            description = get_meta("og:description") or get_meta("description")
+            image = get_meta("og:image") or get_meta("twitter:image")
+        return {"url": url, "title": title, "description": description, "image": image}
+    except Exception as exc:
+        print(f"Link preview error: {exc}")
+        raise HTTPException(status_code=502, detail="Preview fetch failed")
+
 # Serve React build after all routes
 app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
 

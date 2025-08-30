@@ -46,6 +46,14 @@ function formatTime(ts) {
 
 export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
+  // Helpers to extract and classify URLs inside text messages
+  const extractUrls = (text) => {
+    try {
+      const pattern = /https?:\/\/[\w.-]+(?:\/[\w\-._~:/?#[\]@!$&'()*+,;=%]*)?/gi;
+      return String(text || "").match(pattern) || [];
+    } catch { return []; }
+  };
+  const isImageUrl = (u) => /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(u) || /cdn\.shopify\.com\//i.test(u);
   // Enhanced order data parsing with better error handling
   const getOrderData = () => {
     if (msg.type !== "order") return null;
@@ -105,6 +113,29 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const isCatalogItem = msg.type === "catalog_item" || msg.type === "interactive_product";
   const isCatalogSet = msg.type === "catalog_set";
   const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
+  const [linkPreview, setLinkPreview] = useState(null);
+  const [linkPreviewError, setLinkPreviewError] = useState(false);
+
+  useEffect(() => {
+    if (!isText) return;
+    const urls = extractUrls(msg?.message);
+    if (!urls.length) return;
+    const firstPageUrl = urls.find(u => !isImageUrl(u));
+    if (!firstPageUrl) return;
+    let aborted = false;
+    (async () => {
+      try {
+        setLinkPreviewError(false);
+        const res = await fetch(`${API_BASE}/link-preview?url=${encodeURIComponent(firstPageUrl)}`);
+        if (!res.ok) throw new Error(String(res.status));
+        const data = await res.json();
+        if (!aborted) setLinkPreview(data);
+      } catch (e) {
+        if (!aborted) setLinkPreviewError(true);
+      }
+    })();
+    return () => { aborted = true; };
+  }, [isText, msg?.message, API_BASE]);
 
   // Audio player state and refs
   const waveformRef = useRef(null);
@@ -591,7 +622,74 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
          ) :
          isText ? (
            <div className="whitespace-pre-line break-words leading-relaxed">
-             {highlightText(msg.message, highlightQuery)}
+             {(() => {
+               const text = String(msg.message || "");
+               const urls = extractUrls(text);
+               if (!urls.length) return highlightText(text, highlightQuery);
+               const parts = [];
+               let lastIndex = 0;
+               text.replace(/https?:\/\/[\w.-]+(?:\/[\w\-._~:/?#[\]@!$&'()*+,;=%]*)?/gi, (match, offset) => {
+                 const before = text.slice(lastIndex, offset);
+                 if (before) parts.push(<React.Fragment key={`t_${lastIndex}`}>{highlightText(before, highlightQuery)}</React.Fragment>);
+                 parts.push(
+                   <a key={`a_${offset}`} href={match} target="_blank" rel="noopener noreferrer" className="underline text-blue-200 break-all">
+                     {match}
+                   </a>
+                 );
+                 lastIndex = offset + match.length;
+                 return match;
+               });
+               const tail = text.slice(lastIndex);
+               if (tail) parts.push(<React.Fragment key={`t_tail`}>{highlightText(tail, highlightQuery)}</React.Fragment>);
+               return parts;
+             })()}
+             {(() => {
+               const urls = extractUrls(msg?.message);
+               const imageUrls = (urls || []).filter(isImageUrl).slice(0, 3);
+               if (!imageUrls.length) return null;
+               return (
+                 <div className="mt-2 flex flex-wrap gap-2">
+                   {imageUrls.map((u, i) => (
+                     <img
+                       key={i}
+                       src={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}`}
+                       alt="linked"
+                       className="rounded-lg max-w-[160px] cursor-pointer hover:opacity-90"
+                       onClick={() => window.open(u, '_blank')}
+                       onError={(e) => handleImageError(e)}
+                       loading="lazy"
+                     />
+                   ))}
+                 </div>
+               );
+             })()}
+             {(() => {
+               if (!linkPreview || linkPreviewError) return null;
+               const img = linkPreview.image;
+               const title = linkPreview.title || linkPreview.url;
+               if (!img && !title) return null;
+               return (
+                 <a
+                   href={linkPreview.url || '#'}
+                   target="_blank"
+                   rel="noopener noreferrer"
+                   className="mt-2 block bg-black/20 rounded-lg overflow-hidden border border-gray-600 hover:border-gray-400"
+                 >
+                   {img && (
+                     <img
+                       src={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}`}
+                       alt={title || 'preview'}
+                       className="w-full max-w-[260px] object-cover"
+                       onError={(e) => handleImageError(e)}
+                       loading="lazy"
+                     />
+                   )}
+                   {title && (
+                     <div className="px-2 py-1 text-xs text-white truncate max-w-[260px]">{title}</div>
+                   )}
+                 </a>
+               );
+             })()}
            </div>
          ) : (
            <div className="text-xs italic text-gray-300">
