@@ -1,13 +1,10 @@
 import React, { useRef, useState } from 'react';
-import fetchWithAuth from './fetchWithAuth';
+import api from './api';
 
 export default function ImageUploader({ userId, onImagesSent, ws }) {
   const [isUploading, setIsUploading] = useState(false);
   const [thumbnails, setThumbnails] = useState([]);
   const fileInputRef = useRef();
-
-  // Utility to get API URL
-  const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   // Function to handle upload - now compatible with ChatWindow's approach
   const handleFileUpload = async (files) => {
@@ -23,34 +20,13 @@ export default function ImageUploader({ userId, onImagesSent, ws }) {
 
         console.log('📤 Uploading file:', file.name, 'to user:', userId);
 
-        // Send via WebSocket if available (like ChatWindow does)
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          // For WebSocket, we still use HTTP upload but let WS handle real-time updates
-          const response = await fetchWithAuth(`${API_BASE}/send-media`, {
-            method: 'POST',
-            body: formData,
-          });
+        // Use shared API helper for auth-aware requests
+        const response = await api.post('/send-media', formData);
+        const result = response.data;
+        console.log('✅ Upload response:', result);
 
-          const result = await response.json();
-          console.log('✅ Upload response:', result);
-
-          if (!response.ok || result.status !== 'success') {
-            throw new Error(result.error || `HTTP ${response.status}: ${response.statusText}`);
-          }
-          // WebSocket will handle the UI update automatically
-        } else {
-          // Fallback to HTTP-only approach
-          const response = await fetchWithAuth(`${API_BASE}/send-media`, {
-            method: 'POST',
-            body: formData,
-          });
-
-          const result = await response.json();
-          console.log('✅ Upload response:', result);
-
-          if (!response.ok || result.status !== 'success') {
-            throw new Error(result.error || `HTTP ${response.status}: ${response.statusText}`);
-          }
+        if (result.status !== 'success') {
+          throw new Error(result.error || `HTTP ${response.status}: ${response.statusText}`);
         }
       }
 
