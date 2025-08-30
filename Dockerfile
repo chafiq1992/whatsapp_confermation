@@ -19,4 +19,4 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080
 
-CMD ["sh", "-c", "python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT} --loop uvloop --http httptools --proxy-headers --forwarded-allow-ips='*' --log-level ${LOG_LEVEL:-info}"]

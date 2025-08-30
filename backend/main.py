@@ -16,6 +16,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Re
 from starlette.requests import Request as _LimiterRequest
 from starlette.responses import Response as _LimiterResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
@@ -29,9 +31,16 @@ from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 
 from fastapi.staticfiles import StaticFiles
+try:
+    import orjson  # type: ignore
+    from fastapi.responses import ORJSONResponse  # type: ignore
+    _ORJSON_AVAILABLE = True
+except Exception:
+    _ORJSON_AVAILABLE = False
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 
 # Absolute paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -50,6 +59,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 # Load environment variables
 load_dotenv()
 
+# Configure logging early
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
 # Configuration
 class Config:
     PHONE_NUMBER_ID = "639720275894706"
@@ -62,7 +78,7 @@ class Config:
     RATE_LIMIT_DELAY = 0
 
 config = Config()
-# Verbose logging flag (minimize noisy Cloud Run logs when off)
+# Verbose logging flag (minimize noisy logs when off)
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
 
 # Backpressure and rate limiting configuration
@@ -77,6 +93,26 @@ wa_semaphore = asyncio.Semaphore(WA_MAX_CONCURRENCY)
 def _vlog(*args, **kwargs):
     if LOG_VERBOSE:
         print(*args, **kwargs)
+
+# Suppress noisy prints in production while preserving error-like messages
+try:
+    import builtins as _builtins  # type: ignore
+    _original_print = _builtins.print
+
+    def _smart_print(*args, **kwargs):
+        text = " ".join(str(a) for a in args)
+        lower = text.lower()
+        if ("error" in lower) or ("failed" in lower) or ("\u274c" in text) or ("\u2757" in text):
+            logging.error(text)
+        elif LOG_VERBOSE:
+            logging.info(text)
+        # else: drop message to keep logs quiet
+
+    if not LOG_VERBOSE:
+        _builtins.print = _smart_print  # type: ignore
+except Exception:
+    # If anything goes wrong, keep default print behavior
+    pass
 
 # ── simple password hashing helpers ───────────────────────────────
 def hash_password(password: str) -> str:
@@ -1614,7 +1650,7 @@ class MessageProcessor:
                 await f.write(media_content)
 
             drive_url = await upload_file_to_gcs(
-                str(file_path), mime_type, bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+                str(file_path), mime_type
             )
             if not drive_url:
                 raise RuntimeError("GCS upload failed")
@@ -1653,7 +1689,7 @@ message_processor = MessageProcessor(connection_manager, redis_manager, db_manag
 messenger = message_processor.whatsapp_messenger
 
 # FastAPI app
-app = FastAPI()
+app = FastAPI(default_response_class=(ORJSONResponse if _ORJSON_AVAILABLE else JSONResponse))
 
 # Expose Prometheus metrics
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
@@ -1670,15 +1706,27 @@ except Exception as exc:
 # Mount the media directory to serve uploaded files
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
+# Configure CORS via environment (comma-separated list). Default to '*'.
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "*")
+allowed_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins if allowed_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Reduce aggressive caching for HTML to ensure frontend updates are visible after deploys
+# Compression for faster responses
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
+# Trusted hosts (optional but recommended in production)
+_allowed_hosts_env = os.getenv("ALLOWED_HOSTS", "*")
+allowed_hosts = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+if allowed_hosts and allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+
+# Smart caching: no-cache HTML shell, long cache for static assets
 @app.middleware("http")
 async def no_cache_html(request: StarletteRequest, call_next):
     response: StarletteResponse = await call_next(request)
@@ -1686,9 +1734,24 @@ async def no_cache_html(request: StarletteRequest, call_next):
     if path == "/" or path.endswith(".html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
-    # Also prevent aggressive caching for JS/CSS bundles so UI updates appear immediately
-    if path.endswith((".js", ".css", ".map")):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
+    # Enable long-lived cache for versioned static assets
+    if (
+        path.startswith("/static/")
+        or path.endswith((
+            ".js",
+            ".css",
+            ".map",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".svg",
+            ".ico",
+            ".woff",
+            ".woff2",
+            ".ttf",
+        ))
+    ) and not path.endswith(".html"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 @app.on_event("startup")
@@ -2227,7 +2290,7 @@ async def send_media(
 
             # ---------- upload to Google Drive ----------
             media_url = await upload_file_to_gcs(
-                str(file_path), bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+                str(file_path)
             )
 
             # Build message payload using the public GCS URL instead of a local path
@@ -2767,7 +2830,7 @@ async def cashin(
 
             # Upload to Google Cloud Storage
             media_url = await upload_file_to_gcs(
-                str(file_path), bucket_name=os.getenv("GCS_MEDIA_BUCKET_NAME")
+                str(file_path)
             )
             media_path = str(file_path)
 

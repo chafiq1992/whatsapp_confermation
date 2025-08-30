@@ -54,3 +54,5 @@ redis
 asyncpg
 prometheus-fastapi-instrumentator
 fastapi-limiter
+uvloop; sys_platform != "win32"
+orjson
