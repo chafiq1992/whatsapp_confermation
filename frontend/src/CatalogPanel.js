@@ -1,5 +1,6 @@
 import api from "./api";
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
 import { FiRefreshCw } from "react-icons/fi";
 import { loadCatalogSets, saveCatalogSets, loadCatalogSetProducts, saveCatalogSetProducts } from "./chatStorage";
 
@@ -475,9 +476,9 @@ export default function CatalogPanel({
       </div>
 
       {/* Modal popup with grid and actions */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
-          <div className="relative bg-white rounded-xl p-4 w-[96vw] max-w-6xl max-h-[90vh] flex flex-col">
+      {modalOpen && createPortal(
+        <div className="fixed inset-0 z-[1000] bg-black/60 flex items-center justify-center">
+          <div className="relative bg-white rounded-xl p-4 w-[96vw] max-w-6xl max-h-[90vh] flex flex-col shadow-2xl">
             {/* Modal header */}
             <div className="flex items-center gap-3 mb-3">
               {modalMode === 'products' && (
@@ -598,7 +599,8 @@ export default function CatalogPanel({
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
