@@ -3,12 +3,12 @@ import React, { useEffect, useState, useRef, Suspense } from 'react';
 import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
 import MiniSidebar from './MiniSidebar';
-// Lazy load heavy panels
-const AdminDashboard = React.lazy(() => import('./AdminDashboard'));
 import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
 import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
+// Lazy load heavy panels (must be declared after all import declarations)
+const AdminDashboard = React.lazy(() => import('./AdminDashboard'));
 const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
 
 // Read API base from env for production/dev compatibility
@@ -270,7 +270,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
-      <div className="w-[320px] md:w-[360px] lg:w-[400px] xl:w-[440px] border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
+      <div className="w-[320px] md:w-[360px] lg:w-[400px] xl:w-[440px] min-w-72 border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
         <MiniSidebar
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
