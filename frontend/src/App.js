@@ -262,9 +262,9 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
+    <div className="grid h-screen bg-gray-900 text-white grid-cols-[360px_1fr_384px]">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
-      <div className="w-[30%] min-w-[360px] border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900 shrink-0">
+      <div className="col-start-1 border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
         <MiniSidebar
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
@@ -294,7 +294,7 @@ export default function App() {
         </div>
       </div>
       {/* MIDDLE: Chat window */}
-      <div className="flex-1 overflow-hidden relative z-0 min-w-0">
+      <div className="col-start-2 overflow-hidden relative z-0 min-w-0">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
         <ChatWindow
           activeUser={activeUser}
@@ -306,7 +306,7 @@ export default function App() {
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, always visible */}
-      <div className="w-96 border-l border-gray-800 bg-gray-900 overflow-y-auto shrink-0">
+      <div className="col-start-3 border-l border-gray-800 bg-gray-900 overflow-y-auto">
         <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading Shopify panel…</div>}>
           <ShopifyIntegrationsPanel activeUser={activeUser} />
         </Suspense>
