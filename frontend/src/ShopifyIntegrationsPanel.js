@@ -246,12 +246,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   <style>
     :root{
       --brand:#004AAD;             /* irrakids blue */
-      --accent:#6A7CFF;            /* secondary blue from logo dots (approx) */
-      --ink:#e5e7eb;
-      --muted:#9ca3af;
-      --cardTop:#0c1222;
-      --cardBottom:#111a34;
-      --page:#0a0f1e;
+      --accent:#6A7CFF;            /* secondary blue */
+      --ink:#e5e7eb;               /* text */
+      --muted:#9ca3af;             /* secondary text */
+      --card:#0f1722;              /* single-color card background */
       --width: 320px;
     }
 
@@ -260,24 +258,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     .wrap{display:flex; justify-content:center}
 
-    .ticket{width:var(--width); position:relative; border-radius:22px; overflow:hidden; 
-            background:linear-gradient(180deg, var(--cardTop), var(--cardBottom));
-            box-shadow: 0 16px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
-            border:1px solid rgba(255,255,255,.08);
+    .ticket{width:var(--width); position:relative; border-radius:20px; overflow:hidden; 
+            background:var(--card);
     }
 
-    .ticket::before, .ticket::after{content:""; position:absolute; left:0; right:0; height:22px; z-index:2;}
-    .ticket::before{top:-11px; background:
-      radial-gradient(circle at 12px 11px, var(--page) 11px, transparent 11px) left top / 24px 22px repeat-x;
-    }
-    .ticket::after{bottom:-11px; background:
-      radial-gradient(circle at 12px 11px, var(--page) 11px, transparent 11px) left bottom / 24px 22px repeat-x;
-    }
+    /* Remove scallops/notches for WhatsApp-native look */
 
     .inner{padding:18px 18px 16px; position:relative}
-    .inner::before{content:""; position:absolute; left:0; right:0; top:0; height:90px; pointer-events:none;
-      background:radial-gradient(420px 160px at 50% -40px, rgba(106,124,255,.28), transparent 60%);
-    }
 
     .emblem{display:flex; align-items:center; justify-content:center; margin:8px 0 10px}
     .halo{width:52px; height:52px; border-radius:999px; background:radial-gradient(closest-side, rgba(0,74,173,.35), rgba(0,74,173,.08) 60%, transparent 65%);
@@ -486,7 +473,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       fd.append("user_id", activeUser.user_id);
       fd.append("media_type", "image");
       fd.append("files", file, file.name);
-      fd.append("caption", isPaid ? `Payment Success • ${orderName}` : `Order Placed • ${orderName}`);
+      const arabicCaption = [
+        `هذه فاتورتك \uD83D\uDCC4`,
+        `تم تأكيد طلبك: ${orderName}`,
+        `يرجى مراجعة الفاتورة بعناية: عنوانك ورقم هاتفك والمنتجات والمقاس واللون حتى يصلك طلبك بسرعة وبدون أي مشاكل.`,
+        `شكراً لتسوقك معنا \u2764\uFE0F`
+      ].join("\n");
+      fd.append("caption", arabicCaption);
 
       await api.post(`${API_BASE}/send-media`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
