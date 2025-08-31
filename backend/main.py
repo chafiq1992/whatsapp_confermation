@@ -72,6 +72,7 @@ UPLOADS_DIR = "uploads"
 WHATSAPP_API_VERSION = "v19.0"
 MAX_CATALOG_ITEMS = 30
 RATE_LIMIT_DELAY = 0
+CATALOG_CACHE_TTL_SEC = 15 * 60
 
 # Backwards-compatibility shim for tests and existing imports expecting `main.config`
 try:
@@ -867,7 +868,7 @@ class DatabaseManager:
     async def upsert_message(self, data: dict):
         """
         Insert a new row or update an existing one (found by wa_message_id OR temp_id).
-        The status is *only* upgraded – you can’t go from 'delivered' ➜ 'sent', etc.
+        The status is *only* upgraded – you can't go from 'delivered' ➜ 'sent', etc.
         """
         # Drop any keys not present in the messages table to avoid SQL errors
         data = {k: v for k, v in data.items() if k in self.message_columns}
@@ -2692,15 +2693,26 @@ async def get_catalog_sets():
 
 
 @app.get("/catalog-all-products")
-async def get_catalog_products_endpoint():
-    # Serve cached if available; otherwise refresh synchronously for fast subsequent loads
-    products = catalog_manager.get_cached_products()
-    if products:
-        return products
+async def get_catalog_products_endpoint(force_refresh: bool = False):
+    # Refresh cache if forced or stale/missing; otherwise serve cached for speed
+    need_refresh = bool(force_refresh)
     try:
-        await catalog_manager.refresh_catalog_cache()
-    except Exception as exc:
-        print(f"Catalog cache refresh failed in endpoint: {exc}")
+        if not os.path.exists(CATALOG_CACHE_FILE):
+            need_refresh = True
+        else:
+            import time as _time
+            age_sec = _time.time() - os.path.getmtime(CATALOG_CACHE_FILE)
+            if age_sec > CATALOG_CACHE_TTL_SEC:
+                need_refresh = True
+    except Exception:
+        need_refresh = True
+
+    if need_refresh:
+        try:
+            await catalog_manager.refresh_catalog_cache()
+        except Exception as exc:
+            print(f"Catalog cache refresh failed in endpoint: {exc}")
+
     return catalog_manager.get_cached_products() or []
 
 
@@ -2949,10 +2961,21 @@ class CatalogManager:
                 print(f"Writing local catalog cache failed: {_exc}")
             return products_live[: max(1, int(limit))]
 
-        # Serve from persisted cache first for cold starts
-        persisted = CatalogManager._load_persisted_set(set_id)
-        if persisted:
-            return persisted[: max(1, int(limit))]
+        # Serve from persisted cache if fresh
+        use_persisted = False
+        try:
+            filename = CatalogManager._set_cache_filename(set_id)
+            if os.path.exists(filename):
+                import time as _time
+                if (_time.time() - os.path.getmtime(filename)) < CatalogManager._SET_CACHE_TTL_SEC:
+                    use_persisted = True
+        except Exception:
+            use_persisted = False
+
+        if use_persisted:
+            persisted = CatalogManager._load_persisted_set(set_id)
+            if persisted:
+                return persisted[: max(1, int(limit))]
 
         # Serve from in-memory cache if fresh (warm instance)
         import time as _time
