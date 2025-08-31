@@ -1,5 +1,6 @@
 import api from "./api";
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { FiRefreshCw } from "react-icons/fi";
 import { loadCatalogSets, saveCatalogSets, loadCatalogSetProducts, saveCatalogSetProducts } from "./chatStorage";
 
 const API_BASE = process.env.REACT_APP_API_BASE || "";
@@ -305,37 +306,40 @@ export default function CatalogPanel({
   // Initial load of sets
   useEffect(() => { fetchSets(); }, []);
 
-  // Refresh Catalog Button Component
+  // Minimal refresh catalog control (icon button)
   function RefreshCatalogButton({ onRefresh }) {
     const [loading, setLoading] = useState(false);
-    const [result, setResult] = useState("");
+    const [ok, setOk] = useState(false);
 
     const handleRefresh = async () => {
       setLoading(true);
-      setResult("");
+      setOk(false);
       try {
         const res = await api.post(`${API_BASE}/refresh-catalog-cache`);
-        setResult(`✅ Catalog refreshed: ${res.data.count} products`);
-        if (onRefresh) onRefresh();
+        // Optionally re-fetch sets to reflect any changes after refresh
+        try { await fetchSets(); } catch {}
+        if (onRefresh) onRefresh(res?.data);
+        setOk(true);
       } catch (err) {
         console.error('Error refreshing catalog:', err);
-        setResult("❌ Error refreshing catalog");
+      } finally {
+        // brief success indicator
+        setTimeout(() => setOk(false), 1500);
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     return (
-      <div className="flex items-center gap-2">
-        <button
-          onClick={handleRefresh}
-          disabled={loading}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
-          type="button"
-        >
-          {loading ? "Refreshing..." : "Refresh Catalog"}
-        </button>
-        {result && <span className="text-sm">{result}</span>}
-      </div>
+      <button
+        onClick={handleRefresh}
+        disabled={loading}
+        className={`p-1.5 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors ${loading ? 'opacity-70' : ''}`}
+        type="button"
+        title={loading ? 'Syncing…' : 'Sync catalog'}
+        aria-label="Sync catalog"
+      >
+        <FiRefreshCw className={`${loading ? 'animate-spin' : ''} ${ok ? 'text-green-400' : ''}`} />
+      </button>
     );
   }
 
@@ -421,6 +425,7 @@ export default function CatalogPanel({
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-gray-200">Catalog</h2>
         <div className="flex items-center gap-2">
+          <RefreshCatalogButton onRefresh={() => { /* no-op; sets reloaded inside */ }} />
           <div className={`w-2.5 h-2.5 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
           <div className="text-xs text-gray-400">WS</div>
         </div>

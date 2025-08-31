@@ -264,7 +264,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
-      <div className="w-[30%] min-w-[360px] border-r border-gray-700 overflow-hidden flex">
+      <div className="w-[30%] min-w-[360px] border-r border-gray-700 overflow-hidden flex relative z-10 bg-gray-900">
         <MiniSidebar
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
@@ -294,7 +294,7 @@ export default function App() {
         </div>
       </div>
       {/* MIDDLE: Chat window */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden relative z-0">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
         <ChatWindow
           activeUser={activeUser}
