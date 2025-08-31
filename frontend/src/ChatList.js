@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import api from './api';
 import { FixedSizeList as List } from "react-window";
-import { FiSearch, FiMail, FiMessageSquare, FiUserCheck } from 'react-icons/fi';
+import { FiSearch, FiMail, FiMessageSquare, FiUserCheck, FiUser } from 'react-icons/fi';
 
 /* ───────────── Helpers ───────────── */
 const getInitials = (name = "") => {
@@ -298,7 +298,7 @@ function ChatList({
           <List
             height={Math.max(200, window.innerHeight - 110)}
             itemCount={filteredConversations.length}
-            itemSize={72}
+            itemSize={80}
             width={'100%'}
             className="scroll-smooth will-change-transform"
             overscanCount={12}
@@ -396,12 +396,13 @@ const ConversationRow = memo(function Row({
           </span>
           <div className="flex gap-2 ml-2 items-center">
             {!isScrolling && selectedAgent && (
-              <span className="px-2.5 py-1 bg-indigo-600 text-white rounded-full text-sm">
+              <span className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-base flex items-center gap-1">
+                <FiUser className="opacity-90" />
                 {agents.find(a => a.username === selectedAgent)?.name || selectedAgent}
               </span>
             )}
             {!isScrolling && (tags || []).slice(0,3).map(t => (
-              <span key={t} className="w-6 h-6 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-xs ring-2 ring-white/20">
+              <span key={t} className="w-8 h-8 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-sm ring-2 ring-white/20">
                 {(() => {
                   const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
                   return opt?.icon || (t || '').charAt(0).toUpperCase();
@@ -472,7 +473,7 @@ const ConversationRow = memo(function Row({
                     <div className="flex gap-2 flex-wrap mt-2 items-center">
                       {tags.map(t => (
                         <div key={t} className="flex items-center gap-1">
-                          <span className="w-7 h-7 rounded-full bg-gray-700 text-white flex items-center justify-center text-xs ring-2 ring-white/10">
+                          <span className="w-8 h-8 rounded-full bg-gray-700 text-white flex items-center justify-center text-sm ring-2 ring-white/10">
                             {(() => {
                               const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
                               return opt?.icon || (t || '').charAt(0).toUpperCase();

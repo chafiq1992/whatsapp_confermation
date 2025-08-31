@@ -33,7 +33,7 @@ export default function MiniSidebar({
 					type="button"
 					title="Internal chats"
 					onClick={() => onToggleInternal && onToggleInternal()}
-					className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl bg-gray-800 text-gray-300 hover:bg-gray-700"
+					className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl bg-gray-800 text-gray-300 hover:bg-gray-700"
 				>
 					<HiChatBubbleLeftRight />
 				</button>

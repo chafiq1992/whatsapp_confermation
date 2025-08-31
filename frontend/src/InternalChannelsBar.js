@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { HiUserCircle } from 'react-icons/hi2';
 import api from './api';
 
 export default function InternalChannelsBar({ channels = [], onSelectChannel, onSelectAgent, excludeAgent, compact = false }) {
@@ -13,7 +14,7 @@ export default function InternalChannelsBar({ channels = [], onSelectChannel, on
   }, []);
 
   return (
-    <div className={compact ? "flex gap-1 p-1 bg-gray-800/80 rounded-full overflow-x-auto" : "flex gap-2 p-2 border-b border-gray-800 bg-gray-900 overflow-x-auto"}>
+    <div className={compact ? "flex gap-2 p-2 bg-gray-800/80 rounded-full overflow-x-auto" : "flex gap-3 p-3 border-b border-gray-800 bg-gray-900 overflow-x-auto"}>
       {agents
         .filter(a => {
           if (!excludeAgent) return true;
@@ -27,9 +28,10 @@ export default function InternalChannelsBar({ channels = [], onSelectChannel, on
           key={a.username}
           type="button"
           onClick={() => onSelectAgent && onSelectAgent(a.username)}
-          className={compact ? "px-2 py-0.5 rounded-full bg-gray-700 hover:bg-gray-600 text-xs" : "px-3 py-1 rounded-full bg-gray-800 hover:bg-gray-700 text-sm"}
+          className={compact ? "px-3 py-1 rounded-full bg-gray-700 hover:bg-gray-600 text-sm flex items-center gap-1" : "px-4 py-2 rounded-full bg-gray-800 hover:bg-gray-700 text-base flex items-center gap-2"}
           title={`DM @${a.name || a.username}`}
         >
+          <HiUserCircle className={compact ? "text-lg" : "text-2xl"} />
           @{a.name || a.username}
         </button>
       ))}
