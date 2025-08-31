@@ -46,6 +46,7 @@ function ChatList({
   onlineUsers = [],
   defaultAssignedFilter: defaultAssignedFilterProp,
   wsConnected = false,
+  showArchive = false,
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
@@ -59,7 +60,6 @@ function ChatList({
   const [tagFilters, setTagFilters] = useState([]);
   // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
-  const [showArchive, setShowArchive] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   useEffect(() => {
@@ -188,25 +188,23 @@ function ChatList({
       {/* Top-bar */
       }
       <div className="flex flex-col gap-2 p-2">
-        <div className="flex gap-2 items-center">
-          <button
-            className={`px-3 py-1 rounded text-sm font-medium ${!showArchive ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800'}`}
-            onClick={() => setShowArchive(false)}
-            title="Show active inbox"
-          >📥 Inbox</button>
-          <button
-            className={`px-3 py-1 rounded text-sm font-medium ${showArchive ? 'bg-blue-600 text-white' : 'bg-gray-300 text-gray-800'}`}
-            onClick={() => setShowArchive(true)}
-            title="Show archived (done) chats"
-          >🗄️ Archive</button>
-        </div>
-        <div className="flex gap-2 items-center">
+        {/* Search at the top */}
+        <div className="flex gap-2 items-center sticky top-0 bg-gray-900 z-10">
           <input
             className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"
             placeholder="Search or start new chat"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <div
+            className={`w-3 h-3 rounded-full ${
+              wsConnected ? 'bg-green-500' : 'bg-red-500'
+            }`}
+            title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
+          ></div>
+        </div>
+        {/* Filters row */}
+        <div className="flex gap-2 items-center">
           <button
             className={`px-3 rounded text-sm font-medium ${
               showUnreadOnly
@@ -228,14 +226,6 @@ function ChatList({
           >
             Needs reply
           </button>
-          <div
-            className={`w-3 h-3 rounded-full ${
-              wsConnected ? 'bg-green-500' : 'bg-red-500'
-            }`}
-            title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
-          ></div>
-        </div>
-        <div className="flex gap-2 items-center">
           <select
             className="p-2 bg-gray-100 rounded text-black"
             value={assignedFilter}
@@ -279,15 +269,17 @@ function ChatList({
                 }
               }}
             >Add</button>
-            <div className="flex gap-1 flex-wrap">
+            <div className="flex gap-2 flex-wrap items-center">
               {tagFilters.map(t => (
-                <span key={t} className="px-2 py-1 bg-blue-600 text-white rounded-full text-xs flex items-center gap-1">
-                  {(() => {
-                    const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
-                    return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
-                  })()}
-                  <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="ml-1">✕</button>
-                </span>
+                <div key={t} className="flex items-center gap-1">
+                  <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs ring-2 ring-white/20">
+                    {(() => {
+                      const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                      return opt?.icon || (t || '').charAt(0).toUpperCase();
+                    })()}
+                  </span>
+                  <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="text-xs">✕</button>
+                </div>
               ))}
             </div>
           </div>
@@ -407,10 +399,10 @@ const ConversationRow = memo(function Row({
               </span>
             )}
             {(tags || []).slice(0,3).map(t => (
-              <span key={t} className="px-2.5 py-1 bg-gray-700 text-white rounded-full text-sm">
+              <span key={t} className="w-6 h-6 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-xs ring-2 ring-white/20">
                 {(() => {
                   const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
-                  return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
+                  return opt?.icon || (t || '').charAt(0).toUpperCase();
                 })()}
               </span>
             ))}
@@ -432,10 +424,10 @@ const ConversationRow = memo(function Row({
             )}
             <div className="relative">
               <button
-                className="px-2 py-1 bg-gray-600 text-white rounded"
+                className="px-2 py-1 bg-gray-700 text-white rounded"
                 onClick={(e) => { e.stopPropagation(); setAssignOpen(!assignOpen); }}
                 title="Assign / Tags"
-              >⋯</button>
+              >▾</button>
               {assignOpen && (
                 <div className="absolute right-0 mt-2 w-64 bg-gray-900 border border-gray-700 rounded shadow-lg z-10 p-2" onClick={(e) => e.stopPropagation()}>
                   <div className="mb-2">
@@ -475,19 +467,21 @@ const ConversationRow = memo(function Row({
                         ))}
                       </select>
                     </div>
-                    <div className="flex gap-1 flex-wrap mt-2">
+                    <div className="flex gap-2 flex-wrap mt-2 items-center">
                       {tags.map(t => (
-                        <span key={t} className="px-2 py-0.5 bg-gray-700 rounded-full text-xs flex items-center gap-1">
-                          {(() => {
-                            const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
-                            return `${opt?.icon ? opt.icon + ' ' : ''}${t}`;
-                          })()}
+                        <div key={t} className="flex items-center gap-1">
+                          <span className="w-7 h-7 rounded-full bg-gray-700 text-white flex items-center justify-center text-xs ring-2 ring-white/10">
+                            {(() => {
+                              const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                              return opt?.icon || (t || '').charAt(0).toUpperCase();
+                            })()}
+                          </span>
                           <button onClick={() => {
                             const newTags = tags.filter(x => x !== t);
                             setTags(newTags);
                             (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
-                          }}>✕</button>
-                        </span>
+                          }} className="text-xs text-gray-300 hover:text-white">✕</button>
+                        </div>
                       ))}
                     </div>
                   </div>

@@ -2,6 +2,8 @@
 import React, { useEffect, useState, useRef, Suspense } from 'react';
 import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
+import MiniSidebar from './MiniSidebar';
+import AdminDashboard from './AdminDashboard';
 import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
 import api from './api';
@@ -21,6 +23,9 @@ export default function App() {
   const [agentInboxMode, setAgentInboxMode] = useState(false);
   const [myAssignedOnly, setMyAssignedOnly] = useState(false);
   const [adminWsConnected, setAdminWsConnected] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
+  const [showInternalPanel, setShowInternalPanel] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
@@ -258,27 +263,45 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
-      {/* LEFT: Agent header + Chat list */}
-      <div className="w-1/3 border-r border-gray-700 overflow-hidden">
-        <AgentHeaderBar
-          currentAgent={currentAgent}
-          onAgentChange={setCurrentAgent}
-          myAssignedOnly={myAssignedOnly}
-          onToggleMyAssigned={setMyAssignedOnly}
+      {/* LEFT: Mini sidebar + Agent header + Chat list */}
+      <div className="w-1/3 border-r border-gray-700 overflow-hidden flex">
+        <MiniSidebar
+          showArchive={showArchive}
+          onSetShowArchive={setShowArchive}
+          onToggleInternal={() => setShowInternalPanel((v) => !v)}
+          onOpenSettings={() => setShowAdmin(true)}
+          onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
         />
-        <InternalChannelsBar
-          onSelectChannel={(ch)=> setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` })}
-          onSelectAgent={(username)=> setActiveUser({ user_id: `dm:${username}`, name: `@${username}` })}
-          excludeAgent={currentAgent}
-        />
-        {!agentInboxMode && (
-          <ChatList
-            conversations={conversations}
-            setActiveUser={setActiveUser}
-            activeUser={activeUser}
-            wsConnected={adminWsConnected}
-            defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
+        <div className="flex-1 flex flex-col">
+          <AgentHeaderBar
+            currentAgent={currentAgent}
+            onAgentChange={setCurrentAgent}
+            myAssignedOnly={myAssignedOnly}
+            onToggleMyAssigned={setMyAssignedOnly}
           />
+          {!agentInboxMode && (
+            <ChatList
+              conversations={conversations}
+              setActiveUser={setActiveUser}
+              activeUser={activeUser}
+              wsConnected={adminWsConnected}
+              defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
+              showArchive={showArchive}
+            />
+          )}
+        </div>
+        {showInternalPanel && (
+          <div className="absolute left-16 top-0 bottom-0 w-64 bg-gray-900 border-r border-gray-800 overflow-y-auto z-20">
+            <div className="p-2 border-b border-gray-800 flex items-center justify-between">
+              <span className="text-sm text-gray-300">Internal</span>
+              <button className="text-gray-400 hover:text-white" onClick={() => setShowInternalPanel(false)} title="Close">✕</button>
+            </div>
+            <InternalChannelsBar
+              onSelectChannel={(ch)=> { setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` }); setShowInternalPanel(false); }}
+              onSelectAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
+              excludeAgent={currentAgent}
+            />
+          </div>
         )}
       </div>
       {/* MIDDLE: Chat window */}
@@ -299,6 +322,9 @@ export default function App() {
           <ShopifyIntegrationsPanel activeUser={activeUser} />
         </Suspense>
       </div>
+      {showAdmin && (
+        <AdminDashboard onClose={() => setShowAdmin(false)} />
+      )}
     </div>
   );
 }
