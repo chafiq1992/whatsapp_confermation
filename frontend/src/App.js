@@ -305,8 +305,8 @@ export default function App() {
           onUpdateConversationTags={handleUpdateConversationTags}
         />
       </div>
-      {/* RIGHT: Shopify "contact info" panel, always visible */}
-      <div className="w-96 border-l border-gray-800 bg-gray-900 overflow-y-auto shrink-0">
+      {/* RIGHT: Shopify "contact info" panel, responsive (hidden on small/medium) */}
+      <div className="hidden lg:block lg:w-80 xl:w-96 border-l border-gray-800 bg-gray-900 overflow-y-auto">
         <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading Shopify panel…</div>}>
           <ShopifyIntegrationsPanel activeUser={activeUser} />
         </Suspense>
