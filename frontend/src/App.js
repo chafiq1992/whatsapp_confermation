@@ -286,18 +286,16 @@ export default function App() {
               excludeAgent={currentAgent}
             />
           )}
-          {!agentInboxMode && (
-            <ChatList
-              conversations={conversations}
-              setActiveUser={setActiveUser}
-              activeUser={activeUser}
-              wsConnected={adminWsConnected}
-              defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
-              showArchive={showArchive}
-              currentAgent={currentAgent}
-              loading={loadingConversations}
-            />
-          )}
+          <ChatList
+            conversations={conversations}
+            setActiveUser={setActiveUser}
+            activeUser={activeUser}
+            wsConnected={adminWsConnected}
+            defaultAssignedFilter={(agentInboxMode && currentAgent) ? currentAgent : (myAssignedOnly && currentAgent ? currentAgent : 'all')}
+            showArchive={showArchive}
+            currentAgent={currentAgent}
+            loading={loadingConversations}
+          />
         </div>
       </div>
       {/* MIDDLE: Chat window */}
