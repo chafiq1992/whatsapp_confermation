@@ -1137,7 +1137,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const key = getItemKeyAtIndex(index);
               return itemHeightsByKey.current[key] || 72;
             }}
-            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`
+            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
             onScroll={({ scrollOffset }) => {
               if (!hasInitialisedScrollRef.current) return;
               if (scrollOffset <= 100 && hasMore && !loadingOlder) {
