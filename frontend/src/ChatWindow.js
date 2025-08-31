@@ -1054,7 +1054,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         </div>
       )}
       
-      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-4 bg-gray-900 relative" ref={messagesEndRef}>
+      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-3 bg-gray-900 relative" ref={messagesEndRef}>
         {listHeight > 0 && (
           <List
             ref={listRef}
@@ -1112,7 +1112,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               }
               return (
                 <div style={style}>
-                  <div ref={setRowRef} className="space-y-2">
+                  <div ref={setRowRef} className="space-y-1.5">
                     {index === unreadSeparatorIndex && (
                       <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
                     )}

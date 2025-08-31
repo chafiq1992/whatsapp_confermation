@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
-import { Clock3, Check, CheckCheck, XCircle } from "lucide-react"; // 14 KB gzipped
+import { Clock3, Check, CheckCheck, XCircle, Reply, Forward } from "lucide-react"; // 14 KB gzipped
 
 /* prettier, pixel-perfect WhatsApp ticks */
 const ICONS = {
@@ -577,7 +577,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   // Main component render
   if (isOrder) {
     return (
-      <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-2`}>
+      <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
         <div className="max-w-[85%] px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-300">
           {renderOrder()}
           <div className="flex items-center justify-end mt-3 pt-2 border-t border-yellow-200">
@@ -589,31 +589,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }
 
   return (
-    <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-2`}>
+    <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
       <div
-        className={`group relative max-w-[80%] px-3 py-2 rounded-2xl shadow-md transition-all hover:shadow-lg ${
+        className={`group relative max-w-[80%] px-3 py-1.5 rounded-2xl shadow-sm transition-colors ${
           self 
-            ? "bg-[#004AAD] text-white rounded-br-none" 
-            : "bg-gray-700 text-white rounded-bl-none"
-        }`}
+            ? "bg-[#004AAD] text-white rounded-br-none hover:bg-[#0756c1]" 
+            : "bg-gray-700 text-white rounded-bl-none hover:bg-gray-600"
+        } text-[13px] leading-relaxed`}
       >
-        {/* Quick actions */}
-        {typeof onReply === 'function' && (
-          <button
-            type="button"
-            title="Reply"
-            onClick={(e) => { e.stopPropagation(); onReply(msg); }}
-            className="absolute -top-2 -left-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
-          >↩</button>
-        )}
-        {!self && typeof onForward === 'function' && (
-          <button
-            type="button"
-            title="Forward"
-            onClick={(e) => { e.stopPropagation(); onForward(msg); }}
-            className="absolute -top-2 -right-2 bg-gray-800 text-white rounded-full w-6 h-6 text-xs flex items-center justify-center shadow hover:bg-gray-700"
-          >↪</button>
-        )}
+        
         {/* React button moved to footer to avoid overlaying media */}
         {/* Quoted preview */}
         {quotedMessage && (
@@ -728,36 +712,61 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
            </div>
         )}
 
-        {/* Message footer with reactions, timestamp and status */}
-        <div className="relative flex items-center justify-between mt-1 text-xs opacity-75 space-x-2">
-          {/* Reactions summary */}
-          <div className="flex items-center gap-1">
-            {Object.entries(msg.reactionsSummary || {}).map(([emj, cnt]) => (
-              <span key={emj} className={`px-1 py-0.5 rounded ${self ? 'bg-white/20' : 'bg-black/20'}`}>{emj} {cnt}</span>
-            ))}
-          </div>
-          <div className="flex items-center space-x-1">
-            {typeof onReact === 'function' && (
-              <div className="relative mr-1">
+        {/* Message footer with actions, reactions, timestamp and status */}
+        <div className="relative mt-1 text-xs opacity-80">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1">
+              {typeof onReply === 'function' && (
                 <button
                   type="button"
-                  title="React"
-                  onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(v=>!v); }}
-                  className={`rounded px-1 py-0.5 ${self ? 'bg-white/10 hover:bg-white/20' : 'bg-black/20 hover:bg-black/30'} transition-opacity opacity-0 group-hover:opacity-100`}
-                >😊</button>
-                {showReactPicker && (
-                  <div className={`absolute bottom-full mb-1 left-0 z-10 bg-gray-800 text-white rounded shadow px-1 py-1 flex space-x-1 select-none`}
-                    onClick={(e)=>e.stopPropagation()}
-                  >
-                    {['👍','❤️','😂','😮','😢','🙏'].map((emj)=>(
-                      <button key={emj} className="hover:bg-gray-700 rounded px-1" onClick={()=>{ setShowReactPicker(false); onReact(msg, emj); }}>{emj}</button>
-                    ))}
-                  </div>
-                )}
+                  title="Reply"
+                  onClick={(e) => { e.stopPropagation(); onReply(msg); }}
+                  className={`${self ? 'bg-white/10 hover:bg-white/20' : 'bg-black/20 hover:bg-black/30'} rounded-md p-1 transition-all focus:outline-none focus:ring-1 focus:ring-white/30 active:scale-95`}
+                  aria-label="Reply"
+                >
+                  <Reply size={14} className="opacity-90" />
+                </button>
+              )}
+              {typeof onForward === 'function' && (
+                <button
+                  type="button"
+                  title="Forward"
+                  onClick={(e) => { e.stopPropagation(); onForward(msg); }}
+                  className={`${self ? 'bg-white/10 hover:bg-white/20' : 'bg-black/20 hover:bg-black/30'} rounded-md p-1 transition-all focus:outline-none focus:ring-1 focus:ring-white/30 active:scale-95`}
+                  aria-label="Forward"
+                >
+                  <Forward size={14} className="opacity-90" />
+                </button>
+              )}
+              <div className="flex items-center gap-1">
+                {Object.entries(msg.reactionsSummary || {}).map(([emj, cnt]) => (
+                  <span key={emj} className={`${self ? 'bg-white/15' : 'bg-black/20'} px-1 py-0.5 rounded`}>{emj} {cnt}</span>
+                ))}
               </div>
-            )}
-            <span>{formatTime(msg.timestamp)}</span>
-            {renderTick(msg, self)}
+            </div>
+            <div className="flex items-center space-x-1">
+              {typeof onReact === 'function' && (
+                <div className="relative mr-1">
+                  <button
+                    type="button"
+                    title="React"
+                    onClick={(e)=>{ e.stopPropagation(); setShowReactPicker(v=>!v); }}
+                    className={`${self ? 'bg-white/10 hover:bg-white/20' : 'bg-black/20 hover:bg-black/30'} rounded px-1 py-0.5 transition-colors`}
+                  >😊</button>
+                  {showReactPicker && (
+                    <div className={`absolute bottom-full mb-1 left-0 z-10 bg-gray-800 text-white rounded shadow px-1 py-1 flex space-x-1 select-none`}
+                      onClick={(e)=>e.stopPropagation()}
+                    >
+                      {['👍','❤️','😂','😮','😢','🙏'].map((emj)=>(
+                        <button key={emj} className="hover:bg-gray-700 rounded px-1" onClick={()=>{ setShowReactPicker(false); onReact(msg, emj); }}>{emj}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <span>{formatTime(msg.timestamp)}</span>
+              {renderTick(msg, self)}
+            </div>
           </div>
         </div>
       </div>
