@@ -274,6 +274,12 @@ export default function App() {
         />
         <div className="flex-1 flex flex-col">
           <AgentHeaderBar />
+          {showInternalPanel && (
+            <InternalChannelsBar
+              onSelectAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
+              excludeAgent={currentAgent}
+            />
+          )}
           {!agentInboxMode && (
             <ChatList
               conversations={conversations}
@@ -286,15 +292,6 @@ export default function App() {
             />
           )}
         </div>
-        {showInternalPanel && (
-          <div className="absolute left-20 top-24 z-30" onMouseLeave={() => setShowInternalPanel(false)}>
-            <InternalChannelsBar
-              compact
-              onSelectAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
-              excludeAgent={currentAgent}
-            />
-          </div>
-        )}
       </div>
       {/* MIDDLE: Chat window */}
       <div className="flex-1 overflow-hidden">
