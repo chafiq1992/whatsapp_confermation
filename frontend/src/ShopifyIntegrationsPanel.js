@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { FaShopify } from "react-icons/fa";
 import api from "./api";
 import { saveCart, loadCart } from "./chatStorage";
+import html2canvas from "html2canvas";
 
 export default function ShopifyIntegrationsPanel({ activeUser }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
@@ -198,6 +199,192 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
   };
 
+  // ---- Build and send order label (PNG) from template ----
+  const computeTotalPrice = useMemo(() => {
+    return (items) => {
+      try {
+        const sum = (items || []).reduce((acc, it) => {
+          const price = Number(it?.variant?.price || 0);
+          const qty = Number(it?.quantity || 1);
+          const discount = Number(it?.discount || 0);
+          return acc + (price * qty) - discount;
+        }, 0);
+        return Math.max(0, Number(sum.toFixed(2)));
+      } catch {
+        return 0;
+      }
+    };
+  }, []);
+
+  const buildOrderLabelHtml = ({
+    shopName,
+    orderName,
+    createdAt,
+    totalPrice,
+    isCOD,
+    customerFirst,
+    customerLast,
+    city,
+    phone,
+    itemsCount,
+    fulfillmentStatus,
+  }) => {
+    const codBadge = isCOD ? '<span class="cod">COD</span>' : '';
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Buy Ticket — ${orderName}</title>
+  <style>
+    :root{
+      --brand:#004AAD;
+      --ink:#111827;
+      --muted:#6b7280;
+      --paper:#ffffff;
+      --bg:#f3f4f6;
+      --width:76mm;
+    }
+    *{box-sizing:border-box}
+    body{margin:0; padding:24px; background:var(--bg); font:14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial}
+    .ticket{ width:var(--width); margin:0 auto; background:var(--paper); color:var(--ink);
+             border-radius:16px; border:1px solid #e5e7eb; position:relative; overflow:hidden;
+             box-shadow:0 8px 24px rgba(0,0,0,.08); }
+    .ticket::before{ content:""; position:absolute; inset:0 auto 0 0; width:14px;
+      background:
+        linear-gradient(-45deg, transparent 7px, var(--paper) 7px) top left/14px 14px repeat-y,
+        linear-gradient( 45deg, transparent 7px, var(--paper) 7px) bottom left/14px 14px repeat-y;
+      background-color:var(--brand);
+      box-shadow: inset -1px 0 0 rgba(0,0,0,.06); }
+    .perf{ position:absolute; top:0; left:18px; bottom:0; width:2px;
+           background: repeating-linear-gradient(transparent 0 6px, rgba(0,0,0,.14) 6px 8px); }
+    .inner{ padding:16px 16px 16px 26px; }
+    .head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding-bottom:8px; border-bottom:1px dashed #e5e7eb; }
+    .brand{ display:flex; align-items:center; gap:10px; }
+    .logo{ width:36px; height:36px; border-radius:10px; background:var(--brand); }
+    .store{ font-weight:800; letter-spacing:.2px; }
+    .badge{ display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:var(--brand); font-weight:700; font-size:11px; }
+    .meta{ text-align:right; font-size:12px; color:var(--muted); }
+    .focus{ text-align:center; padding:10px 0 4px; }
+    .price{ display:inline-block; padding:10px 14px; border-radius:12px; font-weight:900; font-size:18px;
+            background:linear-gradient(135deg, rgba(0,74,173,.08), rgba(0,74,173,.16)); }
+    .cod{ display:inline-block; margin-left:8px; padding:2px 8px; border-radius:8px; font-size:11px; font-weight:800; color:#fff; background:var(--brand); }
+    .block{ padding:10px 0; border-bottom:1px dashed #e5e7eb; }
+    .title{ font-weight:800; color:var(--brand); font-size:12px; letter-spacing:.7px; text-transform:uppercase; margin-bottom:6px; }
+    .row{ display:flex; justify-content:space-between; gap:10px; font-size:13px; }
+    .row span:first-child{ color:var(--muted); }
+    .foot{ text-align:center; color:var(--muted); font-size:11px; padding-top:8px; }
+    .brandline{ height:6px; background: repeating-linear-gradient(90deg, var(--brand) 0 12px, transparent 12px 20px); opacity:.5; margin-top:8px; border-radius:0 0 0 12px; }
+    .no-print{ text-align:center; margin-top:10px; }
+    .btn{ padding:8px 12px; border-radius:10px; border:0; background:var(--brand); color:white; font-weight:700; cursor:pointer; }
+    @media print{ body{background:none; padding:0} .ticket{box-shadow:none} .no-print{display:none !important} }
+  </style>
+</head>
+<body>
+  <div class="ticket" role="document" aria-label="Buy Ticket">
+    <div class="perf" aria-hidden="true"></div>
+    <div class="inner">
+      <div class="head">
+        <div class="brand">
+          <div class="logo" aria-hidden="true"></div>
+          <div>
+            <div class="store">${shopName || "Your Store"}</div>
+            <div class="badge">Buy Ticket</div>
+          </div>
+        </div>
+        <div class="meta">
+          <div><b>${orderName}</b></div>
+          <div>${createdAt}</div>
+        </div>
+      </div>
+      <div class="focus">
+        <span class="price">${totalPrice}</span>
+        ${codBadge}
+      </div>
+      <div class="block">
+        <div class="title">Customer</div>
+        <div class="row"><span>Name</span><span>${customerFirst} ${customerLast}</span></div>
+        <div class="row"><span>City</span><span>${city}</span></div>
+        <div class="row"><span>Phone</span><span>${phone}</span></div>
+      </div>
+      <div class="block" style="border-bottom:0">
+        <div class="title">Order</div>
+        <div class="row"><span>Items</span><span>${itemsCount} item${itemsCount === 1 ? "" : "s"}</span></div>
+        <div class="row"><span>Status</span><span>${fulfillmentStatus}</span></div>
+      </div>
+      <div class="brandline" aria-hidden="true"></div>
+      <div class="foot">Thank you for your purchase ✨</div>
+      <div class="no-print"><button class="btn" onclick="window.print()">Print</button></div>
+      <p class="no-print" style="color:var(--muted); font-size:11px; margin-top:8px">Tip: change <code>--width</code> for your paper size (e.g., 80mm or 100mm).</p>
+    </div>
+  </div>
+</body>
+</html>`;
+  };
+
+  const generateAndSendOrderLabel = async (creationResult) => {
+    try {
+      if (!activeUser?.user_id) return;
+
+      const fullName = (orderData?.name || "").trim();
+      const [first = "", last = ""] = fullName.split(" ", 2);
+      const itemsCount = (selectedItems || []).length;
+      const totalPrice = computeTotalPrice(selectedItems);
+      const createdAt = new Date().toISOString().slice(0, 16).replace("T", " ");
+      const isCOD = (paymentTerm || "").toLowerCase().includes("receipt") || (deliveryOption || "").toLowerCase().includes("cod");
+
+      const orderName =
+        (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
+        (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
+
+      const html = buildOrderLabelHtml({
+        shopName: "Shopify Store",
+        orderName,
+        createdAt,
+        totalPrice: `${totalPrice}`,
+        isCOD,
+        customerFirst: first,
+        customerLast: last,
+        city: orderData?.city || "",
+        phone: orderData?.phone || "",
+        itemsCount,
+        fulfillmentStatus: "Unfulfilled",
+      });
+
+      const container = document.createElement("div");
+      container.style.position = "fixed";
+      container.style.left = "-10000px";
+      container.style.top = "0";
+      container.style.zIndex = "-1";
+      container.innerHTML = html;
+      document.body.appendChild(container);
+
+      const ticketEl = container.querySelector(".ticket") || container;
+      const canvas = await html2canvas(ticketEl, { scale: 2, backgroundColor: null });
+
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png", 1));
+      if (!blob) {
+        document.body.removeChild(container);
+        return;
+      }
+      const file = new File([blob], `order_label_${Date.now()}.png`, { type: "image/png" });
+
+      const fd = new FormData();
+      fd.append("user_id", activeUser.user_id);
+      fd.append("media_type", "image");
+      fd.append("files", file, file.name);
+      fd.append("caption", `Order ${orderName}`);
+
+      await api.post(`${API_BASE}/send-media`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      document.body.removeChild(container);
+    } catch {
+      // best-effort, do not block order creation UX
+    }
+  };
+
   const handleAddByVariantId = async () => {
     if (!variantIdInput) return;
     await addByVariantId(variantIdInput, 1);
@@ -292,6 +479,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       setErrorMsg("");
       setLastResult(res?.data || null);
       alert("Order created successfully!");
+      // Generate the label and send it as image to the customer (best-effort)
+      await generateAndSendOrderLabel(res?.data);
     } catch (e) {
       setErrorMsg("Error creating order.");
     } finally {
