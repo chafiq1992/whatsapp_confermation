@@ -225,6 +225,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     totalDiscount,
     total,
     currency,
+    productImageUrl,
+    productTitle,
+    productVariantTitle,
+    qty,
+    moreCount,
+    addressName,
+    address1,
+    address2,
+    city,
+    provinceCode,
+    zip,
   }) => {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -234,8 +245,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   <title>Buy Ticket — ${orderName}</title>
   <style>
     :root{
-      --brand:#22c55e;
-      --accent:#004AAD;
+      --brand:#004AAD;             /* irrakids blue */
+      --accent:#6A7CFF;            /* secondary blue from logo dots (approx) */
       --ink:#e5e7eb;
       --muted:#9ca3af;
       --cardTop:#0c1222;
@@ -245,7 +256,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
 
     *{box-sizing:border-box}
-    body{margin:0; padding:24px; background:radial-gradient(1200px 600px at 50% -10%, #121a31 0%, var(--page) 60%); font:14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink)}
+    body{margin:0; padding:24px; background:radial-gradient(1200px 600px at 50% -10%, #121a31 0%, var(--page) 60%); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink)}
 
     .wrap{display:flex; justify-content:center}
 
@@ -266,9 +277,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     .inner{padding:18px 18px 16px}
 
     .emblem{display:flex; align-items:center; justify-content:center; margin:8px 0 10px}
-    .halo{width:52px; height:52px; border-radius:999px; background:radial-gradient(closest-side, rgba(34,197,94,.35), rgba(34,197,94,.08) 60%, transparent 65%);
+    .halo{width:52px; height:52px; border-radius:999px; background:radial-gradient(closest-side, rgba(0,74,173,.35), rgba(0,74,173,.08) 60%, transparent 65%);
           display:grid; place-items:center;}
-    .check{width:34px; height:34px; border-radius:999px; background:linear-gradient(180deg,#25d07a,#18a957); box-shadow:0 6px 14px rgba(34,197,94,.45) inset, 0 2px 10px rgba(0,0,0,.25); display:grid; place-items:center}
+    .check{width:34px; height:34px; border-radius:999px; background:linear-gradient(180deg, #3f82ff, var(--brand)); box-shadow:0 6px 14px rgba(0,74,173,.45) inset, 0 2px 10px rgba(0,0,0,.25); display:grid; place-items:center}
     .check svg{width:18px; height:18px; color:white}
 
     h1{margin:6px 0 6px; text-align:center; font-size:16px; letter-spacing:.3px; font-weight:800}
@@ -285,6 +296,22 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     .total{display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding:10px 12px; border-radius:14px;
            background:linear-gradient(145deg, rgba(255,255,255,.06), rgba(255,255,255,.04)); font-weight:900; font-size:16px;}
+
+    /* Product + Address blocks */
+    .section-title{font-weight:800; font-size:12px; letter-spacing:.6px; text-transform:uppercase; color:var(--accent); margin:6px 0 6px}
+
+    .product{display:flex; gap:10px; align-items:flex-start; padding:6px 0}
+    .thumb{width:60px; height:60px; border-radius:10px; overflow:hidden; flex:0 0 auto; box-shadow:0 4px 10px rgba(0,0,0,.25)}
+    .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+    .prod-info{flex:1}
+    .prod-title{font-weight:700; font-size:13px}
+    .prod-variant{color:var(--muted); font-size:12px; margin-top:2px}
+    .chips{margin-top:6px; display:flex; gap:6px; flex-wrap:wrap}
+    .chip{font-size:11px; font-weight:800; color:#fff; background:linear-gradient(180deg, #6f85ff, var(--accent)); padding:2px 8px; border-radius:999px}
+
+    .address{padding:6px 0}
+    .addr-name{font-weight:700; font-size:13px}
+    .addr-lines{color:var(--muted); font-size:12px; line-height:1.35; margin-top:2px}
 
     .foot{padding:10px 0 4px; text-align:center; color:var(--muted); font-size:11px}
 
@@ -325,9 +352,37 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
         <div class="rule" aria-hidden="true"></div>
 
+        <!-- Product (first item) -->
+        <div class="section-title">Item</div>
+        <div class="product">
+          <div class="thumb">
+            ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
+          </div>
+          <div class="prod-info">
+            <div class="prod-title">${productTitle || ''}</div>
+            ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
+            <div class="chips">
+              <span class="chip">Qty ×${qty}</span>
+              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
+            </div>
+          </div>
+        </div>
+
+        <!-- Address -->
+        <div class="section-title">Customer</div>
+        <div class="address">
+          <div class="addr-name">${addressName}</div>
+          <div class="addr-lines">
+            ${address1 || ''}${address2 ? `, ${address2}` : ''}<br/>
+            ${city || ''}${provinceCode ? `, ${provinceCode}` : ''}${zip ? ` ${zip}` : ''}
+          </div>
+        </div>
+
+        <div class="rule" aria-hidden="true"></div>
+
         <div class="summary">
           <div class="row sub"><span>Subtotal</span><span>${subtotal} ${currency}</span></div>
-          ${totalDiscount > 0 ? `<div class="row dis"><span>Discount</span><span>-${totalDiscount} ${currency}</span></div>` : ""}
+          ${totalDiscount > 0 ? `<div class="row dis"><span>Discount</span><span>-${totalDiscount} ${currency}</span></div>` : ''}
           <div class="total"><span>Total</span><span style="font-size:18px">${total} ${currency}</span></div>
         </div>
 
@@ -374,6 +429,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
         (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
 
+      const firstItem = (selectedItems || [])[0] || null;
+      const productImageUrl = firstItem?.variant?.image_src || "";
+      const productTitle = firstItem?.variant?.product_title || firstItem?.variant?.title || "";
+      const productVariantTitle = firstItem?.variant?.title || "";
+      const qty = Number(firstItem?.quantity || 0);
+      const moreCount = Math.max(0, itemsCount - 1);
+
       const html = buildOrderLabelHtml({
         orderName,
         createdAtDisplay,
@@ -383,6 +445,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         totalDiscount: Number(totalDiscount.toFixed(2)),
         total,
         currency: "MAD",
+        productImageUrl,
+        productTitle,
+        productVariantTitle,
+        qty,
+        moreCount,
+        addressName: fullName || "",
+        address1: orderData?.address || "",
+        address2: "",
+        city: orderData?.city || "",
+        provinceCode: orderData?.province || "",
+        zip: orderData?.zip || "",
       });
 
       const container = document.createElement("div");
@@ -394,7 +467,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       document.body.appendChild(container);
 
       const ticketEl = container.querySelector(".ticket") || container;
-      const canvas = await html2canvas(ticketEl, { scale: 2, backgroundColor: null });
+      const canvas = await html2canvas(ticketEl, { scale: 2, backgroundColor: null, useCORS: true });
 
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png", 1));
       if (!blob) {
