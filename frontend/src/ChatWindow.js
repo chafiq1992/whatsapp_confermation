@@ -172,6 +172,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const typingTimeoutRef = useRef(null);
   const lastTypingSentRef = useRef(0);
+  const [allowSmoothScroll, setAllowSmoothScroll] = useState(false);
+  const hasInitialisedScrollRef = useRef(false);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -413,6 +415,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     const controller = new AbortController();
     setOffset(0);
     setHasMore(true);
+    setAllowSmoothScroll(false);
+    hasInitialisedScrollRef.current = false;
     fetchMessages({ offset: 0 }, controller.signal, uid);
     return () => controller.abort();
   }, [activeUser?.user_id]);
@@ -1133,8 +1137,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const key = getItemKeyAtIndex(index);
               return itemHeightsByKey.current[key] || 72;
             }}
-            className="scroll-smooth will-change-transform"
+            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`
             onScroll={({ scrollOffset }) => {
+              if (!hasInitialisedScrollRef.current) return;
               if (scrollOffset <= 100 && hasMore && !loadingOlder) {
                 (async () => {
                   setPreserveScroll(true);
@@ -1146,6 +1151,10 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               }
             }}
             onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
+              if (!hasInitialisedScrollRef.current && visibleStopIndex >= groupedMessages.length - 1) {
+                hasInitialisedScrollRef.current = true;
+                setTimeout(() => setAllowSmoothScroll(true), 0);
+              }
               const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
               setAtBottom(isAtBottom);
               atBottomRef.current = isAtBottom;
