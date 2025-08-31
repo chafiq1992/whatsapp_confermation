@@ -159,8 +159,12 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const messagesEndRef = useRef(null);
   const listRef = useRef(null);
   const itemHeights = useRef({});
+  const itemHeightsByKey = useRef({});
   const [listHeight, setListHeight] = useState(0);
   const canvasRef = useRef();
+  const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -188,6 +192,12 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   };
 
   const groupedMessages = withDateSeparators(groupConsecutiveImages(messages));
+
+  const getItemKeyAtIndex = useCallback((index) => {
+    const msg = groupedMessages[index];
+    if (!msg) return `row_${index}`;
+    return msg.__separator ? msg.key : (msg.wa_message_id || msg.id || msg.temp_id || `${msg.timestamp}_${index}`);
+  }, [groupedMessages]);
 
   // Helpers for current user's pendingImages queue state
   const getUserId = () => activeUser?.user_id || "";
@@ -650,7 +660,15 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
       setPreserveScroll(false);
       return;
     }
-    scrollToBottom();
+    // Only autoscroll if user is already at bottom or the newest message is from self
+    const newest = messages[messages.length - 1];
+    const shouldStickToBottom = atBottomRef.current || (newest && newest.from_me);
+    if (shouldStickToBottom) {
+      scrollToBottom();
+      setShowJumpToLatest(false);
+    } else {
+      setShowJumpToLatest(true);
+    }
   }, [messages, preserveScroll]);
 
   useEffect(() => {
@@ -1036,17 +1054,28 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         </div>
       )}
       
-      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-4 bg-gray-900" ref={messagesEndRef}>
+      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-4 bg-gray-900 relative" ref={messagesEndRef}>
         {listHeight > 0 && (
           <List
             ref={listRef}
             height={listHeight}
             width={'100%'}
             itemCount={groupedMessages.length}
-            itemSize={(index) => itemHeights.current[index] || 72}
+            overscanCount={6}
+            itemData={groupedMessages}
+            itemKey={(index, data) => {
+              const row = data[index];
+              if (!row) return `row_${index}`;
+              return row.__separator ? row.key : (row.wa_message_id || row.id || row.temp_id || `${row.timestamp}_${index}`);
+            }}
+            itemSize={(index) => {
+              const key = getItemKeyAtIndex(index);
+              return itemHeightsByKey.current[key] || 72;
+            }}
             onScroll={({ scrollOffset }) => {
               if (scrollOffset <= 100 && hasMore && !loadingOlder) {
                 (async () => {
+                  setPreserveScroll(true);
                   const loaded = await fetchMessages({ offset, append: true });
                   if (loaded && loaded.length) {
                     try { listRef.current?.scrollToItem(loaded.length, 'start'); } catch {}
@@ -1054,15 +1083,22 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
                 })();
               }
             }}
+            onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
+              const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
+              setAtBottom(isAtBottom);
+              atBottomRef.current = isAtBottom;
+              if (isAtBottom) setShowJumpToLatest(false);
+            }}
           >
             {({ index, style }) => {
               const msg = groupedMessages[index];
               const setRowRef = (el) => {
                 if (!el) return;
                 const h = el.getBoundingClientRect().height;
-                if (Math.abs((itemHeights.current[index] || 0) - h) > 1) {
-                  itemHeights.current[index] = h;
-                  try { listRef.current?.resetAfterIndex(index); } catch {}
+                const key = getItemKeyAtIndex(index);
+                if (Math.abs((itemHeightsByKey.current[key] || 0) - h) > 1) {
+                  itemHeightsByKey.current[key] = h;
+                  try { listRef.current?.resetAfterIndex(index, false); } catch {}
                 }
               };
               if (msg.__separator) {
@@ -1145,6 +1181,15 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               );
             }}
           </List>
+        )}
+        {showJumpToLatest && (
+          <button
+            className="absolute right-4 bottom-6 px-3 py-2 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-500"
+            onClick={() => { scrollToBottom(); setShowJumpToLatest(false); }}
+            title="Jump to latest messages"
+          >
+            Jump to latest ↓
+          </button>
         )}
       </div>
       

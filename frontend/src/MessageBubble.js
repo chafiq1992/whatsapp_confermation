@@ -255,10 +255,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <img
         src={src}
         alt={alt}
-        className="rounded-xl mb-1 max-w-[250px] cursor-pointer hover:opacity-90 transition-opacity"
+        className="rounded-xl mb-1 w-[250px] h-auto object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-800"
+        style={{ aspectRatio: '4 / 3' }}
         onError={(e) => handleImageError(e)}
         loading="lazy"
-        onClick={() => window.open(src, '_blank')} // Allow full-size viewing
+        onClick={() => window.open(src, '_blank')}
       />
       {caption && (
         <div className="text-xs mt-1 text-gray-200 bg-black bg-opacity-50 px-2 py-1 rounded backdrop-blur-sm">
@@ -280,7 +281,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             <img
               src={imgSrc}
               alt={`Image ${idx + 1}`}
-              className="rounded-xl mb-1 max-w-[120px] cursor-pointer hover:opacity-90 transition-opacity"
+              className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-800"
               onError={(e) => handleImageError(e)}
               loading="lazy"
               onClick={() => window.open(imgSrc, '_blank')}
@@ -708,7 +709,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                      <img
                        src={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}`}
                        alt={title || 'preview'}
-                       className="w-full max-w-[260px] object-cover"
+                       className="w-full max-w-[260px] object-cover bg-gray-800"
+                       style={{ aspectRatio: '1200 / 630' }}
                        onError={(e) => handleImageError(e)}
                        loading="lazy"
                      />
