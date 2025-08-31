@@ -24,7 +24,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
   // Collapsible sections
   const [showInfo, setShowInfo] = useState(true);
-  const [showCreate, setShowCreate] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
 
   // Order details state
   const [orderData, setOrderData] = useState({
@@ -289,9 +289,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     .rule{height:1px; background:repeating-linear-gradient(90deg, rgba(255,255,255,.16) 0 7px, transparent 7px 14px); margin:10px 0}
 
-    .kv{display:flex; justify-content:space-between; gap:10px; padding:10px 0; align-items:center}
-    .kv .k{color:var(--muted); font-size:15px}
-    .kv .v{color:var(--ink); font-weight:700; font-size:16px; text-align:right}
+    .kv{display:flex; justify-content:space-between; gap:10px; padding:6px 0; align-items:center}
+    .kv .k{color:var(--muted)}
+    .kv .v{color:var(--ink); font-weight:700; text-align:right}
 
     .summary{margin-top:4px}
     .row{display:flex; justify-content:space-between; padding:6px 0}
@@ -344,6 +344,34 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         <h1>
           ${isPaid ? "Payment Success" : "Order Placed"}
         </h1>
+
+        <div class="rule" aria-hidden="true"></div>
+
+        <!-- Product (first item) -->
+        <div class="section-title">Item</div>
+        <div class="product">
+          <div class="thumb">
+            ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
+          </div>
+          <div class="prod-info">
+            <div class="prod-title">${productTitle || ''}</div>
+            ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
+            <div class="chips">
+              <span class="chip">Qty ×${qty}</span>
+              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
+            </div>
+          </div>
+        </div>
+
+        <!-- Address -->
+        <div class="section-title">Customer</div>
+        <div class="address">
+          <div class="addr-name">${addressName}</div>
+          <div class="addr-lines">
+            ${address1 || ''}${address2 ? `, ${address2}` : ''}<br/>
+            ${city || ''}${provinceCode ? `, ${provinceCode}` : ''}${zip ? ` ${zip}` : ''}
+          </div>
+        </div>
 
         <div class="rule" aria-hidden="true"></div>
 
@@ -407,6 +435,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
         (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
 
+      const firstItem = (selectedItems || [])[0] || null;
+      const productImageUrl = firstItem?.variant?.image_src || "";
+      const productTitle = firstItem?.variant?.product_title || firstItem?.variant?.title || "";
+      const productVariantTitle = firstItem?.variant?.title || "";
+      const qty = Number(firstItem?.quantity || 0);
+      const moreCount = Math.max(0, itemsCount - 1);
+
       const html = buildOrderLabelHtml({
         orderName,
         createdAtDisplay,
@@ -416,6 +451,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         totalDiscount: Number(totalDiscount.toFixed(2)),
         total,
         currency: "MAD",
+        productImageUrl,
+        productTitle,
+        productVariantTitle,
+        qty,
+        moreCount,
+        addressName: fullName || "",
+        address1: orderData?.address || "",
+        address2: "",
+        city: orderData?.city || "",
+        provinceCode: orderData?.province || "",
+        zip: orderData?.zip || "",
       });
 
       const container = document.createElement("div");
@@ -576,7 +622,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             {!activeUser?.phone && (
               <p>Select a conversation with a user to fetch Shopify customer info by phone.</p>
             )}
-            {activeUser?.phone && loading && <p>Loading customer info…</p>}
+            {activeUser?.phone && loading && (
+              <div className="space-y-2" aria-live="polite">
+                <div className="h-4 bg-gray-600 rounded animate-pulse" />
+                <div className="h-4 bg-gray-600 rounded animate-pulse w-2/3" />
+                <div className="h-4 bg-gray-600 rounded animate-pulse w-1/2" />
+              </div>
+            )}
             {activeUser?.phone && !loading && (customer || customersList.length > 0) && (
               <>
                 {customersList.length > 0 ? (
@@ -833,6 +885,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 value={orderData.name}
                 onChange={e => handleOrderDataChange('name', e.target.value)}
                 autoComplete="off"
+                placeholder="Customer name"
+                title="Customer full name"
               />
               <label className="block text-xs font-bold">Email</label>
               <input
@@ -840,6 +894,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 value={orderData.email}
                 onChange={e => handleOrderDataChange('email', e.target.value)}
                 autoComplete="off"
+                placeholder="customer@example.com"
+                title="Customer email (optional)"
               />
               <label className="block text-xs font-bold">Phone</label>
               <input
@@ -847,6 +903,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 value={orderData.phone}
                 onChange={e => handleOrderDataChange('phone', e.target.value)}
                 autoComplete="off"
+                placeholder="+212..."
+                title="Customer phone number"
               />
               <label className="block text-xs font-bold">City <span className="text-red-400">*</span></label>
               <input
@@ -855,6 +913,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 onChange={e => handleOrderDataChange('city', e.target.value)}
                 autoComplete="off"
                 required
+                placeholder="City"
+                title="Shipping city"
               />
               <label className="block text-xs font-bold">Province <span className="text-red-400">*</span></label>
               <select
@@ -862,6 +922,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 value={orderData.province}
                 onChange={e => handleOrderDataChange('province', e.target.value)}
                 required
+                title="Province/Region"
               >
                 <option value="" disabled>Select province</option>
                  {MOROCCO_PROVINCES.map((prov) => (
@@ -875,6 +936,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 onChange={e => handleOrderDataChange('zip', e.target.value)}
                 autoComplete="off"
                 required
+                placeholder="Postal code"
+                title="Postal/ZIP code"
               />
               <label className="block text-xs font-bold">Address <span className="text-red-400">*</span></label>
               <input
@@ -883,35 +946,44 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 onChange={e => handleOrderDataChange('address', e.target.value)}
                 autoComplete="off"
                 required
+                placeholder="Street address"
+                title="Shipping street address"
               />
-              {/* Optional note and image URL */}
-              <label className="block text-xs font-bold mt-2">Order note (timeline text)</label>
-              <textarea
-                className="w-full p-1 rounded bg-gray-800 text-white"
-                rows={3}
-                placeholder="e.g. Customer requested gift wrap."
-                value={orderData.order_note}
-                onChange={e => handleOrderDataChange('order_note', e.target.value)}
-              />
-              <label className="block text-xs font-bold">Image URL (will be saved in note)</label>
-              <input
-                className="w-full p-1 rounded bg-gray-800 text-white"
-                placeholder="https://..."
-                value={orderData.order_image_url}
-                onChange={e => handleOrderDataChange('order_image_url', e.target.value)}
-                autoComplete="off"
-              />
-              {orderData.order_image_url && (
-                <div className="mt-2">
-                  <div className="text-xs text-gray-300 mb-1">Preview:</div>
-                  <img
-                    src={orderData.order_image_url}
-                    alt="Order reference"
-                    className="w-24 h-24 object-cover rounded border border-gray-600 bg-gray-900"
-                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              {/* Optional note and image URL (collapsed by default) */}
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs text-gray-300">Additional details</summary>
+                <div className="mt-2 space-y-1">
+                  <label className="block text-xs font-bold">Order note (timeline text)</label>
+                  <textarea
+                    className="w-full p-1 rounded bg-gray-800 text-white"
+                    rows={3}
+                    placeholder="e.g. Customer requested gift wrap."
+                    value={orderData.order_note}
+                    onChange={e => handleOrderDataChange('order_note', e.target.value)}
                   />
+                  <label className="block text-xs font-bold">Image URL (will be saved in note)</label>
+                  <input
+                    className="w-full p-1 rounded bg-gray-800 text-white"
+                    placeholder="https://..."
+                    value={orderData.order_image_url}
+                    onChange={e => handleOrderDataChange('order_image_url', e.target.value)}
+                    autoComplete="off"
+                    title="Optional image URL for order note"
+                  />
+                  {orderData.order_image_url && (
+                    <div className="mt-2">
+                      <div className="text-xs text-gray-300 mb-1">Preview:</div>
+                      <img
+                        src={orderData.order_image_url}
+                        alt="Order reference"
+                        className="w-24 h-24 object-cover rounded border border-gray-600 bg-gray-900"
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        loading="lazy"
+                      />
+                    </div>
+                  )}
                 </div>
-              )}
+              </details>
             </div>
             {/* Product search and add section */}
             <hr className="my-2" />
