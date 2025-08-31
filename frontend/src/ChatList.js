@@ -64,6 +64,8 @@ function ChatList({
   // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const activeUserRef = useRef(activeUser);
+  const containerRef = useRef(null);
+  const [listHeight, setListHeight] = useState(0);
 
   useEffect(() => {
     setConversations(initialConversations);
@@ -72,6 +74,29 @@ function ChatList({
   useEffect(() => {
     activeUserRef.current = activeUser;
   }, [activeUser]);
+
+  // Measure available height for the virtualized list to avoid window-based assumptions
+  useEffect(() => {
+    if (!containerRef.current) return;
+    let rafId = null;
+    const update = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        setListHeight(containerRef.current ? (containerRef.current.clientHeight || 0) : 0);
+      });
+    };
+    update();
+    let ro;
+    try {
+      ro = new ResizeObserver(update);
+      ro.observe(containerRef.current);
+    } catch {}
+    return () => {
+      try { if (rafId) cancelAnimationFrame(rafId); } catch {}
+      try { ro && ro.disconnect(); } catch {}
+    };
+  }, [containerRef.current]);
 
   // Load agents for filters and assignment tabs
   useEffect(() => {
@@ -187,7 +212,7 @@ function ChatList({
 
   /* ─── Render ─── */
   return (
-    <div className="w-full h-full flex flex-col">
+    <div className="w-full h-full flex flex-col min-w-72">
       <div className="p-2 sticky top-0 z-10 bg-gray-900">
         <div className="w-full bg-gray-800/70 border border-gray-700 rounded-xl px-3 py-2 flex items-center gap-2">
           <div className="flex items-center gap-2 flex-1">
@@ -309,9 +334,9 @@ function ChatList({
         )
       ) : (
         /* Chat list */
-        <div ref={listRef} className="flex-1 overflow-y-auto divide-y divide-gray-800">
+        <div ref={(el)=>{ listRef.current = el; containerRef.current = el; }} className="flex-1 overflow-y-auto divide-y divide-gray-800">
           <List
-            height={Math.max(200, window.innerHeight - 110)}
+            height={Math.max(200, listHeight)}
             itemCount={filteredConversations.length}
             itemSize={80}
             width={'100%'}
@@ -363,7 +388,7 @@ const ConversationRow = memo(function Row({
       data-row
       data-id={conv.user_id}
       onClick={() => onSelect(conv)}
-      className={`flex gap-3 p-4 cursor-pointer hover:bg-gray-800 transition-colors ${
+      className={`flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
         selected ? "bg-[#004AAD] text-white" : ""
       }`}
     >

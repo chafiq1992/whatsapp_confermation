@@ -100,7 +100,7 @@ function groupConsecutiveImages(messages) {
   return grouped;
 }
 
-export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversationTags }) {
+function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversationTags }) {
   const [messages, setMessages] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHitIndexes, setSearchHitIndexes] = useState([]);
@@ -117,6 +117,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(false);
   const conversationIdRef = useRef(null);
   const [forwardOpen, setForwardOpen] = useState(false);
   const forwardPayloadRef = useRef(null);
@@ -138,6 +139,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   useEffect(() => {
     const uid = activeUser?.user_id;
     if (!uid) return;
+    setIsInitialLoading(true);
     conversationIdRef.current = uid;
     setMessages([]);
     setOffset(0);
@@ -457,6 +459,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
           );
           setHasMore(false);
         }
+        setIsInitialLoading(false);
         return cached;
       }
       setMessages(prev => (conversationIdRef.current !== uid)
@@ -471,6 +474,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         setOffset(data.length);
       }
       setHasMore(data.length >= MESSAGE_LIMIT);
+      setIsInitialLoading(false);
       return data;
     } catch (err) {
       if (api.isCancel(err) || err.name === 'CanceledError') return [];
@@ -484,6 +488,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         );
         setHasMore(false);
       }
+      setIsInitialLoading(false);
       return cached;
     }
   };
@@ -688,11 +693,19 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   useEffect(() => {
     const el = messagesEndRef.current;
     if (!el) return;
-    const update = () => setListHeight(el.clientHeight || 0);
+    let rafId = null;
+    const update = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        setListHeight(el.clientHeight || 0);
+      });
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => {
+      try { if (rafId) cancelAnimationFrame(rafId); } catch {}
       try { ro.disconnect(); } catch {}
     };
   }, [messagesEndRef.current]);
@@ -1093,8 +1106,17 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
         </div>
       )}
       
-      <div key={activeUser?.user_id || 'no-user'} className="flex-1 overflow-hidden p-3 bg-gray-900 relative" ref={messagesEndRef}>
-        {listHeight > 0 && (
+      <div className="flex-1 overflow-hidden p-3 bg-gray-900 relative" ref={messagesEndRef}>
+        {isInitialLoading ? (
+          <div className="absolute inset-0 p-4 space-y-4 animate-pulse">
+            <div className="h-4 bg-gray-800 rounded w-1/3" />
+            <div className="h-20 bg-gray-800 rounded w-2/3" />
+            <div className="h-4 bg-gray-800 rounded w-1/2 ml-auto" />
+            <div className="h-16 bg-gray-800 rounded w-5/12 ml-auto" />
+            <div className="h-4 bg-gray-800 rounded w-1/3" />
+          </div>
+        ) : (
+          listHeight > 0 && (
           <List
             ref={listRef}
             height={listHeight}
@@ -1221,7 +1243,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               );
             }}
           </List>
-        )}
+          ))}
         {unreadSeparatorIndex != null && (
           <button
             className="absolute right-4 top-4 px-3 py-1 rounded-full bg-gray-800 text-white border border-gray-600 shadow hover:bg-gray-700"
@@ -1402,3 +1424,17 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
     </div>
   );
 }
+
+const areEqual = (prevProps, nextProps) => {
+  const prevId = prevProps.activeUser?.user_id || '';
+  const nextId = nextProps.activeUser?.user_id || '';
+  return (
+    prevId === nextId &&
+    prevProps.ws === nextProps.ws &&
+    prevProps.adminWs === nextProps.adminWs &&
+    prevProps.currentAgent === nextProps.currentAgent &&
+    prevProps.onUpdateConversationTags === nextProps.onUpdateConversationTags
+  );
+};
+
+export default React.memo(ChatWindow, areEqual);

@@ -577,7 +577,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   // Main component render
   if (isOrder) {
     return (
-      <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
+      <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
         <div className="max-w-[85%] px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-300">
           {renderOrder()}
           <div className="flex items-center justify-end mt-3 pt-2 border-t border-yellow-200">
@@ -589,7 +589,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }
 
   return (
-    <div className={`flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
+    <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
       <div
         className={`group relative max-w-[80%] px-3 py-1.5 rounded-2xl shadow-sm transition-colors ${
           self 
