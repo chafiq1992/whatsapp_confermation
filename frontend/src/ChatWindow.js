@@ -4,6 +4,7 @@ import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
 import useAudioRecorder from './useAudioRecorder';
 import { VariableSizeList as List } from 'react-window';
+import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile } from 'react-icons/hi2';
 import { saveMessages, loadMessages } from './chatStorage';
 const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
@@ -1061,7 +1062,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
             height={listHeight}
             width={'100%'}
             itemCount={groupedMessages.length}
-            overscanCount={6}
+            overscanCount={12}
             itemData={groupedMessages}
             itemKey={(index, data) => {
               const row = data[index];
@@ -1072,6 +1073,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               const key = getItemKeyAtIndex(index);
               return itemHeightsByKey.current[key] || 72;
             }}
+            className="scroll-smooth will-change-transform"
             onScroll={({ scrollOffset }) => {
               if (scrollOffset <= 100 && hasMore && !loadingOlder) {
                 (async () => {
@@ -1243,58 +1245,61 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
             </div>
           )}
           <div className="flex items-center">
-            <button
-              onClick={() => setShowEmojiPicker((prev) => !prev)}
-              className="bg-gray-600 text-white px-2 rounded-l"
-              disabled={isRecording}
-              title="Emoji"
-            >
-              😊
-            </button>
-            <input
-              ref={inputRef}
-              className="flex-1 p-2 bg-gray-700 text-white hover:bg-gray-600 focus:bg-gray-600 transition-colors"
-              value={text}
-              onChange={handleTextChange}
-              onKeyDown={handleKeyPress}
-              placeholder="Type your message..."
-              disabled={isRecording}
-            />
-            <button
-              onClick={sendMessage}
-              className="bg-blue-600 px-4 text-white rounded-r"
-              disabled={isRecording || !text.trim()}
-            >
-              Send
-            </button>
-            {!isRecording && (
-              <>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: "none" }}
-                  ref={fileInputRef}
-                  onChange={handleFileInputChange}
-                />
-                <button
-                  className="ml-2 px-2 py-1 bg-gray-700 text-white rounded"
-                  onClick={() => fileInputRef.current.click()}
-                  disabled={isUploading}
-                  title="Attach images"
-                  tabIndex={-1}
-                >
-                  📎
-                </button>
-                <button
-                  onClick={startRecording}
-                  className="ml-2 px-2 bg-green-600 text-white rounded"
-                  title="Record audio"
-                >
-                  🎙️
-                </button>
-              </>
-            )}
+            <div className="flex items-center gap-2 flex-1 bg-gray-700 rounded-full px-3 py-2">
+              <button
+                onClick={() => setShowEmojiPicker((prev) => !prev)}
+                className="text-[#5AA0FF] hover:opacity-90"
+                disabled={isRecording}
+                title="Emoji"
+              >
+                <HiFaceSmile size={20} />
+              </button>
+              <input
+                ref={inputRef}
+                className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none"
+                value={text}
+                onChange={handleTextChange}
+                onKeyDown={handleKeyPress}
+                placeholder="Type a message"
+                disabled={isRecording}
+              />
+              {!isRecording && (
+                <>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: "none" }}
+                    ref={fileInputRef}
+                    onChange={handleFileInputChange}
+                  />
+                  <button
+                    className="text-[#5AA0FF] hover:opacity-90"
+                    onClick={() => fileInputRef.current.click()}
+                    disabled={isUploading}
+                    title="Attach images"
+                    tabIndex={-1}
+                  >
+                    <HiPaperClip size={20} />
+                  </button>
+                  <button
+                    onClick={startRecording}
+                    className="text-[#5AA0FF] hover:opacity-90"
+                    title="Record audio"
+                  >
+                    <HiMicrophone size={20} />
+                  </button>
+                </>
+              )}
+              <button
+                onClick={sendMessage}
+                className="ml-1 text-[#5AA0FF] hover:opacity-90 disabled:opacity-40"
+                disabled={isRecording || !text.trim()}
+                title="Send"
+              >
+                <HiPaperAirplane size={20} />
+              </button>
+            </div>
           </div>
         </div>
       )}

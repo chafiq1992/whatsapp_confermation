@@ -304,8 +304,12 @@ function ChatList({
             itemCount={filteredConversations.length}
             itemSize={72}
             width={'100%'}
+            className="scroll-smooth will-change-transform"
+            overscanCount={12}
+            useIsScrolling
+            itemKey={(index) => filteredConversations[index]?.user_id || `row_${index}`}
           >
-            {({ index, style }) => (
+            {({ index, style, isScrolling }) => (
               <ConversationRow
                 style={style}
                 conv={filteredConversations[index]}
@@ -314,6 +318,7 @@ function ChatList({
                 isOnline={isOnline}
                 agents={agents}
                 tagOptions={tagOptions}
+                isScrolling={!!isScrolling}
               />
             )}
           </List>
@@ -333,6 +338,7 @@ const ConversationRow = memo(function Row({
   style, // only used by react-window
   agents = [],
   tagOptions = [],
+  isScrolling = false,
 }) {
   const selected = active === conv.user_id;
   const [assignOpen, setAssignOpen] = useState(false);
@@ -393,12 +399,12 @@ const ConversationRow = memo(function Row({
             })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">
-            {selectedAgent && (
+            {!isScrolling && selectedAgent && (
               <span className="px-2.5 py-1 bg-indigo-600 text-white rounded-full text-sm">
                 {agents.find(a => a.username === selectedAgent)?.name || selectedAgent}
               </span>
             )}
-            {(tags || []).slice(0,3).map(t => (
+            {!isScrolling && (tags || []).slice(0,3).map(t => (
               <span key={t} className="w-6 h-6 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-xs ring-2 ring-white/20">
                 {(() => {
                   const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
@@ -406,7 +412,7 @@ const ConversationRow = memo(function Row({
                 })()}
               </span>
             ))}
-            {!!conv.unread_count && (
+            {!isScrolling && !!conv.unread_count && (
               <span
                 className="bg-green-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center"
                 title={`${conv.unread_count} unread`}
@@ -414,7 +420,7 @@ const ConversationRow = memo(function Row({
                 {conv.unread_count > 99 ? "99+" : conv.unread_count}
               </span>
             )}
-            {!!conv.unresponded_count && (
+            {!isScrolling && !!conv.unresponded_count && (
               <span
                 className="bg-yellow-400 text-black text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center"
                 title={`${conv.unresponded_count} waiting reply`}
