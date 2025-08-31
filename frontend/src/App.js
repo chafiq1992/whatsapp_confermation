@@ -270,7 +270,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
-      <div className="w-[260px] md:w-[300px] lg:w-[320px] xl:w-[360px] min-w-60 border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
+      <div className="w-[340px] md:w-[380px] lg:w-[420px] xl:w-[460px] min-w-[340px] border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
         <MiniSidebar
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
