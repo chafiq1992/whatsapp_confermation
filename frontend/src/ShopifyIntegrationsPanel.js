@@ -238,11 +238,11 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     zip,
   }) => {
     return `<!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Buy Ticket — ${orderName}</title>
+  <title>فاتورة — ${orderName}</title>
   <style>
     :root{
       --brand:#004AAD;             /* irrakids blue */
@@ -272,13 +272,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     .check{width:34px; height:34px; border-radius:999px; background:linear-gradient(180deg, #3f82ff, var(--brand)); box-shadow:0 6px 14px rgba(0,74,173,.45) inset, 0 2px 10px rgba(0,0,0,.25); display:grid; place-items:center}
     .check svg{width:18px; height:18px; color:white}
 
-    h1{margin:6px 0 6px; text-align:center; font-size:16px; letter-spacing:.3px; font-weight:800}
+    h1{margin:6px 0 6px; text-align:center; font-size:18px; letter-spacing:.2px; font-weight:800}
 
     .rule{height:1px; background:repeating-linear-gradient(90deg, rgba(255,255,255,.16) 0 7px, transparent 7px 14px); margin:10px 0}
 
     .kv{display:flex; justify-content:space-between; gap:10px; padding:6px 0; align-items:center}
     .kv .k{color:var(--muted)}
-    .kv .v{color:var(--ink); font-weight:700; text-align:right}
+    .kv .v{color:var(--ink); font-weight:700; text-align:left}
 
     .summary{margin-top:4px}
     .row{display:flex; justify-content:space-between; padding:6px 0}
@@ -329,13 +329,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           </div>
         </div>
         <h1>
-          ${isPaid ? "Payment Success" : "Order Placed"}
+          ${isPaid ? "تم الدفع بنجاح" : "تم إنشاء الطلب"}
         </h1>
 
         <div class="rule" aria-hidden="true"></div>
 
         <!-- Product (first item) -->
-        <div class="section-title">Item</div>
+        <div class="section-title">المنتج</div>
         <div class="product">
           <div class="thumb">
             ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
@@ -344,14 +344,14 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             <div class="prod-title">${productTitle || ''}</div>
             ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
             <div class="chips">
-              <span class="chip">Qty ×${qty}</span>
-              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
+              <span class="chip">الكمية ×${qty}</span>
+              ${moreCount > 0 ? `<span class="chip">+${moreCount} إضافي</span>` : ''}
             </div>
           </div>
         </div>
 
         <!-- Address -->
-        <div class="section-title">Customer</div>
+        <div class="section-title">العميل</div>
         <div class="address">
           <div class="addr-name">${addressName}</div>
           <div class="addr-lines">
@@ -362,9 +362,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
         <div class="rule" aria-hidden="true"></div>
 
-        <div class="kv"><span class="k">Reference number</span><span class="v">${orderName}</span></div>
-        <div class="kv"><span class="k">Date &amp; time</span><span class="v">${createdAtDisplay}</span></div>
-        <div class="kv"><span class="k">Payment method</span>
+        <div class="kv"><span class="k">رقم المرجع</span><span class="v">${orderName}</span></div>
+        <div class="kv"><span class="k">التاريخ والوقت</span><span class="v">${createdAtDisplay}</span></div>
+        <div class="kv"><span class="k">طريقة الدفع</span>
           <span class="v">${paymentMethod}</span>
         </div>
 
@@ -373,13 +373,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         <div class="rule" aria-hidden="true"></div>
 
         <div class="summary">
-          <div class="row sub"><span>Subtotal</span><span>${subtotal} ${currency}</span></div>
-          ${totalDiscount > 0 ? `<div class="row dis"><span>Discount</span><span>-${totalDiscount} ${currency}</span></div>` : ''}
+          <div class="row sub"><span>المجموع الفرعي</span><span>${subtotal} ${currency}</span></div>
+          ${totalDiscount > 0 ? `<div class="row dis"><span>الخصم</span><span>-${totalDiscount} ${currency}</span></div>` : ''}
           ${totalDiscount > 0 ? `<div class="rule" aria-hidden="true"></div>` : ''}
-          <div class="total"><span>Total</span><span style="font-size:18px">${total} ${currency}</span></div>
+          <div class="total"><span>الإجمالي</span><span style="font-size:18px">${total} ${currency}</span></div>
         </div>
 
-        <div class="foot">Thank you for your purchase</div>
+        <div class="foot">شكرًا لتسوقك معنا</div>
       </div>
     </div>
   </div>
@@ -405,18 +405,21 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       const total = Math.max(0, Number((subtotal - totalDiscount).toFixed(2)));
 
       const createdAtDate = new Date();
-      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const months = [
+        "يناير","فبراير","مارس","أبريل","مايو","يونيو",
+        "يوليوز","غشت","شتنبر","أكتوبر","نوفمبر","دجنبر"
+      ];
       const dd = String(createdAtDate.getDate()).padStart(2, '0');
       const mmm = months[createdAtDate.getMonth()];
       let hh = createdAtDate.getHours();
       const mm = String(createdAtDate.getMinutes()).padStart(2, '0');
-      const ampm = hh >= 12 ? 'PM' : 'AM';
+      const ampm = hh >= 12 ? 'م' : 'ص';
       hh = hh % 12; if (hh === 0) hh = 12;
-      const createdAtDisplay = `${dd} ${mmm} ${createdAtDate.getFullYear()}, ${String(hh).padStart(2,'0')}:${mm} ${ampm}`;
+      const createdAtDisplay = `${dd} ${mmm} ${createdAtDate.getFullYear()}، ${String(hh).padStart(2,'0')}:${mm} ${ampm}`;
 
       const isCOD = (paymentTerm || "").toLowerCase().includes("receipt") || (deliveryOption || "").toLowerCase().includes("cod");
       const isPaid = (paymentTerm || "").toLowerCase() === "paid";
-      const paymentMethod = isCOD ? "Cash on Delivery" : (isPaid ? "Paid" : "—");
+      const paymentMethod = isCOD ? "الدفع عند التسليم" : (isPaid ? "بطاقة/محفظة" : "—");
 
       const orderName =
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
