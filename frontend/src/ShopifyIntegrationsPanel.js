@@ -256,7 +256,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
 
     *{box-sizing:border-box}
-    body{margin:0; padding:24px; background:radial-gradient(1200px 600px at 50% -10%, #121a31 0%, var(--page) 60%); font:14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink)}
+    body{margin:0; padding:24px; background:transparent; font:14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink)}
 
     .wrap{display:flex; justify-content:center}
 
@@ -274,7 +274,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       radial-gradient(circle at 12px 11px, var(--page) 11px, transparent 11px) left bottom / 24px 22px repeat-x;
     }
 
-    .inner{padding:18px 18px 16px}
+    .inner{padding:18px 18px 16px; position:relative}
+    .inner::before{content:""; position:absolute; left:0; right:0; top:0; height:90px; pointer-events:none;
+      background:radial-gradient(420px 160px at 50% -40px, rgba(106,124,255,.28), transparent 60%);
+    }
 
     .emblem{display:flex; align-items:center; justify-content:center; margin:8px 0 10px}
     .halo{width:52px; height:52px; border-radius:999px; background:radial-gradient(closest-side, rgba(0,74,173,.35), rgba(0,74,173,.08) 60%, transparent 65%);
@@ -383,6 +386,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         <div class="summary">
           <div class="row sub"><span>Subtotal</span><span>${subtotal} ${currency}</span></div>
           ${totalDiscount > 0 ? `<div class="row dis"><span>Discount</span><span>-${totalDiscount} ${currency}</span></div>` : ''}
+          ${totalDiscount > 0 ? `<div class="rule" aria-hidden="true"></div>` : ''}
           <div class="total"><span>Total</span><span style="font-size:18px">${total} ${currency}</span></div>
         </div>
 
