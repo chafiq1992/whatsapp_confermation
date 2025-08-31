@@ -289,9 +289,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
     .rule{height:1px; background:repeating-linear-gradient(90deg, rgba(255,255,255,.16) 0 7px, transparent 7px 14px); margin:10px 0}
 
-    .kv{display:flex; justify-content:space-between; gap:10px; padding:6px 0;}
-    .kv .k{color:var(--muted)}
-    .kv .v{color:var(--ink)}
+    .kv{display:flex; justify-content:space-between; gap:10px; padding:10px 0; align-items:center}
+    .kv .k{color:var(--muted); font-size:15px}
+    .kv .v{color:var(--ink); font-weight:700; font-size:16px; text-align:right}
 
     .summary{margin-top:4px}
     .row{display:flex; justify-content:space-between; padding:6px 0}
@@ -355,32 +355,6 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
         <div class="rule" aria-hidden="true"></div>
 
-        <!-- Product (first item) -->
-        <div class="section-title">Item</div>
-        <div class="product">
-          <div class="thumb">
-            ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
-          </div>
-          <div class="prod-info">
-            <div class="prod-title">${productTitle || ''}</div>
-            ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
-            <div class="chips">
-              <span class="chip">Qty ×${qty}</span>
-              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
-            </div>
-          </div>
-        </div>
-
-        <!-- Address -->
-        <div class="section-title">Customer</div>
-        <div class="address">
-          <div class="addr-name">${addressName}</div>
-          <div class="addr-lines">
-            ${address1 || ''}${address2 ? `, ${address2}` : ''}<br/>
-            ${city || ''}${provinceCode ? `, ${provinceCode}` : ''}${zip ? ` ${zip}` : ''}
-          </div>
-        </div>
-
         <div class="rule" aria-hidden="true"></div>
 
         <div class="summary">
@@ -433,13 +407,6 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
         (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
 
-      const firstItem = (selectedItems || [])[0] || null;
-      const productImageUrl = firstItem?.variant?.image_src || "";
-      const productTitle = firstItem?.variant?.product_title || firstItem?.variant?.title || "";
-      const productVariantTitle = firstItem?.variant?.title || "";
-      const qty = Number(firstItem?.quantity || 0);
-      const moreCount = Math.max(0, itemsCount - 1);
-
       const html = buildOrderLabelHtml({
         orderName,
         createdAtDisplay,
@@ -449,17 +416,6 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         totalDiscount: Number(totalDiscount.toFixed(2)),
         total,
         currency: "MAD",
-        productImageUrl,
-        productTitle,
-        productVariantTitle,
-        qty,
-        moreCount,
-        addressName: fullName || "",
-        address1: orderData?.address || "",
-        address2: "",
-        city: orderData?.city || "",
-        provinceCode: orderData?.province || "",
-        zip: orderData?.zip || "",
       });
 
       const container = document.createElement("div");
