@@ -217,19 +217,15 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   }, []);
 
   const buildOrderLabelHtml = ({
-    shopName,
     orderName,
-    createdAt,
-    totalPrice,
-    isCOD,
-    customerFirst,
-    customerLast,
-    city,
-    phone,
-    itemsCount,
-    fulfillmentStatus,
+    createdAtDisplay,
+    isPaid,
+    paymentMethod,
+    subtotal,
+    totalDiscount,
+    total,
+    currency,
   }) => {
-    const codBadge = isCOD ? '<span class="cod">COD</span>' : '';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -238,86 +234,109 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   <title>Buy Ticket — ${orderName}</title>
   <style>
     :root{
-      --brand:#004AAD;
-      --ink:#111827;
-      --muted:#6b7280;
-      --paper:#ffffff;
-      --bg:#f3f4f6;
-      --width:76mm;
+      --brand:#22c55e;
+      --accent:#004AAD;
+      --ink:#e5e7eb;
+      --muted:#9ca3af;
+      --cardTop:#0c1222;
+      --cardBottom:#111a34;
+      --page:#0a0f1e;
+      --width: 320px;
     }
+
     *{box-sizing:border-box}
-    body{margin:0; padding:24px; background:var(--bg); font:14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial}
-    .ticket{ width:var(--width); margin:0 auto; background:var(--paper); color:var(--ink);
-             border-radius:16px; border:1px solid #e5e7eb; position:relative; overflow:hidden;
-             box-shadow:0 8px 24px rgba(0,0,0,.08); }
-    .ticket::before{ content:""; position:absolute; inset:0 auto 0 0; width:14px;
-      background:
-        linear-gradient(-45deg, transparent 7px, var(--paper) 7px) top left/14px 14px repeat-y,
-        linear-gradient( 45deg, transparent 7px, var(--paper) 7px) bottom left/14px 14px repeat-y;
-      background-color:var(--brand);
-      box-shadow: inset -1px 0 0 rgba(0,0,0,.06); }
-    .perf{ position:absolute; top:0; left:18px; bottom:0; width:2px;
-           background: repeating-linear-gradient(transparent 0 6px, rgba(0,0,0,.14) 6px 8px); }
-    .inner{ padding:16px 16px 16px 26px; }
-    .head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding-bottom:8px; border-bottom:1px dashed #e5e7eb; }
-    .brand{ display:flex; align-items:center; gap:10px; }
-    .logo{ width:36px; height:36px; border-radius:10px; background:var(--brand); }
-    .store{ font-weight:800; letter-spacing:.2px; }
-    .badge{ display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:var(--brand); font-weight:700; font-size:11px; }
-    .meta{ text-align:right; font-size:12px; color:var(--muted); }
-    .focus{ text-align:center; padding:10px 0 4px; }
-    .price{ display:inline-block; padding:10px 14px; border-radius:12px; font-weight:900; font-size:18px;
-            background:linear-gradient(135deg, rgba(0,74,173,.08), rgba(0,74,173,.16)); }
-    .cod{ display:inline-block; margin-left:8px; padding:2px 8px; border-radius:8px; font-size:11px; font-weight:800; color:#fff; background:var(--brand); }
-    .block{ padding:10px 0; border-bottom:1px dashed #e5e7eb; }
-    .title{ font-weight:800; color:var(--brand); font-size:12px; letter-spacing:.7px; text-transform:uppercase; margin-bottom:6px; }
-    .row{ display:flex; justify-content:space-between; gap:10px; font-size:13px; }
-    .row span:first-child{ color:var(--muted); }
-    .foot{ text-align:center; color:var(--muted); font-size:11px; padding-top:8px; }
-    .brandline{ height:6px; background: repeating-linear-gradient(90deg, var(--brand) 0 12px, transparent 12px 20px); opacity:.5; margin-top:8px; border-radius:0 0 0 12px; }
-    .no-print{ text-align:center; margin-top:10px; }
-    .btn{ padding:8px 12px; border-radius:10px; border:0; background:var(--brand); color:white; font-weight:700; cursor:pointer; }
-    @media print{ body{background:none; padding:0} .ticket{box-shadow:none} .no-print{display:none !important} }
+    body{margin:0; padding:24px; background:radial-gradient(1200px 600px at 50% -10%, #121a31 0%, var(--page) 60%); font:14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink)}
+
+    .wrap{display:flex; justify-content:center}
+
+    .ticket{width:var(--width); position:relative; border-radius:22px; overflow:hidden; 
+            background:linear-gradient(180deg, var(--cardTop), var(--cardBottom));
+            box-shadow: 0 16px 40px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.05);
+            border:1px solid rgba(255,255,255,.08);
+    }
+
+    .ticket::before, .ticket::after{content:""; position:absolute; left:0; right:0; height:22px; z-index:2;}
+    .ticket::before{top:-11px; background:
+      radial-gradient(circle at 12px 11px, var(--page) 11px, transparent 11px) left top / 24px 22px repeat-x;
+    }
+    .ticket::after{bottom:-11px; background:
+      radial-gradient(circle at 12px 11px, var(--page) 11px, transparent 11px) left bottom / 24px 22px repeat-x;
+    }
+
+    .inner{padding:18px 18px 16px}
+
+    .emblem{display:flex; align-items:center; justify-content:center; margin:8px 0 10px}
+    .halo{width:52px; height:52px; border-radius:999px; background:radial-gradient(closest-side, rgba(34,197,94,.35), rgba(34,197,94,.08) 60%, transparent 65%);
+          display:grid; place-items:center;}
+    .check{width:34px; height:34px; border-radius:999px; background:linear-gradient(180deg,#25d07a,#18a957); box-shadow:0 6px 14px rgba(34,197,94,.45) inset, 0 2px 10px rgba(0,0,0,.25); display:grid; place-items:center}
+    .check svg{width:18px; height:18px; color:white}
+
+    h1{margin:6px 0 6px; text-align:center; font-size:16px; letter-spacing:.3px; font-weight:800}
+
+    .rule{height:1px; background:repeating-linear-gradient(90deg, rgba(255,255,255,.16) 0 7px, transparent 7px 14px); margin:10px 0}
+
+    .kv{display:flex; justify-content:space-between; gap:10px; padding:6px 0;}
+    .kv .k{color:var(--muted)}
+    .kv .v{color:var(--ink)}
+
+    .summary{margin-top:4px}
+    .row{display:flex; justify-content:space-between; padding:6px 0}
+    .row.sub, .row.dis{color:var(--muted)}
+
+    .total{display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding:10px 12px; border-radius:14px;
+           background:linear-gradient(145deg, rgba(255,255,255,.06), rgba(255,255,255,.04)); font-weight:900; font-size:16px;}
+
+    .foot{padding:10px 0 4px; text-align:center; color:var(--muted); font-size:11px}
+
+    .no-print{text-align:center; margin-top:10px}
+    .btn{padding:8px 12px; border-radius:10px; border:0; background:#1f6feb; color:#fff; font-weight:700; cursor:pointer}
+
+    @media print{
+      body{background:none; padding:0}
+      .ticket{box-shadow:none}
+      .no-print{display:none !important}
+    }
   </style>
 </head>
 <body>
-  <div class="ticket" role="document" aria-label="Buy Ticket">
-    <div class="perf" aria-hidden="true"></div>
-    <div class="inner">
-      <div class="head">
-        <div class="brand">
-          <div class="logo" aria-hidden="true"></div>
-          <div>
-            <div class="store">${shopName || "Your Store"}</div>
-            <div class="badge">Buy Ticket</div>
+  <div class="wrap">
+    <div class="ticket" role="document" aria-label="Payment Ticket">
+      <div class="inner">
+        <div class="emblem">
+          <div class="halo">
+            <div class="check" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5"/>
+              </svg>
+            </div>
           </div>
         </div>
-        <div class="meta">
-          <div><b>${orderName}</b></div>
-          <div>${createdAt}</div>
+        <h1>
+          ${isPaid ? "Payment Success" : "Order Placed"}
+        </h1>
+
+        <div class="rule" aria-hidden="true"></div>
+
+        <div class="kv"><span class="k">Reference number</span><span class="v">${orderName}</span></div>
+        <div class="kv"><span class="k">Date &amp; time</span><span class="v">${createdAtDisplay}</span></div>
+        <div class="kv"><span class="k">Payment method</span>
+          <span class="v">${paymentMethod}</span>
         </div>
+
+        <div class="rule" aria-hidden="true"></div>
+
+        <div class="summary">
+          <div class="row sub"><span>Subtotal</span><span>${subtotal} ${currency}</span></div>
+          ${totalDiscount > 0 ? `<div class="row dis"><span>Discount</span><span>-${totalDiscount} ${currency}</span></div>` : ""}
+          <div class="total"><span>Total</span><span style="font-size:18px">${total} ${currency}</span></div>
+        </div>
+
+        <div class="foot">Thank you for your purchase</div>
       </div>
-      <div class="focus">
-        <span class="price">${totalPrice}</span>
-        ${codBadge}
-      </div>
-      <div class="block">
-        <div class="title">Customer</div>
-        <div class="row"><span>Name</span><span>${customerFirst} ${customerLast}</span></div>
-        <div class="row"><span>City</span><span>${city}</span></div>
-        <div class="row"><span>Phone</span><span>${phone}</span></div>
-      </div>
-      <div class="block" style="border-bottom:0">
-        <div class="title">Order</div>
-        <div class="row"><span>Items</span><span>${itemsCount} item${itemsCount === 1 ? "" : "s"}</span></div>
-        <div class="row"><span>Status</span><span>${fulfillmentStatus}</span></div>
-      </div>
-      <div class="brandline" aria-hidden="true"></div>
-      <div class="foot">Thank you for your purchase ✨</div>
-      <div class="no-print"><button class="btn" onclick="window.print()">Print</button></div>
-      <p class="no-print" style="color:var(--muted); font-size:11px; margin-top:8px">Tip: change <code>--width</code> for your paper size (e.g., 80mm or 100mm).</p>
     </div>
   </div>
+
+  <div class="no-print"><button class="btn" onclick="window.print()">Print</button></div>
 </body>
 </html>`;
   };
@@ -329,26 +348,41 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       const fullName = (orderData?.name || "").trim();
       const [first = "", last = ""] = fullName.split(" ", 2);
       const itemsCount = (selectedItems || []).length;
-      const totalPrice = computeTotalPrice(selectedItems);
-      const createdAt = new Date().toISOString().slice(0, 16).replace("T", " ");
+      const subtotal = (selectedItems || []).reduce((acc, it) => {
+        const price = Number(it?.variant?.price || 0);
+        const qty = Number(it?.quantity || 1);
+        return acc + price * qty;
+      }, 0);
+      const totalDiscount = (selectedItems || []).reduce((acc, it) => acc + Number(it?.discount || 0), 0);
+      const total = Math.max(0, Number((subtotal - totalDiscount).toFixed(2)));
+
+      const createdAtDate = new Date();
+      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const dd = String(createdAtDate.getDate()).padStart(2, '0');
+      const mmm = months[createdAtDate.getMonth()];
+      let hh = createdAtDate.getHours();
+      const mm = String(createdAtDate.getMinutes()).padStart(2, '0');
+      const ampm = hh >= 12 ? 'PM' : 'AM';
+      hh = hh % 12; if (hh === 0) hh = 12;
+      const createdAtDisplay = `${dd} ${mmm} ${createdAtDate.getFullYear()}, ${String(hh).padStart(2,'0')}:${mm} ${ampm}`;
+
       const isCOD = (paymentTerm || "").toLowerCase().includes("receipt") || (deliveryOption || "").toLowerCase().includes("cod");
+      const isPaid = (paymentTerm || "").toLowerCase() === "paid";
+      const paymentMethod = isCOD ? "Cash on Delivery" : (isPaid ? "Paid" : "—");
 
       const orderName =
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
         (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
 
       const html = buildOrderLabelHtml({
-        shopName: "Shopify Store",
         orderName,
-        createdAt,
-        totalPrice: `${totalPrice}`,
-        isCOD,
-        customerFirst: first,
-        customerLast: last,
-        city: orderData?.city || "",
-        phone: orderData?.phone || "",
-        itemsCount,
-        fulfillmentStatus: "Unfulfilled",
+        createdAtDisplay,
+        isPaid,
+        paymentMethod,
+        subtotal: Number(subtotal.toFixed(2)),
+        totalDiscount: Number(totalDiscount.toFixed(2)),
+        total,
+        currency: "MAD",
       });
 
       const container = document.createElement("div");
@@ -373,7 +407,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       fd.append("user_id", activeUser.user_id);
       fd.append("media_type", "image");
       fd.append("files", file, file.name);
-      fd.append("caption", `Order ${orderName}`);
+      fd.append("caption", isPaid ? `Payment Success • ${orderName}` : `Order Placed • ${orderName}`);
 
       await api.post(`${API_BASE}/send-media`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
