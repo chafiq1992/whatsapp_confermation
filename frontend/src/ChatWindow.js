@@ -924,7 +924,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
 
   return (
     <div
-      className="flex flex-col h-full"
+      className="relative flex flex-col h-full"
       onDrop={handleDrop}
       onDragOver={e => e.preventDefault()}
       onPaste={handlePaste}
