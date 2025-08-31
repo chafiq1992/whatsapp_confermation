@@ -8,6 +8,7 @@ import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile } from 'react-i
 import { saveMessages, loadMessages } from './chatStorage';
 const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
+const MemoMessageBubble = React.memo(MessageBubble);
 
 // API and WebSocket endpoints
 const API_BASE = process.env.REACT_APP_API_BASE || '';
@@ -111,6 +112,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [replyTarget, setReplyTarget] = useState(null);
   const [catalogProducts, setCatalogProducts] = useState({});
+  const [isTypingOther, setIsTypingOther] = useState(false);
   const MESSAGE_LIMIT = 50;
   const [offset, setOffset] = useState(0);
   const [hasMore, setHasMore] = useState(true);
@@ -166,6 +168,8 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const typingTimeoutRef = useRef(null);
+  const lastTypingSentRef = useRef(0);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -302,6 +306,15 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
             const matches = (msg.wa_message_id && ids.includes(msg.wa_message_id)) || (msg.id && ids.includes(msg.id));
             return matches ? { ...msg, status: 'read' } : msg;
           })));
+        } else if (data.type === 'typing') {
+          try {
+            const who = data.data?.user_id;
+            const isTyping = !!data.data?.is_typing;
+            if (who && activeUser?.user_id && who === activeUser.user_id) {
+              setIsTypingOther(isTyping);
+              if (isTyping) setTimeout(() => setIsTypingOther(false), 4000);
+            }
+          } catch {}
         }
       } catch (e) {
         console.error('WS parse error', e);
@@ -718,7 +731,32 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
     }
   }, [messages, activeUser?.user_id, ws]);
 
-  const handleTextChange = (e) => setText(e.target.value);
+  const handleTextChange = (e) => {
+    const val = e.target.value;
+    setText(val);
+    // Auto-expand textarea height
+    try {
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+        const next = Math.min(160, inputRef.current.scrollHeight);
+        inputRef.current.style.height = `${next}px`;
+      }
+    } catch {}
+    // Send typing indicator (throttled)
+    try {
+      const now = Date.now();
+      if (ws && ws.readyState === WebSocket.OPEN && now - lastTypingSentRef.current > 1500) {
+        ws.send(JSON.stringify({ type: 'typing', is_typing: true }));
+        lastTypingSentRef.current = now;
+      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'typing', is_typing: false }));
+        } catch {}
+      }, 2000);
+    } catch {}
+  };
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') sendMessage();
   };
@@ -1118,7 +1156,7 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
                     {index === unreadSeparatorIndex && (
                       <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
                     )}
-                    <MessageBubble
+                    <MemoMessageBubble
                       msg={msg}
                       self={(function() {
                         if (msg.from_me) return true;
@@ -1184,19 +1222,33 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
             }}
           </List>
         )}
-        {showJumpToLatest && (
+        {unreadSeparatorIndex != null && (
           <button
-            className="absolute right-4 bottom-6 px-3 py-2 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-500"
-            onClick={() => { scrollToBottom(); setShowJumpToLatest(false); }}
-            title="Jump to latest messages"
+            className="absolute right-4 top-4 px-3 py-1 rounded-full bg-gray-800 text-white border border-gray-600 shadow hover:bg-gray-700"
+            onClick={() => { try { listRef.current?.scrollToItem(unreadSeparatorIndex, 'start'); } catch {} }}
+            title="Jump to first unread"
           >
-            Jump to latest ↓
+            Unread ↑
           </button>
         )}
       </div>
       
       {activeUser && (
         <div className="p-2 border-t border-gray-700 bg-gray-800 flex flex-col space-y-2 relative">
+          {showJumpToLatest && (
+            <div className="absolute -top-8 left-0 right-0 flex justify-center" aria-live="polite">
+              <button
+                className="px-3 py-1 rounded-full bg-blue-600 text-white shadow hover:bg-blue-500"
+                onClick={() => { scrollToBottom(); setShowJumpToLatest(false); }}
+                title="Jump to latest messages"
+              >
+                New messages ↓
+              </button>
+            </div>
+          )}
+          {isTypingOther && (
+            <div className="-mt-1 text-xs text-gray-300" aria-live="polite">Typing…</div>
+          )}
           {replyTarget && (
             <div className="flex items-center justify-between bg-gray-700 text-white px-2 py-1 rounded">
               <div className="text-xs truncate max-w-[80%]">
@@ -1254,14 +1306,16 @@ export default function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUp
               >
                 <HiFaceSmile size={20} />
               </button>
-              <input
+              <textarea
                 ref={inputRef}
-                className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none"
+                className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none resize-none leading-5 max-h-40"
                 value={text}
                 onChange={handleTextChange}
                 onKeyDown={handleKeyPress}
                 placeholder="Type a message"
                 disabled={isRecording}
+                rows={1}
+                aria-label="Message input"
               />
               {!isRecording && (
                 <>

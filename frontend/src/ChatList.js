@@ -49,6 +49,7 @@ function ChatList({
   wsConnected = false,
   showArchive = false,
   currentAgent = '',
+  loading = false,
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
@@ -284,14 +285,28 @@ function ChatList({
 
       {/* Empty states */}
       {filteredConversations.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-gray-400 select-none">
-          <span className="text-5xl mb-2">💬</span>
-          {conversations.length === 0
-            ? "No conversations yet"
-            : search
-            ? `No chat matches “${search}”`
-            : "No unread conversations"}
-        </div>
+        loading ? (
+          <div className="flex-1 p-3 space-y-3" aria-live="polite">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="flex gap-3">
+                <div className="w-10 h-10 rounded-full bg-gray-800 animate-pulse" />
+                <div className="flex-1 space-y-2">
+                  <div className="h-3 bg-gray-800 rounded w-1/2 animate-pulse" />
+                  <div className="h-3 bg-gray-800 rounded w-2/3 animate-pulse" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-gray-400 select-none">
+            <span className="text-5xl mb-2">💬</span>
+            {conversations.length === 0
+              ? "No conversations yet"
+              : search
+              ? `No chat matches “${search}”`
+              : "No unread conversations"}
+          </div>
+        )
       ) : (
         /* Chat list */
         <div ref={listRef} className="flex-1 overflow-y-auto divide-y divide-gray-800">
@@ -359,6 +374,7 @@ const ConversationRow = memo(function Row({
           alt={conv.name || conv.user_id}
           className="w-10 h-10 rounded-full object-cover bg-gray-700"
           onError={(e) => { e.currentTarget.src = '/broken-image.png'; }}
+          loading="lazy"
         />
         {isOnline(conv.user_id) && (
           <span

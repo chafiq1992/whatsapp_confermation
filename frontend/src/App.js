@@ -3,7 +3,8 @@ import React, { useEffect, useState, useRef, Suspense } from 'react';
 import ChatList from './ChatList';
 import InternalChannelsBar from './InternalChannelsBar';
 import MiniSidebar from './MiniSidebar';
-import AdminDashboard from './AdminDashboard';
+// Lazy load heavy panels
+const AdminDashboard = React.lazy(() => import('./AdminDashboard'));
 import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
 import api from './api';
@@ -26,6 +27,7 @@ export default function App() {
   const [showArchive, setShowArchive] = useState(false);
   const [showInternalPanel, setShowInternalPanel] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [loadingConversations, setLoadingConversations] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
@@ -45,6 +47,7 @@ export default function App() {
   // Fetch all conversations for chat list
   const fetchConversations = async () => {
     try {
+      setLoadingConversations(true);
       const res = await api.get(`${API_BASE}/conversations`);
       setConversations(res.data);
       saveConversations(res.data);
@@ -54,6 +57,9 @@ export default function App() {
       if (cached.length > 0) {
         setConversations(cached);
       }
+    }
+    finally {
+      setLoadingConversations(false);
     }
   };
 
@@ -289,6 +295,7 @@ export default function App() {
               defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
               showArchive={showArchive}
               currentAgent={currentAgent}
+              loading={loadingConversations}
             />
           )}
         </div>
@@ -312,7 +319,9 @@ export default function App() {
         </Suspense>
       </div>
       {showAdmin && (
-        <AdminDashboard onClose={() => setShowAdmin(false)} />
+        <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading settings…</div>}>
+          <AdminDashboard onClose={() => setShowAdmin(false)} />
+        </Suspense>
       )}
     </div>
   );
