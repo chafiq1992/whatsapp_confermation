@@ -416,13 +416,13 @@ export default function CatalogPanel({
   };
 
   return (
-    <div className="bg-white text-black border-t border-gray-300 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
+    <div className="bg-gray-900 text-white border-t border-gray-800 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-sm font-bold text-blue-700">Catalog</h2>
+        <h2 className="text-sm font-semibold text-gray-200">Catalog</h2>
         <div className="flex items-center gap-2">
-          <RefreshCatalogButton onRefresh={fetchSets} />
           <div className={`w-2.5 h-2.5 rounded-full ${isWebSocketConnected ? 'bg-green-500' : 'bg-red-500'}`} title={isWebSocketConnected ? 'Connected' : 'Disconnected'} />
+          <div className="text-xs text-gray-400">WS</div>
         </div>
       </div>
 
@@ -438,28 +438,28 @@ export default function CatalogPanel({
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
         ) : sets.length === 0 ? (
-          <div className="text-xs text-gray-600 col-span-full flex items-center gap-2">
+          <div className="text-xs text-gray-400 col-span-full flex items-center gap-2">
             <span>No sets available.</span>
-            <button className="px-2 py-1 bg-gray-200 rounded" onClick={fetchSets} type="button">Retry</button>
+            <button className="px-2 py-1 bg-gray-800 border border-gray-700 text-gray-200 rounded hover:bg-gray-700" onClick={fetchSets} type="button">Retry</button>
           </div>
         ) : (
           <>
             <button
-              className="px-3 py-2 text-sm font-semibold rounded bg-pink-600 text-white hover:bg-pink-700 shadow-sm"
+              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
               type="button"
               onClick={() => openFolderModal('girls')}
             >
               Girls
             </button>
             <button
-              className="px-3 py-2 text-sm font-semibold rounded bg-blue-600 text-white hover:bg-blue-700 shadow-sm"
+              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
               type="button"
               onClick={() => openFolderModal('boys')}
             >
               Boys
             </button>
             <button
-              className="px-3 py-2 text-sm font-semibold rounded bg-gray-800 text-white hover:bg-black shadow-sm"
+              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
               type="button"
               onClick={() => openFolderModal('all')}
             >

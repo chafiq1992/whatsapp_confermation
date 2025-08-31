@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import api from './api';
 import { FixedSizeList as List } from "react-window";
+import { FiSearch, FiMail, FiMessageSquare, FiUserCheck } from 'react-icons/fi';
 
 /* ───────────── Helpers ───────────── */
 const getInitials = (name = "") => {
@@ -47,6 +48,7 @@ function ChatList({
   defaultAssignedFilter: defaultAssignedFilterProp,
   wsConnected = false,
   showArchive = false,
+  currentAgent = '',
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
@@ -185,51 +187,55 @@ function ChatList({
   /* ─── Render ─── */
   return (
     <div className="w-full h-full flex flex-col">
-      {/* Top-bar */
-      }
-      <div className="flex flex-col gap-2 p-2">
-        {/* Search at the top */}
-        <div className="flex gap-2 items-center sticky top-0 bg-gray-900 z-10">
-          <input
-            className="flex-1 p-2 bg-gray-100 rounded focus:ring focus:ring-blue-500 text-black"
-            placeholder="Search or start new chat"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div
-            className={`w-3 h-3 rounded-full ${
-              wsConnected ? 'bg-green-500' : 'bg-red-500'
-            }`}
-            title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`}
-          ></div>
-        </div>
-        {/* Filters row */}
-        <div className="flex gap-2 items-center">
+      <div className="p-2 sticky top-0 z-10 bg-gray-900">
+        <div className="w-full bg-gray-800/70 border border-gray-700 rounded-xl px-3 py-2 flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-1">
+            <FiSearch className="text-gray-400" />
+            <input
+              className="flex-1 bg-transparent placeholder-gray-400 text-white focus:outline-none text-sm"
+              placeholder="Search or start new chat"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className={`w-2.5 h-2.5 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`} />
+          <div className="h-4 w-px bg-gray-700 mx-1" />
           <button
-            className={`px-3 rounded text-sm font-medium ${
-              showUnreadOnly
-                ? "bg-[#004AAD] text-white"
-                : "bg-gray-300 text-gray-800"
-            }`}
-            onClick={() => setShowUnreadOnly((p) => !p)}
+            type="button"
+            className={`p-2 rounded-lg text-sm ${showUnreadOnly ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+            title="Unread only"
+            onClick={() => setShowUnreadOnly(p => !p)}
           >
-            Unread
+            <FiMail />
           </button>
           <button
-            className={`px-3 rounded text-sm font-medium ${
-              needsReplyOnly
-                ? "bg-yellow-500 text-black"
-                : "bg-gray-300 text-gray-800"
-            }`}
-            onClick={() => setNeedsReplyOnly((p) => !p)}
-            title="Conversations needing reply"
+            type="button"
+            className={`p-2 rounded-lg text-sm ${needsReplyOnly ? 'bg-yellow-500 text-black' : 'text-gray-300 hover:bg-gray-700'}`}
+            title="Needs reply"
+            onClick={() => setNeedsReplyOnly(p => !p)}
           >
-            Needs reply
+            <FiMessageSquare />
           </button>
+          <button
+            type="button"
+            className={`p-2 rounded-lg text-sm ${(assignedFilter && currentAgent && assignedFilter === currentAgent) ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+            title="My assigned only"
+            onClick={() => {
+              if (assignedFilter === currentAgent) {
+                setAssignedFilter('all');
+              } else {
+                setAssignedFilter(currentAgent || 'all');
+              }
+            }}
+          >
+            <FiUserCheck />
+          </button>
+          <div className="h-4 w-px bg-gray-700 mx-1" />
           <select
-            className="p-2 bg-gray-100 rounded text-black"
+            className="bg-transparent text-sm text-gray-200 rounded-md px-2 py-1 focus:outline-none hover:bg-gray-700"
             value={assignedFilter}
             onChange={(e) => setAssignedFilter(e.target.value)}
+            title="Filter by assignee"
           >
             <option value="all">All</option>
             <option value="unassigned">Unassigned</option>
@@ -237,53 +243,43 @@ function ChatList({
               <option key={a.username} value={a.username}>{a.name || a.username}</option>
             ))}
           </select>
-          <div className="flex items-center gap-2 flex-1">
-            <select
-              className="flex-1 p-2 bg-gray-100 rounded text-black"
-              value={selectedTagFilter}
-              onChange={(e) => {
-                const val = e.target.value;
-                setSelectedTagFilter(val);
-                if (val && !tagFilters.includes(val)) {
-                  setTagFilters([...tagFilters, val]);
-                  // Auto-clear to "close" the native dropdown experience
-                  setTimeout(() => setSelectedTagFilter(""), 0);
-                }
-                // Remove focus to collapse on mobile
-                e.target.blur();
-              }}
-            >
-              <option value="">Select tag to filter…</option>
-              {tagOptions.map(opt => (
-                <option key={opt.label} value={opt.label}>
-                  {`${opt.icon ? opt.icon + ' ' : ''}${opt.label}`}
-                </option>
-              ))}
-            </select>
-            <button
-              className="px-2 py-2 bg-blue-600 text-white rounded"
-              onClick={() => {
-                if (selectedTagFilter && !tagFilters.includes(selectedTagFilter)) {
-                  setTagFilters([...tagFilters, selectedTagFilter]);
-                  setSelectedTagFilter("");
-                }
-              }}
-            >Add</button>
-            <div className="flex gap-2 flex-wrap items-center">
-              {tagFilters.map(t => (
-                <div key={t} className="flex items-center gap-1">
-                  <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs ring-2 ring-white/20">
-                    {(() => {
-                      const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
-                      return opt?.icon || (t || '').charAt(0).toUpperCase();
-                    })()}
-                  </span>
-                  <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="text-xs">✕</button>
-                </div>
-              ))}
-            </div>
-          </div>
+          <select
+            className="bg-transparent text-sm text-gray-200 rounded-md px-2 py-1 focus:outline-none hover:bg-gray-700"
+            value={selectedTagFilter}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedTagFilter(val);
+              if (val && !tagFilters.includes(val)) {
+                setTagFilters([...tagFilters, val]);
+                setTimeout(() => setSelectedTagFilter(''), 0);
+              }
+            }}
+            title="Filter by tag"
+          >
+            <option value="">Tags…</option>
+            {tagOptions.map(opt => (
+              <option key={opt.label} value={opt.label}>
+                {`${opt.icon ? opt.icon + ' ' : ''}${opt.label}`}
+              </option>
+            ))}
+          </select>
         </div>
+        {tagFilters.length > 0 && (
+          <div className="mt-2 flex gap-2 flex-wrap">
+            {tagFilters.map(t => (
+              <div key={t} className="flex items-center gap-1 bg-gray-800/70 border border-gray-700 rounded-full px-2 py-0.5 text-xs text-gray-200">
+                <span className="w-5 h-5 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-[10px]">
+                  {(() => {
+                    const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
+                    return opt?.icon || (t || '').charAt(0).toUpperCase();
+                  })()}
+                </span>
+                <span className="pr-1">{t}</span>
+                <button onClick={() => setTagFilters(tagFilters.filter(x => x !== t))} className="hover:text-white" title="Remove">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Empty states */}

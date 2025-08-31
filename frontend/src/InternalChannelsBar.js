@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api from './api';
 
-export default function InternalChannelsBar({ channels = [], onSelectChannel, onSelectAgent, excludeAgent }) {
+export default function InternalChannelsBar({ channels = [], onSelectChannel, onSelectAgent, excludeAgent, compact = false }) {
   const [agents, setAgents] = useState([]);
   useEffect(() => {
     (async () => {
@@ -13,7 +13,7 @@ export default function InternalChannelsBar({ channels = [], onSelectChannel, on
   }, []);
 
   return (
-    <div className="flex gap-2 p-2 border-b border-gray-800 bg-gray-900 overflow-x-auto">
+    <div className={compact ? "flex gap-1 p-1 bg-gray-800/80 rounded-full overflow-x-auto" : "flex gap-2 p-2 border-b border-gray-800 bg-gray-900 overflow-x-auto"}>
       {agents
         .filter(a => {
           if (!excludeAgent) return true;
@@ -27,7 +27,7 @@ export default function InternalChannelsBar({ channels = [], onSelectChannel, on
           key={a.username}
           type="button"
           onClick={() => onSelectAgent && onSelectAgent(a.username)}
-          className="px-3 py-1 rounded-full bg-gray-800 hover:bg-gray-700 text-sm"
+          className={compact ? "px-2 py-0.5 rounded-full bg-gray-700 hover:bg-gray-600 text-xs" : "px-3 py-1 rounded-full bg-gray-800 hover:bg-gray-700 text-sm"}
           title={`DM @${a.name || a.username}`}
         >
           @{a.name || a.username}

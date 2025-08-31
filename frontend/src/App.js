@@ -273,12 +273,7 @@ export default function App() {
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
         />
         <div className="flex-1 flex flex-col">
-          <AgentHeaderBar
-            currentAgent={currentAgent}
-            onAgentChange={setCurrentAgent}
-            myAssignedOnly={myAssignedOnly}
-            onToggleMyAssigned={setMyAssignedOnly}
-          />
+          <AgentHeaderBar />
           {!agentInboxMode && (
             <ChatList
               conversations={conversations}
@@ -287,17 +282,14 @@ export default function App() {
               wsConnected={adminWsConnected}
               defaultAssignedFilter={myAssignedOnly && currentAgent ? currentAgent : 'all'}
               showArchive={showArchive}
+              currentAgent={currentAgent}
             />
           )}
         </div>
         {showInternalPanel && (
-          <div className="absolute left-16 top-0 bottom-0 w-64 bg-gray-900 border-r border-gray-800 overflow-y-auto z-20">
-            <div className="p-2 border-b border-gray-800 flex items-center justify-between">
-              <span className="text-sm text-gray-300">Internal</span>
-              <button className="text-gray-400 hover:text-white" onClick={() => setShowInternalPanel(false)} title="Close">✕</button>
-            </div>
+          <div className="absolute left-20 top-24 z-30" onMouseLeave={() => setShowInternalPanel(false)}>
             <InternalChannelsBar
-              onSelectChannel={(ch)=> { setActiveUser({ user_id: `team:${ch}`, name: `#${ch}` }); setShowInternalPanel(false); }}
+              compact
               onSelectAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
               excludeAgent={currentAgent}
             />
