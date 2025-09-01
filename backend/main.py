@@ -1775,6 +1775,27 @@ class MessageProcessor:
             print(f"Auto-reply failed: {_exc}")
 
     # ------------------------- auto-reply helpers -------------------------
+    def _extract_product_retailer_id(self, text: str) -> Optional[str]:
+        """Extract the last numeric product id from the user's text.
+
+        Priority:
+        - Explicit pattern like "ID: 123456789"
+        - Otherwise, last long digit sequence (>= 6 digits)
+        """
+        try:
+            if not text:
+                return None
+            # 1) Explicit label "ID: <digits>"
+            m = re.search(r"\bID\s*[:：]\s*(\d{6,})\b", text, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # 2) Any long digit sequences; pick the last one
+            candidates = re.findall(r"(\d{6,})", text)
+            if candidates:
+                return candidates[-1]
+        except Exception:
+            pass
+        return None
     def _normalize_for_match(self, text: str) -> list[str]:
         text_lc = (text or "").lower()
         # Replace non-alphanumerics with space and split
@@ -1829,6 +1850,39 @@ class MessageProcessor:
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
             return
+        # 1) Try explicit retailer_id extraction from text
+        retailer_id = self._extract_product_retailer_id(text)
+        if retailer_id:
+            try:
+                products = catalog_manager.get_cached_products()
+            except Exception:
+                products = []
+            if products:
+                matched = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id)), None)
+            else:
+                matched = None
+
+            if matched:
+                # Send interactive catalog item
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "catalog_item",
+                    "from_me": True,
+                    "product_retailer_id": str(retailer_id),
+                    "caption": matched.get("name") or "",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                # Then follow-up Arabic confirmation below the catalog item
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "text",
+                    "from_me": True,
+                    "message": "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج.",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                return
+
+        # 2) Fallback to name-based best match using score threshold
         product = self._best_catalog_match(text)
         if not product:
             return
