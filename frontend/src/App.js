@@ -270,7 +270,7 @@ export default function App() {
   return (
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
-      <div className="w-[340px] md:w-[380px] lg:w-[420px] xl:w-[460px] min-w-[340px] border-r border-gray-700 overflow-hidden flex relative z-30 bg-gray-900">
+      <div className="w-[40rem] min-w-[40rem] flex-shrink-0 overflow-hidden flex relative z-0 bg-gray-900">
         <MiniSidebar
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
@@ -278,7 +278,7 @@ export default function App() {
           onOpenSettings={() => setShowAdmin(true)}
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
         />
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
           {showInternalPanel && (
             <InternalChannelsBar
@@ -299,7 +299,7 @@ export default function App() {
         </div>
       </div>
       {/* MIDDLE: Chat window */}
-      <div className="flex-1 overflow-hidden relative z-0 min-w-0 xl:max-w-[900px] 2xl:max-w-[1024px]">
+      <div className="flex-1 overflow-hidden relative z-0 min-w-0">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
         <ChatWindow
           activeUser={activeUser}
@@ -311,7 +311,7 @@ export default function App() {
         />
       </div>
       {/* RIGHT: Shopify "contact info" panel, responsive (hidden on small/medium) */}
-      <div className="hidden lg:block lg:w-72 xl:w-80 border-l border-gray-800 bg-gray-900 overflow-y-auto">
+      <div className="hidden lg:block lg:w-80 lg:min-w-[18rem] lg:flex-shrink-0 border-l border-gray-700 bg-gray-900 overflow-y-auto">
         <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading Shopify panel…</div>}>
           <ShopifyIntegrationsPanel activeUser={activeUser} />
         </Suspense>
