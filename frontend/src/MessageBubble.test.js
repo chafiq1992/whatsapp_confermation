@@ -7,13 +7,12 @@ const MessageBubble = require('./MessageBubble').default;
 const { getSafeMediaUrl } = require('./MessageBubble');
 
 describe('getSafeMediaUrl', () => {
-  it('rewrites /app/ paths to /media/', () => {
-    expect(getSafeMediaUrl('/app/media/foo.ogg')).toBe('/media/foo.ogg');
-  });
-
-  it('prefixes relative paths with the API base URL', () => {
-    process.env.REACT_APP_API_BASE = 'https://api.example.com';
-    expect(getSafeMediaUrl('/media/foo.ogg')).toBe('https://api.example.com/media/foo.ogg');
+  it('returns only absolute or blob/data URLs', () => {
+    expect(getSafeMediaUrl('https://cdn.example.com/x.jpg')).toBe('https://cdn.example.com/x.jpg');
+    const blob = 'blob://local';
+    expect(getSafeMediaUrl(blob)).toBe(blob);
+    expect(getSafeMediaUrl('/app/media/foo.ogg')).toBe('');
+    expect(getSafeMediaUrl('/media/foo.ogg')).toBe('');
   });
 });
 

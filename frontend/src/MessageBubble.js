@@ -11,15 +11,11 @@ const ICONS = {
   failed:    <XCircle    size={15} className="text-red-500" />,
 };
 
-// Enhanced media URL utility with better error handling
+// Media URL utility: use only absolute or blob/data URLs; drop local fallback
 export function getSafeMediaUrl(raw) {
   if (!raw) return "";
   if (/^(https?:|blob:|data:)/i.test(raw)) return raw;
-  if (raw.startsWith("/app/")) {
-    raw = raw.replace(/^\/app\/(media\/)?/, "/media/");
-  }
-  const base = process.env.REACT_APP_API_BASE || "";
-  return `${base.replace(/\/$/, "")}/${raw.replace(/^\/+/, "")}`;
+  return "";
 }
 
 // Message status ticks renderer
@@ -34,13 +30,15 @@ function formatTime(ts) {
   if (!ts) return "";
   try {
     const date = new Date(ts);
-    return date.toLocaleTimeString('en-US', { 
-      hour12: false, 
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
+    return new Intl.DateTimeFormat('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Africa/Casablanca',
+    }).format(date);
   } catch {
-    return ts.length > 15 ? ts.slice(11, 16) : ts;
+    const s = String(ts);
+    return s.length > 15 ? s.slice(11, 16) : s;
   }
 }
 
@@ -76,20 +74,10 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const order = getOrderData();
   const isOrder = msg.type === "order" && order;
 
-  // Compute possible media URLs
+  // Compute media URL strictly from msg.url (GCS/absolute); no local fallback
   const primaryUrl = msg.url ? getSafeMediaUrl(msg.url) : "";
-  const localUrl =
-    typeof msg.message === "string" &&
-    msg.type !== "text" &&
-    msg.type !== "order" &&
-    !/^https?:\/\//i.test(msg.message)
-      ? getSafeMediaUrl(msg.message)
-      : "";
-
   const isAudio = msg.type === "audio";
-
-  // Best available URL for media
-  const mediaUrl = primaryUrl || localUrl;
+  const mediaUrl = primaryUrl;
   // Use backend proxy for audio to avoid CORS issues when drawing waveform
   const effectiveAudioUrl = isAudio
     ? (primaryUrl && /^https?:\/\//i.test(primaryUrl)
@@ -255,14 +243,14 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <img
         src={src}
         alt={alt}
-        className="rounded-xl mb-1 w-[250px] h-auto object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-800"
+        className="rounded-xl mb-1 w-[250px] h-auto object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
         style={{ aspectRatio: '4 / 3' }}
         onError={(e) => handleImageError(e)}
         loading="lazy"
         onClick={() => window.open(src, '_blank')}
       />
       {caption && (
-        <div className="text-xs mt-1 text-gray-200 bg-black bg-opacity-50 px-2 py-1 rounded backdrop-blur-sm">
+        <div className="text-xs mt-1 text-gray-700 bg-black/5 px-2 py-1 rounded">
           {caption}
         </div>
       )}
@@ -281,13 +269,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             <img
               src={imgSrc}
               alt={`Image ${idx + 1}`}
-              className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-800"
+              className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
               onError={(e) => handleImageError(e)}
               loading="lazy"
               onClick={() => window.open(imgSrc, '_blank')}
             />
             {imgCaption && (
-              <div className="text-xs mt-1 text-gray-200 bg-black bg-opacity-50 px-2 py-1 rounded backdrop-blur-sm">
+              <div className="text-xs mt-1 text-gray-700 bg-black/5 px-2 py-1 rounded">
                 {imgCaption}
               </div>
             )}
@@ -377,7 +365,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <video
         controls
         src={mediaUrl}
-        className="mb-1 max-w-[250px] rounded-xl"
+        className="mb-1 max-w-[250px] rounded-xl bg-gray-100"
         onError={() => setVideoError(true)}
         preload="metadata"
       >
@@ -577,8 +565,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   // Main component render
   if (isOrder) {
     return (
-      <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
-        <div className="max-w-[85%] px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-br from-yellow-50 to-orange-50 border-2 border-yellow-300">
+      <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
+        <div className="max-w-[85%] px-4 py-3 rounded-2xl shadow-lg bg-gradient-to-br from-yellow-50 to-orange-50 border border-yellow-200">
           {renderOrder()}
           <div className="flex items-center justify-end mt-3 pt-2 border-t border-yellow-200">
             <span className="text-xs text-gray-600">{formatTime(msg.timestamp)}</span>
@@ -589,12 +577,12 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }
 
   return (
-    <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-2 mb-1.5`}>
+    <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
       <div
-        className={`group relative max-w-[80%] px-3 py-1.5 rounded-2xl shadow-sm transition-colors ${
+        className={`group relative max-w-[80%] px-4 py-2 rounded-2xl shadow-sm transition-colors ${
           self 
-            ? "bg-[#004AAD] text-white rounded-br-none hover:bg-[#0756c1]" 
-            : "bg-gray-700 text-white rounded-bl-none hover:bg-gray-600"
+            ? "bg-[#e6f0ff] text-black rounded-br-none hover:bg-[#d8e8ff]" 
+            : "bg-white text-black rounded-bl-none hover:bg-gray-50 border border-gray-200"
         } text-[13px] leading-relaxed`}
       >
         

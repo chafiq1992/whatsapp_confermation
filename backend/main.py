@@ -4,7 +4,7 @@ import uuid
 import hashlib
 import secrets
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 import os
@@ -1352,7 +1352,7 @@ class MessageProcessor:
             or message_data.get("id")            # safety-net (sometimes they send id only)
             or f"temp_{uuid.uuid4().hex}"        # fall-back if neither exists
         )
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         
         # Create optimistic message object
         optimistic_message = {
@@ -2212,7 +2212,7 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
                 "emoji": emoji,
                 "action": action,
                 "from_me": True,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         }
         await connection_manager.send_to_user(user_id, event)
@@ -2690,7 +2690,7 @@ async def send_catalog_set_all_endpoint(
     job_id = str(uuid.uuid4())
     # Emit optimistic message immediately for instant UI feedback
     temp_id = f"temp_{uuid.uuid4().hex}"
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     optimistic_record = {
         "id": temp_id,
         "temp_id": temp_id,

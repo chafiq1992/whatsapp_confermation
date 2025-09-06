@@ -16,6 +16,16 @@ const WS_BASE =
   process.env.REACT_APP_WS_URL ||
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
+// Small debounce helper to limit rapid calls (e.g., typing indicator)
+function debounce(fn, wait) {
+  let t = null;
+  return function debounced(...args) {
+    const ctx = this;
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn.apply(ctx, args), wait);
+  };
+}
+
 const sortByTime = (list = []) => {
   // Normalize timestamps across types; treat naive ISO as UTC for consistency
   const toMs = (t) => {
@@ -60,42 +70,36 @@ function generateTempId() {
   return `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Your existing grouping function (unchanged)
+// Group consecutive images; support both url and message (blob) fields
 function groupConsecutiveImages(messages) {
   const grouped = [];
   let i = 0;
   while (i < messages.length) {
-    if (
-      messages[i].type === "image" &&
-      typeof messages[i].message === "string"
-    ) {
-      const group = [messages[i]];
+    const curr = messages[i];
+    const isImg = curr.type === 'image' && (typeof curr.url === 'string' || typeof curr.message === 'string');
+    if (isImg) {
+      const group = [curr];
       let j = i + 1;
-      while (
-        j < messages.length &&
-        messages[j].type === "image" &&
-        typeof messages[j].message === "string" &&
-        messages[j].from_me === messages[i].from_me
-      ) {
-        group.push(messages[j]);
+      while (j < messages.length) {
+        const next = messages[j];
+        const isNextImg = next.type === 'image' && (typeof next.url === 'string' || typeof next.message === 'string');
+        if (!isNextImg || next.from_me !== curr.from_me) break;
+        group.push(next);
         j++;
       }
       if (group.length > 1) {
         grouped.push({
           ...group[0],
-          message: group.map(imgMsg => ({
-            type: "image",
-            message: imgMsg.message,
-          })),
+          message: group.map(im => ({ type: 'image', message: im.url || im.message, caption: im.caption, price: im.price })),
         });
       } else {
-        grouped.push(messages[i]);
+        grouped.push(curr);
       }
       i = j;
-    } else {
-      grouped.push(messages[i]);
-      i++;
+      continue;
     }
+    grouped.push(curr);
+    i++;
   }
   return grouped;
 }
@@ -172,6 +176,15 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const typingTimeoutRef = useRef(null);
   const lastTypingSentRef = useRef(0);
+  const sendTypingFalseDebounced = useRef(
+    debounce(() => {
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'typing', is_typing: false }));
+        }
+      } catch {}
+    }, 1200)
+  );
   const [allowSmoothScroll, setAllowSmoothScroll] = useState(false);
   const hasInitialisedScrollRef = useRef(false);
 
@@ -635,11 +648,21 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     formData.append('files', file);
     formData.append('user_id', activeUser.user_id);
     formData.append('media_type', 'audio');
-    try {
+    const tryOnce = async () => {
       const res = await api.post(`${API_BASE}/send-media`, formData);
-      const waId = res?.data?.wa_message_id;
-      const serverUrl = res?.data?.url || res?.data?.file_path;
+      const first = Array.isArray(res?.data?.messages) ? res.data.messages[0] : null;
+      const serverUrl = (first && (first.media_url || first.result?.url)) || res?.data?.url || res?.data?.file_path;
+      const waId = first?.result?.wa_message_id || res?.data?.wa_message_id;
       setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(waId ? { id: waId } : {}), ...(serverUrl ? { url: serverUrl } : {}) } : m));
+      try { if (optimistic.url && optimistic.url.startsWith('blob:')) URL.revokeObjectURL(optimistic.url); } catch {}
+    };
+    try {
+      try {
+        await tryOnce();
+      } catch (e1) {
+        await new Promise(r => setTimeout(r, 800));
+        await tryOnce();
+      }
     } catch (err) {
       console.error("Audio upload error:", err);
       setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
@@ -759,19 +782,17 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         inputRef.current.style.height = `${next}px`;
       }
     } catch {}
-    // Send typing indicator (throttled)
+    // Send typing indicator (debounced stop + light throttle on start)
     try {
       const now = Date.now();
-      if (ws && ws.readyState === WebSocket.OPEN && now - lastTypingSentRef.current > 1500) {
+      if (ws && ws.readyState === WebSocket.OPEN && now - lastTypingSentRef.current > 1200) {
         ws.send(JSON.stringify({ type: 'typing', is_typing: true }));
         lastTypingSentRef.current = now;
       }
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => {
-        try {
-          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'typing', is_typing: false }));
-        } catch {}
-      }, 2000);
+        sendTypingFalseDebounced.current();
+      }, 200);
     } catch {}
   };
   const handleKeyPress = (e) => {
@@ -873,8 +894,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           status: 'sending',
           timestamp: new Date().toISOString(),
           client_ts: Date.now(),
-          // Use local blob URL so it renders instantly
-          message: imgObj.url,
+          // Use local blob URL in url field so renderer relies on single source
+          url: imgObj.url,
         };
         setMessages(prev => sortByTime([...prev, optimisticMsg]));
       } catch {}
@@ -896,23 +917,28 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           }
         });
         
-        // Ensure the response includes proper URL structure for MessageBubble
+        // Extract media URL from response (GCS url)
         setPendingImages(images => {
           let copy = [...images];
           if (!copy[idx]) return copy;
+          const first = Array.isArray(response?.data?.messages) ? response.data.messages[0] : null;
+          const finalUrl = (first && (first.media_url || first.result?.url)) || response.data?.url || response.data?.file_path;
           copy[idx] = { 
             ...copy[idx], 
             progress: 100, 
             status: "done",
-            // Add URL from response if available
-            url: response.data?.url || response.data?.file_path
+            // Replace with server URL if available
+            url: finalUrl || copy[idx].url,
           };
           return copy;
         });
         // Update the optimistic message with final URL and mark as sent
         try {
-          const finalUrl = response.data?.url || response.data?.file_path || '';
+          const first = Array.isArray(response?.data?.messages) ? response.data.messages[0] : null;
+          const finalUrl = (first && (first.media_url || first.result?.url)) || response.data?.url || response.data?.file_path || '';
+          const oldLocalUrl = imgObj.url;
           setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(finalUrl ? { url: finalUrl } : {}) } : m));
+          try { if (oldLocalUrl && oldLocalUrl.startsWith('blob:')) URL.revokeObjectURL(oldLocalUrl); } catch {}
         } catch {}
         
         resolve({ success: true, idx });

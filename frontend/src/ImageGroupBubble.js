@@ -3,9 +3,8 @@ import React, { useState, useCallback } from "react";
 // Copy this helper from your MessageBubble or utils
 function getSafeMediaUrl(raw) {
   if (!raw) return "";
-  if (/^https?:\/\//i.test(raw)) return raw;
-  const base = process.env.REACT_APP_API_BASE || "";
-  return `${base.replace(/\/$/, "")}/${raw.replace(/^\/+/, "")}`;
+  if (/^(https?:|blob:|data:)/i.test(raw)) return raw;
+  return "";
 }
 
 export default function ImageGroupBubble({ images = [] }) {

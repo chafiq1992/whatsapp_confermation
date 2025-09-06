@@ -29,7 +29,7 @@ const formatTime = (iso) => {
       ? "yesterday"
       : null;
 
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Casablanca' }).format(date);
   if (isSameDay) return time;
   if (isYesterday) return "Yesterday";
   return date.toLocaleDateString();
@@ -388,7 +388,7 @@ const ConversationRow = memo(function Row({
       data-row
       data-id={conv.user_id}
       onClick={() => onSelect(conv)}
-      className={`flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
+      className={`group flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
         selected ? "bg-[#004AAD] text-white" : ""
       }`}
     >
@@ -531,6 +531,31 @@ const ConversationRow = memo(function Row({
                   </div>
                 </div>
               )}
+            </div>
+            {/* Quick actions on hover */}
+            <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
+              <button
+                className="px-2 py-1 rounded bg-gray-700 text-white text-xs"
+                title={(conv.tags || []).includes('muted') ? 'Unmute' : 'Mute'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const current = Array.isArray(conv.tags) ? conv.tags : [];
+                  const muted = current.map(t => String(t).toLowerCase()).includes('muted');
+                  const next = muted ? current.filter(t => String(t).toLowerCase() !== 'muted') : [...current, 'muted'];
+                  (async () => { try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: next }); } catch(e) {} })();
+                }}
+              >{(conv.tags || []).map(t=>String(t).toLowerCase()).includes('muted') ? 'Unmute' : 'Mute'}</button>
+              <button
+                className="px-2 py-1 rounded bg-gray-700 text-white text-xs"
+                title={(conv.tags || []).some(t=>String(t).toLowerCase()==='done') ? 'Unarchive' : 'Archive'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const current = Array.isArray(conv.tags) ? conv.tags : [];
+                  const isDone = current.map(t => String(t).toLowerCase()).includes('done');
+                  const next = isDone ? current.filter(t => String(t).toLowerCase() !== 'done') : [...current, 'done'];
+                  (async () => { try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: next }); } catch(e) {} })();
+                }}
+              >{(conv.tags || []).some(t=>String(t).toLowerCase()==='done') ? 'Unarchive' : 'Archive'}</button>
             </div>
           </div>
         </div>
