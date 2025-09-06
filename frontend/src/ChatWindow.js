@@ -176,6 +176,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const typingTimeoutRef = useRef(null);
   const lastTypingSentRef = useRef(0);
+  const lastInputHeightRef = useRef(0);
   const sendTypingFalseDebounced = useRef(
     debounce(() => {
       try {
@@ -735,11 +736,16 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     const el = messagesEndRef.current;
     if (!el) return;
     let rafId = null;
+    const lastHeightRef = { current: 0 };
     const update = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        setListHeight(el.clientHeight || 0);
+        const h = el.clientHeight || 0;
+        if (Math.abs(h - lastHeightRef.current) > 2) {
+          lastHeightRef.current = h;
+          setListHeight(h);
+        }
       });
     };
     update();
@@ -807,9 +813,16 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     // Auto-expand textarea height
     try {
       if (inputRef.current) {
+        const prev = lastInputHeightRef.current || 0;
         inputRef.current.style.height = 'auto';
         const next = Math.min(160, inputRef.current.scrollHeight);
-        inputRef.current.style.height = `${next}px`;
+        if (Math.abs(next - prev) > 2) {
+          inputRef.current.style.height = `${next}px`;
+          lastInputHeightRef.current = next;
+        } else {
+          // restore previous to avoid tiny oscillations
+          if (prev) inputRef.current.style.height = `${prev}px`;
+        }
       }
     } catch {}
     // Send typing indicator (debounced stop + light throttle on start)
