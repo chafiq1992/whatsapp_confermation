@@ -189,6 +189,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [allowSmoothScroll, setAllowSmoothScroll] = useState(false);
   const hasInitialisedScrollRef = useRef(false);
   const resizeRafRef = useRef(null);
+  const lastVisibleStartIndexRef = useRef(0);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -695,8 +696,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   } = useAudioRecorder(activeUser?.user_id, handleAudioFile);
 
   useEffect(() => {
-    if (canvasRef.current) setCanvasRef(canvasRef.current);
-  }, [canvasRef.current, activeUser?.user_id]);
+    if (isRecording && canvasRef.current) setCanvasRef(canvasRef.current);
+  }, [isRecording]);
 
   const [preserveScroll, setPreserveScroll] = useState(false);
 
@@ -715,6 +716,46 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       listRef.current?.scrollToItem(childIndex, 'center');
     } catch {}
   };
+
+  // Stable callbacks to avoid re-rendering bubbles unnecessarily
+  const handleReply = useCallback((m) => setReplyTarget(m), []);
+  const handleReact = useCallback((m, emoji) => {
+    try {
+      const targetId = m.wa_message_id || m.id;
+      if (!targetId || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'react', target_wa_message_id: targetId, emoji }));
+    } catch {}
+  }, [ws]);
+  const handleForward = useCallback((forwardMsg) => {
+    const originalType = forwardMsg.type || 'text';
+    const isMedia = originalType === 'image' || originalType === 'audio' || originalType === 'video';
+    let messageValue = '';
+    let urlValue = '';
+    if (isMedia) {
+      urlValue = (forwardMsg.url && typeof forwardMsg.url === 'string') ? forwardMsg.url : '';
+      if (urlValue) {
+        messageValue = urlValue;
+      } else if (typeof forwardMsg.message === 'string') {
+        const raw = forwardMsg.message;
+        if (/^https?:\/\//i.test(raw)) {
+          messageValue = raw;
+        } else if (/^\/?media\//i.test(raw) || /^\/?app\/media\//i.test(raw) || raw.startsWith('/media/')) {
+          const base = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
+          messageValue = `${base}${raw.startsWith('/') ? '' : '/'}${raw.replace(/^\/app\//, '')}`;
+        } else {
+          messageValue = raw;
+        }
+      } else {
+        messageValue = forwardMsg.caption || '[media]';
+      }
+    } else {
+      messageValue = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[message]');
+    }
+    const payload = { message: messageValue, type: isMedia ? originalType : (originalType || 'text') };
+    if (isMedia && urlValue) payload.url = urlValue;
+    forwardPayloadRef.current = payload;
+    setForwardOpen(true);
+  }, []);
 
   useEffect(() => {
     if (preserveScroll) {
@@ -1214,12 +1255,16 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                   setPreserveScroll(true);
                   const loaded = await fetchMessages({ offset, append: true });
                   if (loaded && loaded.length) {
-                    try { listRef.current?.scrollToItem(loaded.length, 'start'); } catch {}
+                    try {
+                      const anchorIndex = (lastVisibleStartIndexRef.current || 0) + loaded.length;
+                      listRef.current?.scrollToItem(anchorIndex, 'start');
+                    } catch {}
                   }
                 })();
               }
             }}
             onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
+              lastVisibleStartIndexRef.current = visibleStartIndex;
               if (!hasInitialisedScrollRef.current && visibleStopIndex >= groupedMessages.length - 1) {
                 hasInitialisedScrollRef.current = true;
                 setTimeout(() => setAllowSmoothScroll(true), 0);
@@ -1232,6 +1277,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           >
             {({ index, style }) => {
               const msg = groupedMessages[index];
+              const isTextMsg = !!(msg && !msg.__separator && (msg.type === 'text' || msg.type === 'catalog_item' || msg.type === 'catalog_set'));
               const setRowRef = (el) => {
                 if (!el) return;
                 const h = el.getBoundingClientRect().height;
@@ -1269,7 +1315,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                         } catch { return false; }
                       })()}
                       catalogProducts={catalogProducts}
-                      highlightQuery={searchQuery}
+                      highlightQuery={isTextMsg ? searchQuery : ''}
                       quotedMessage={(function(){
                         try {
                           const qid = msg.reply_to;
@@ -1277,44 +1323,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                           return messages.find(m => (m.wa_message_id && m.wa_message_id === qid) || (m.id && m.id === qid)) || null;
                         } catch { return null; }
                       })()}
-                      onReply={(m)=> setReplyTarget(m)}
-                      onReact={(m, emoji)=>{
-                        try {
-                          const targetId = m.wa_message_id || m.id;
-                          if (!targetId || !ws || ws.readyState !== WebSocket.OPEN) return;
-                          ws.send(JSON.stringify({ type: 'react', target_wa_message_id: targetId, emoji }));
-                        } catch {}
-                      }}
-                      onForward={(forwardMsg)=>{
-                        const originalType = forwardMsg.type || 'text';
-                        const isMedia = originalType === 'image' || originalType === 'audio' || originalType === 'video';
-                        let messageValue = '';
-                        let urlValue = '';
-                        if (isMedia) {
-                          urlValue = (forwardMsg.url && typeof forwardMsg.url === 'string') ? forwardMsg.url : '';
-                          if (urlValue) {
-                            messageValue = urlValue;
-                          } else if (typeof forwardMsg.message === 'string') {
-                            const raw = forwardMsg.message;
-                            if (/^https?:\/\//i.test(raw)) {
-                              messageValue = raw;
-                            } else if (/^\/?media\//i.test(raw) || /^\/?app\/media\//i.test(raw) || raw.startsWith('/media/')) {
-                              const base = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
-                              messageValue = `${base}${raw.startsWith('/') ? '' : '/'}${raw.replace(/^\/app\//, '')}`;
-                            } else {
-                              messageValue = raw;
-                            }
-                          } else {
-                            messageValue = forwardMsg.caption || '[media]';
-                          }
-                        } else {
-                          messageValue = typeof forwardMsg.message === 'string' ? forwardMsg.message : (forwardMsg.caption || '[message]');
-                        }
-                        const payload = { message: messageValue, type: isMedia ? originalType : (originalType || 'text') };
-                        if (isMedia && urlValue) payload.url = urlValue;
-                        forwardPayloadRef.current = payload;
-                        setForwardOpen(true);
-                      }}
+                      onReply={handleReply}
+                      onReact={handleReact}
+                      onForward={handleForward}
                     />
                   </div>
                 </div>
