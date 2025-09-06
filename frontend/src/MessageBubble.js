@@ -142,6 +142,9 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     e.target.src = fallbackSrc;
     e.target.alt = "Image failed to load";
   };
+  const notifyResize = () => {
+    try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {}
+  };
 
   // WaveSurfer setup relying solely on msg.url
   useEffect(() => {
@@ -185,7 +188,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
         setAudioError(false);
 
-        wavesurfer.on("ready", () => setAudioError(false));
+        wavesurfer.on("ready", () => { setAudioError(false); try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {} });
         wavesurfer.on("finish", () => setPlaying(false));
         wavesurfer.on("error", (error) => {
           console.error("WaveSurfer error:", error);
@@ -246,6 +249,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         className="rounded-xl mb-1 w-[250px] h-auto object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
         style={{ aspectRatio: '4 / 3' }}
         onError={(e) => handleImageError(e)}
+        onLoad={notifyResize}
         loading="lazy"
         onClick={() => window.open(src, '_blank')}
       />
@@ -271,6 +275,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
               alt={`Image ${idx + 1}`}
               className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
               onError={(e) => handleImageError(e)}
+              onLoad={notifyResize}
               loading="lazy"
               onClick={() => window.open(imgSrc, '_blank')}
             />

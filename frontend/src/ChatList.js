@@ -71,6 +71,27 @@ function ChatList({
     setConversations(initialConversations);
   }, [initialConversations]);
 
+  // Live preview updates from ChatWindow
+  useEffect(() => {
+    const handler = (ev) => {
+      const d = ev.detail || {};
+      if (!d.user_id) return;
+      setConversations(prev => {
+        const list = Array.isArray(prev) ? [...prev] : [];
+        const idx = list.findIndex(c => c.user_id === d.user_id);
+        if (idx === -1) return prev;
+        const updated = { ...list[idx] };
+        if (d.last_message_type) updated.last_message_type = d.last_message_type;
+        if (d.last_message_time) updated.last_message_time = d.last_message_time;
+        if (typeof d.last_message === 'string' && d.last_message) updated.last_message = d.last_message;
+        list[idx] = updated;
+        return list;
+      });
+    };
+    window.addEventListener('conversation-preview', handler);
+    return () => window.removeEventListener('conversation-preview', handler);
+  }, []);
+
   useEffect(() => {
     activeUserRef.current = activeUser;
   }, [activeUser]);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, Suspense } from 'react';
+import React, { useEffect, useState, useRef, useCallback, Suspense, useMemo } from 'react';
 import api from './api';
 import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
@@ -187,6 +187,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   );
   const [allowSmoothScroll, setAllowSmoothScroll] = useState(false);
   const hasInitialisedScrollRef = useRef(false);
+  const resizeRafRef = useRef(null);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -213,7 +214,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     return result;
   };
 
-  const groupedMessages = withDateSeparators(groupConsecutiveImages(messages));
+  const groupedMessages = useMemo(() => withDateSeparators(groupConsecutiveImages(messages)), [messages]);
 
   const getItemKeyAtIndex = useCallback((index) => {
     const msg = groupedMessages[index];
@@ -373,6 +374,19 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     const newest = messages[messages.length - 1]?.timestamp;
     if (newest) lastTimestampRef.current = newest;
   }, [messages]);
+
+  // Broadcast latest message preview to ChatList when messages update
+  useEffect(() => {
+    try {
+      const uid = activeUser?.user_id;
+      if (!uid || messages.length === 0) return;
+      const last = messages[messages.length - 1];
+      const preview = typeof last.message === 'string' ? last.message : (last.caption || '');
+      const t = last.type || 'text';
+      const time = last.timestamp || new Date().toISOString();
+      window.dispatchEvent(new CustomEvent('conversation-preview', { detail: { user_id: uid, last_message: preview, last_message_type: t, last_message_time: time } }));
+    } catch {}
+  }, [messages, activeUser?.user_id]);
 
   // Also listen to admin-wide WebSocket for instant updates to active chat
   useEffect(() => {
@@ -736,6 +750,22 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       try { ro.disconnect(); } catch {}
     };
   }, [messagesEndRef.current]);
+
+  // Listen for row-resize events from media components and force re-measure
+  useEffect(() => {
+    const handler = () => {
+      if (!listRef.current) return;
+      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
+      resizeRafRef.current = requestAnimationFrame(() => {
+        try { listRef.current.resetAfterIndex(0, true); } catch {}
+      });
+    };
+    window.addEventListener('row-resize', handler);
+    return () => {
+      try { window.removeEventListener('row-resize', handler); } catch {}
+      try { if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current); } catch {}
+    };
+  }, []);
 
   // Persist messages to IndexedDB whenever they change
   useEffect(() => {
