@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
+import { useAudio } from "./AudioManager";
 import { Clock3, Check, CheckCheck, XCircle, Reply, Forward } from "lucide-react"; // 14 KB gzipped
 
 /* prettier, pixel-perfect WhatsApp ticks */
@@ -133,6 +134,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const [audioError, setAudioError] = useState(false);
   const [playbackRateIdx, setPlaybackRateIdx] = useState(0); // 0:1x, 1:1.5x, 2:2x
   const playbackRates = [1, 1.5, 2];
+  const { currentUrl, isPlaying, toggle: toggleGlobalAudio, cycleSpeed: cycleGlobalSpeed, playbackRate: globalRate } = useAudio();
 
   // Video player state and refs
   const [videoError, setVideoError] = useState(false);
@@ -233,27 +235,25 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
   // Toggle playback speed like WhatsApp Business (1x -> 1.5x -> 2x -> 1x)
   const handleToggleSpeed = () => {
+    // Keep local waveform in sync and also control global audio manager
     const nextIdx = (playbackRateIdx + 1) % playbackRates.length;
     setPlaybackRateIdx(nextIdx);
     const ws = wavesurferRef.current;
-    if (!ws) return;
-    try {
-      ws.setPlaybackRate(playbackRates[nextIdx], false);
-    } catch {}
+    if (ws) {
+      try { ws.setPlaybackRate(playbackRates[nextIdx], false); } catch {}
+    }
+    try { cycleGlobalSpeed(); } catch {}
   };
 
   // Audio play/pause handler with error handling
   const handlePlayPause = () => {
-    if (!wavesurferRef.current || audioError) return;
-    
+    if (audioError) return;
+    // Use global audio manager to persist playback across conversation changes
     try {
-      if (wavesurferRef.current.isPlaying()) {
-        wavesurferRef.current.pause();
-        setPlaying(false);
-      } else {
-        wavesurferRef.current.play();
-        setPlaying(true);
-      }
+      const url = effectiveAudioUrl || primaryUrl;
+      if (!url) return;
+      toggleGlobalAudio(url);
+      setPlaying((p) => !p);
     } catch (error) {
       console.error("Audio playback error:", error);
       setPlaying(false);
@@ -344,7 +344,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             className="mr-2 px-2 h-8 rounded text-xs bg-gray-600 hover:bg-gray-500"
             title="Playback speed"
           >
-            {`${playbackRates[playbackRateIdx]}x`}
+            {`${(globalRate || playbackRates[playbackRateIdx])}x`}
           </button>
         )}
         

@@ -67,6 +67,44 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     'Laâyoune-Sakia El Hamra',"Dakhla-Oued Ed-Dahab"
   ];
 
+  // Minimal city → province/zip mapping (extend as needed)
+  const CITY_LOOKUP = useMemo(() => ({
+    "casablanca": { province: "Casablanca-Settat", zip: "20000" },
+    "rabat": { province: "Rabat-Salé-Kénitra", zip: "10000" },
+    "marrakech": { province: "Marrakech-Safi", zip: "40000" },
+    "fes": { province: "Fès-Meknès", zip: "30000" },
+    "fès": { province: "Fès-Meknès", zip: "30000" },
+    "meknes": { province: "Fès-Meknès", zip: "50000" },
+    "meknès": { province: "Fès-Meknès", zip: "50000" },
+    "tanger": { province: "Tanger-Tétouan-Al Hoceïma", zip: "90000" },
+    "agadir": { province: "Souss-Massa", zip: "80000" },
+    "oujda": { province: "Oriental", zip: "60000" },
+    "beni mellal": { province: "Beni Mellal-Khénifra", zip: "23000" },
+    "tétouan": { province: "Tanger-Tétouan-Al Hoceïma", zip: "93000" },
+    "tetouan": { province: "Tanger-Tétouan-Al Hoceïma", zip: "93000" },
+    "laâyoune": { province: "Laâyoune-Sakia El Hamra", zip: "70000" },
+    "laayoune": { province: "Laâyoune-Sakia El Hamra", zip: "70000" },
+    "dakhla": { province: "Dakhla-Oued Ed-Dahab", zip: "73000" },
+    "safi": { province: "Marrakech-Safi", zip: "46000" },
+    "kénitra": { province: "Rabat-Salé-Kénitra", zip: "14000" },
+    "kenitra": { province: "Rabat-Salé-Kénitra", zip: "14000" },
+    "sale": { province: "Rabat-Salé-Kénitra", zip: "11000" },
+    "salé": { province: "Rabat-Salé-Kénitra", zip: "11000" },
+  }), []);
+
+  // Auto-fill province/zip when city changes
+  useEffect(() => {
+    const c = (orderData.city || "").trim().toLowerCase();
+    if (!c) return;
+    const match = CITY_LOOKUP[c];
+    if (!match) return;
+    setOrderData(d => ({
+      ...d,
+      province: match.province,
+      zip: match.zip,
+    }));
+  }, [orderData.city, CITY_LOOKUP]);
+
   // Fetch shipping methods on mount
   useEffect(() => {
     api.get(`${API_BASE}/shopify-shipping-options`)
@@ -1020,16 +1058,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               </button>
             </div>
             {/* Selected items table with images and pricing */}
-            <table className="w-full text-xs mt-2">
+            <div className="w-full overflow-x-auto mt-2">
+            <table className="text-xs min-w-[560px] table-fixed">
               <thead>
                 <tr>
-                  <th className="text-left">Item</th>
-                  <th>Variant</th>
-                  <th>Price</th>
-                  <th>Qty</th>
-                  <th>Discount</th>
-                  <th>Subtotal</th>
-                  <th>Remove</th>
+                  <th className="text-left w-[160px]">Item</th>
+                  <th className="w-[160px]">Variant</th>
+                  <th className="w-[80px]">Price</th>
+                  <th className="w-[70px]">Qty</th>
+                  <th className="w-[90px]">Discount</th>
+                  <th className="w-[90px]">Subtotal</th>
+                  <th className="w-[70px]">Remove</th>
                 </tr>
               </thead>
               <tbody>
@@ -1049,19 +1088,23 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                           <div className="w-10 h-10 rounded bg-gray-600 flex items-center justify-center">🛒</div>
                         )}
                         <div className="min-w-0">
-                          <div className="font-semibold truncate max-w-[140px]">{item.variant.product_title || "--"}</div>
+                          {/* Hide product title to avoid overflow; show compact details instead */}
+                          <div className="text-[11px] text-gray-300 truncate max-w-[120px]">ID: {String(item.variant.id).slice(-8)}</div>
+                          {item.variant.sku && (
+                            <div className="text-[11px] text-gray-400 truncate max-w-[120px]">SKU: {item.variant.sku}</div>
+                          )}
                         </div>
                       </div>
                     </td>
-                    <td>{item.variant.title}</td>
-                    <td className="text-center">{priceNum} MAD</td>
+                    <td className="truncate" title={item.variant.title}>{item.variant.title}</td>
+                    <td className="text-center whitespace-nowrap">{priceNum} MAD</td>
                     <td>
                       <input
                         type="number"
                         min="1"
                         value={item.quantity}
                         onChange={e => handleItemChange(idx, "quantity", Number(e.target.value))}
-                        className="w-12 bg-gray-800 text-white p-1"
+                        className="w-14 bg-gray-800 text-white p-1"
                       />
                     </td>
                     <td>
@@ -1070,11 +1113,11 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                         min="0"
                         value={item.discount}
                         onChange={e => handleItemChange(idx, "discount", Number(e.target.value))}
-                        className="w-12 bg-gray-800 text-white p-1"
+                        className="w-16 bg-gray-800 text-white p-1"
                         placeholder="MAD"
                       />
                     </td>
-                    <td className="text-center font-semibold">{subtotal} MAD</td>
+                    <td className="text-center font-semibold whitespace-nowrap">{subtotal} MAD</td>
                     <td>
                       <button
                         type="button"
@@ -1086,6 +1129,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 );})}
               </tbody>
             </table>
+            </div>
             {selectedItems.length > 0 && (
               <div className="mt-2 text-right font-bold text-sm">
                 {(() => {

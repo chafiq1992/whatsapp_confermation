@@ -7,6 +7,8 @@ import AgentHeaderBar from './AgentHeaderBar';
 import ChatWindow from './ChatWindow';
 import api from './api';
 import { loadConversations, saveConversations } from './chatStorage';
+import { AudioProvider } from './AudioManager';
+import GlobalAudioBar from './GlobalAudioBar';
 // Lazy load heavy panels (must be declared after all import declarations)
 const AdminDashboard = React.lazy(() => import('./AdminDashboard'));
 const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
@@ -268,6 +270,7 @@ export default function App() {
   };
 
   return (
+    <AudioProvider>
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
       <div className="w-[30rem] min-w-[30rem] flex-shrink-0 overflow-hidden flex relative z-0 bg-gray-900">
@@ -321,6 +324,8 @@ export default function App() {
           <AdminDashboard onClose={() => setShowAdmin(false)} />
         </Suspense>
       )}
+      <GlobalAudioBar />
     </div>
+    </AudioProvider>
   );
 }
