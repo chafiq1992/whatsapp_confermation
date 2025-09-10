@@ -131,6 +131,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const wavesurferRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [audioError, setAudioError] = useState(false);
+  const [playbackRateIdx, setPlaybackRateIdx] = useState(0); // 0:1x, 1:1.5x, 2:2x
+  const playbackRates = [1, 1.5, 2];
 
   // Video player state and refs
   const [videoError, setVideoError] = useState(false);
@@ -188,7 +190,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
         setAudioError(false);
 
-        wavesurfer.on("ready", () => { setAudioError(false); try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {} });
+        wavesurfer.on("ready", () => {
+          setAudioError(false);
+          try {
+            // Apply current playback rate on ready
+            const rate = playbackRates[playbackRateIdx] || 1;
+            try { wavesurfer.setPlaybackRate(rate, false); } catch {}
+            window.dispatchEvent(new CustomEvent('row-resize'));
+          } catch {}
+        });
         wavesurfer.on("finish", () => setPlaying(false));
         wavesurfer.on("error", (error) => {
           console.error("WaveSurfer error:", error);
@@ -220,6 +230,17 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       }
     };
   }, [primaryUrl, isAudio]);
+
+  // Toggle playback speed like WhatsApp Business (1x -> 1.5x -> 2x -> 1x)
+  const handleToggleSpeed = () => {
+    const nextIdx = (playbackRateIdx + 1) % playbackRates.length;
+    setPlaybackRateIdx(nextIdx);
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+    try {
+      ws.setPlaybackRate(playbackRates[nextIdx], false);
+    } catch {}
+  };
 
   // Audio play/pause handler with error handling
   const handlePlayPause = () => {
@@ -317,6 +338,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             </svg>
           )}
         </button>
+        {!audioError && (
+          <button
+            onClick={handleToggleSpeed}
+            className="mr-2 px-2 h-8 rounded text-xs bg-gray-600 hover:bg-gray-500"
+            title="Playback speed"
+          >
+            {`${playbackRates[playbackRateIdx]}x`}
+          </button>
+        )}
         
           {audioError ? (
             primaryUrl ? (

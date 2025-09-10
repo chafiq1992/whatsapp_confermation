@@ -21,13 +21,15 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    env_file:
+      - .env.local-cloudrun
     environment:
       # Point backend at the Redis container
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       # Optional: tweak WS pub/sub and rate limits via env or .env file
-      - ENABLE_WS_PUBSUB=1
-      - SEND_TEXT_PER_MIN=30
-      - SEND_MEDIA_PER_MIN=15
+      - ENABLE_WS_PUBSUB=${ENABLE_WS_PUBSUB:-1}
+      - SEND_TEXT_PER_MIN=${SEND_TEXT_PER_MIN:-30}
+      - SEND_MEDIA_PER_MIN=${SEND_MEDIA_PER_MIN:-15}
     ports:
       - "8080:8080"
     volumes:

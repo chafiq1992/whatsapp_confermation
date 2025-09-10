@@ -190,6 +190,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const hasInitialisedScrollRef = useRef(false);
   const resizeRafRef = useRef(null);
   const lastVisibleStartIndexRef = useRef(0);
+  // Throttle list height updates to avoid frequent re-mounts (prevents audio flicker while typing)
+  const layoutLastHeightRef = useRef(0);
+  const layoutLastUpdateTsRef = useRef(0);
 
   // Insert date separators like WhatsApp Business
   const formatDayLabel = (date) => {
@@ -777,26 +780,31 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     const el = messagesEndRef.current;
     if (!el) return;
     let rafId = null;
-    const lastHeightRef = { current: 0 };
     const update = () => {
       if (rafId) return;
       rafId = requestAnimationFrame(() => {
         rafId = null;
         const h = el.clientHeight || 0;
-        if (Math.abs(h - lastHeightRef.current) > 2) {
-          lastHeightRef.current = h;
+        const now = Date.now();
+        const diff = Math.abs(h - layoutLastHeightRef.current);
+        // Only update when height actually changes meaningfully and not more often than every 120ms
+        if (diff > 4 && (now - layoutLastUpdateTsRef.current > 120)) {
+          layoutLastHeightRef.current = h;
+          layoutLastUpdateTsRef.current = now;
           setListHeight(h);
         }
       });
     };
-    update();
+    // Initial measurement
+    layoutLastHeightRef.current = el.clientHeight || 0;
+    setListHeight(layoutLastHeightRef.current);
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => {
       try { if (rafId) cancelAnimationFrame(rafId); } catch {}
       try { ro.disconnect(); } catch {}
     };
-  }, [messagesEndRef.current]);
+  }, []);
 
   // Listen for row-resize events from media components and force re-measure
   useEffect(() => {
