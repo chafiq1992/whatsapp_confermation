@@ -605,6 +605,9 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
   const handleAddVariant = variant => {
     setSelectedItems(items => [...items, { variant, quantity: 1, discount: 0 }]);
+    // Clear search and hide dropdown after selecting a variant
+    setProductSearch("");
+    setProducts([]);
   };
 
   // Update line item

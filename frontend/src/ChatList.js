@@ -553,31 +553,7 @@ const ConversationRow = memo(function Row({
                 </div>
               )}
             </div>
-            {/* Quick actions on hover */}
-            <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
-              <button
-                className="px-2 py-1 rounded bg-gray-700 text-white text-xs"
-                title={(conv.tags || []).includes('muted') ? 'Unmute' : 'Mute'}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const current = Array.isArray(conv.tags) ? conv.tags : [];
-                  const muted = current.map(t => String(t).toLowerCase()).includes('muted');
-                  const next = muted ? current.filter(t => String(t).toLowerCase() !== 'muted') : [...current, 'muted'];
-                  (async () => { try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: next }); } catch(e) {} })();
-                }}
-              >{(conv.tags || []).map(t=>String(t).toLowerCase()).includes('muted') ? 'Unmute' : 'Mute'}</button>
-              <button
-                className="px-2 py-1 rounded bg-gray-700 text-white text-xs"
-                title={(conv.tags || []).some(t=>String(t).toLowerCase()==='done') ? 'Unarchive' : 'Archive'}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const current = Array.isArray(conv.tags) ? conv.tags : [];
-                  const isDone = current.map(t => String(t).toLowerCase()).includes('done');
-                  const next = isDone ? current.filter(t => String(t).toLowerCase() !== 'done') : [...current, 'done'];
-                  (async () => { try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: next }); } catch(e) {} })();
-                }}
-              >{(conv.tags || []).some(t=>String(t).toLowerCase()==='done') ? 'Unarchive' : 'Archive'}</button>
-            </div>
+            
           </div>
         </div>
       </div>

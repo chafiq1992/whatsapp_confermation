@@ -278,17 +278,13 @@ export default function App() {
           showArchive={showArchive}
           onSetShowArchive={setShowArchive}
           onToggleInternal={() => setShowInternalPanel((v) => !v)}
+          onSelectInternalAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
           onOpenSettings={() => setShowAdmin(true)}
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
         />
         <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
-          {showInternalPanel && (
-            <InternalChannelsBar
-              onSelectAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
-              excludeAgent={currentAgent}
-            />
-          )}
+          {/* InternalChannelsBar inline list removed in favor of dropdown on the sidebar icon */}
           <ChatList
             conversations={conversations}
             setActiveUser={setActiveUser}
