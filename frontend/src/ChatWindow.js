@@ -6,6 +6,7 @@ import useAudioRecorder from './useAudioRecorder';
 import { VariableSizeList as List } from 'react-window';
 import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile } from 'react-icons/hi2';
 import { saveMessages, loadMessages } from './chatStorage';
+import Composer from './Composer';
 const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
 const MemoMessageBubble = React.memo(MessageBubble);
@@ -164,19 +165,20 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const MAX_CONCURRENT_UPLOADS = 3;
 
   const fileInputRef = useRef();
-  const inputRef = useRef();
   const messagesEndRef = useRef(null);
   const listRef = useRef(null);
+  const listOuterRef = useRef(null);
   const itemHeights = useRef({});
   const itemHeightsByKey = useRef({});
   const [listHeight, setListHeight] = useState(0);
   const canvasRef = useRef();
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const isNearBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const typingTimeoutRef = useRef(null);
   const lastTypingSentRef = useRef(0);
-  const lastInputHeightRef = useRef(0);
   const sendTypingFalseDebounced = useRef(
     debounce(() => {
       try {
@@ -703,6 +705,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   }, [isRecording]);
 
   const [preserveScroll, setPreserveScroll] = useState(false);
+  const NEAR_BOTTOM_PX = 120;
 
   const scrollToBottom = () => {
     try {
@@ -767,7 +770,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     }
     // Only autoscroll if user is already at bottom or the newest message is from self
     const newest = messages[messages.length - 1];
-    const shouldStickToBottom = atBottomRef.current || (newest && newest.from_me);
+    const shouldStickToBottom = isNearBottomRef.current || (newest && newest.from_me);
     if (shouldStickToBottom) {
       scrollToBottom();
       setShowJumpToLatest(false);
@@ -1241,6 +1244,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           listHeight > 0 && (
           <List
             ref={listRef}
+            outerRef={listOuterRef}
             height={listHeight}
             width={'100%'}
             itemCount={groupedMessages.length}
@@ -1258,18 +1262,33 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
             onScroll={({ scrollOffset }) => {
               if (!hasInitialisedScrollRef.current) return;
-              if (scrollOffset <= 100 && hasMore && !loadingOlder) {
-                (async () => {
-                  setPreserveScroll(true);
-                  const loaded = await fetchMessages({ offset, append: true });
-                  if (loaded && loaded.length) {
-                    try {
-                      const anchorIndex = (lastVisibleStartIndexRef.current || 0) + loaded.length;
-                      listRef.current?.scrollToItem(anchorIndex, 'start');
-                    } catch {}
+              try {
+                const outer = listOuterRef.current;
+                if (outer) {
+                  const distanceFromBottom = (outer.scrollHeight - (outer.scrollTop + outer.clientHeight));
+                  const nearBottom = distanceFromBottom <= NEAR_BOTTOM_PX;
+                  if (isNearBottomRef.current !== nearBottom) {
+                    isNearBottomRef.current = nearBottom;
+                    setIsNearBottom(nearBottom);
+                    if (nearBottom) setShowJumpToLatest(false);
                   }
-                })();
-              }
+                  // Near top: prepend older messages
+                  if (outer.scrollTop <= NEAR_BOTTOM_PX && hasMore && !loadingOlder) {
+                    (async () => {
+                      setPreserveScroll(true);
+                      const prevHeight = outer.scrollHeight;
+                      const prevTop = outer.scrollTop;
+                      const loaded = await fetchMessages({ offset, append: true });
+                      try {
+                        requestAnimationFrame(() => {
+                          const newHeight = outer.scrollHeight;
+                          outer.scrollTop = prevTop + (newHeight - prevHeight);
+                        });
+                      } catch {}
+                    })();
+                  }
+                }
+              } catch {}
             }}
             onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
               lastVisibleStartIndexRef.current = visibleStartIndex;
@@ -1280,7 +1299,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
               setAtBottom(isAtBottom);
               atBottomRef.current = isAtBottom;
-              if (isAtBottom) setShowJumpToLatest(false);
+              if (isAtBottom) {
+                isNearBottomRef.current = true;
+                setIsNearBottom(true);
+                setShowJumpToLatest(false);
+              }
             }}
           >
             {({ index, style }) => {
@@ -1354,11 +1377,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       
       {activeUser && (
         <div className="p-2 border-t border-gray-700 bg-gray-800 flex flex-col space-y-2 relative">
-          {showJumpToLatest && (
+          {showJumpToLatest && !isNearBottom && (
             <div className="absolute -top-8 left-0 right-0 flex justify-center" aria-live="polite">
               <button
                 className="px-3 py-1 rounded-full bg-blue-600 text-white shadow hover:bg-blue-500"
-                onClick={() => { scrollToBottom(); setShowJumpToLatest(false); }}
+                onClick={() => { scrollToBottom(); setShowJumpToLatest(false); setIsNearBottom(true); isNearBottomRef.current = true; }}
                 title="Jump to latest messages"
               >
                 New messages ↓
@@ -1390,90 +1413,72 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               >Cancel</button>
             </div>
           )}
-          {isRecording && (
-            <div className="bg-black p-2 rounded text-white flex items-center justify-between">
-              <span className="text-green-400">🎙️ Recording... {formatTime(recordingTime)}</span>
-              <canvas ref={canvasRef} width={200} height={40} className="mx-2 bg-gray-900 rounded" />
-              <button
-                onClick={stopRecording}
-                className="bg-green-600 px-3 py-1 rounded text-white"
-              >
-                ✅ Send
-              </button>
-              <button
-                onClick={cancelRecording}
-                className="bg-red-600 px-3 py-1 rounded text-white ml-2"
-              >
-                ❌ Cancel
-              </button>
-            </div>
-          )}
-          {showEmojiPicker && (
-            <div className="absolute bottom-16 left-2 z-10 bg-white rounded shadow">
-              <Suspense fallback={<div className="p-2 text-sm">Loading…</div>}>
-                <EmojiPicker onEmojiClick={emojiData => setText((prev) => prev + emojiData.emoji)} />
-              </Suspense>
-            </div>
-          )}
-          <div className="flex items-center">
-            <div className="flex items-center gap-2 flex-1 bg-gray-700 rounded-full px-3 py-2">
-              <button
-                onClick={() => setShowEmojiPicker((prev) => !prev)}
-                className="text-[#5AA0FF] hover:opacity-90"
-                disabled={isRecording}
-                title="Emoji"
-              >
-                <HiFaceSmile size={20} />
-              </button>
-              <textarea
-                ref={inputRef}
-                className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none resize-none leading-5 max-h-40"
-                value={text}
-                onChange={handleTextChange}
-                onKeyDown={handleKeyPress}
-                placeholder="Type a message"
-                disabled={isRecording}
-                rows={1}
-                aria-label="Message input"
-              />
-              {!isRecording && (
-                <>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    style={{ display: "none" }}
-                    ref={fileInputRef}
-                    onChange={handleFileInputChange}
-                  />
-                  <button
-                    className="text-[#5AA0FF] hover:opacity-90"
-                    onClick={() => fileInputRef.current.click()}
-                    disabled={isUploading}
-                    title="Attach images"
-                    tabIndex={-1}
-                  >
-                    <HiPaperClip size={20} />
-                  </button>
-                  <button
-                    onClick={startRecording}
-                    className="text-[#5AA0FF] hover:opacity-90"
-                    title="Record audio"
-                  >
-                    <HiMicrophone size={20} />
-                  </button>
-                </>
-              )}
-              <button
-                onClick={sendMessage}
-                className="ml-1 text-[#5AA0FF] hover:opacity-90 disabled:opacity-40"
-                disabled={isRecording || !text.trim()}
-                title="Send"
-              >
-                <HiPaperAirplane size={20} />
-              </button>
-            </div>
-          </div>
+          <Composer
+            isRecording={isRecording}
+            recordingTime={recordingTime}
+            startRecording={startRecording}
+            stopRecording={stopRecording}
+            cancelRecording={cancelRecording}
+            canvasRef={canvasRef}
+            onSendText={(val) => {
+              if (!val || !val.trim()) return;
+              const prev = val;
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                sendMessageViaWebSocket({ message: prev, type: 'text' });
+              } else {
+                (async () => {
+                  const temp_id = generateTempId();
+                  const optimistic = {
+                    id: temp_id,
+                    temp_id,
+                    user_id: activeUser.user_id,
+                    message: prev,
+                    type: 'text',
+                    from_me: true,
+                    status: 'sending',
+                    timestamp: new Date().toISOString(),
+                    client_ts: Date.now(),
+                  };
+                  if (replyTarget && (replyTarget.wa_message_id || replyTarget.id)) {
+                    optimistic.reply_to = replyTarget.wa_message_id || replyTarget.id;
+                  }
+                  setMessages(p => sortByTime([...p, optimistic]));
+                  try {
+                    const res = await api.post(`${API_BASE}/send-message`, {
+                      user_id: activeUser.user_id,
+                      type: 'text',
+                      message: prev,
+                      from_me: true,
+                      ...(optimistic.reply_to ? { reply_to: optimistic.reply_to } : {})
+                    });
+                    setMessages(p => p.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) } : m));
+                  } catch (err) {
+                    setMessages(p => p.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
+                  }
+                })();
+              }
+            }}
+            onTypingStart={() => {
+              try {
+                const now = Date.now();
+                if (ws && ws.readyState === WebSocket.OPEN && now - lastTypingSentRef.current > 1200) {
+                  ws.send(JSON.stringify({ type: 'typing', is_typing: true }));
+                  lastTypingSentRef.current = now;
+                }
+              } catch {}
+            }}
+            onTypingStop={() => {
+              try { sendTypingFalseDebounced.current(); } catch {}
+            }}
+            onClickAttach={() => { try { fileInputRef.current?.click(); } catch {} }}
+            onFileInputChange={handleFileInputChange}
+            fileInputRef={fileInputRef}
+            isUploading={isUploading}
+            pendingImages={pendingImages}
+            removePendingImage={removePendingImage}
+            sendPendingImages={sendPendingImages}
+            clearPendingImages={clearPendingImages}
+          />
         </div>
       )}
       
