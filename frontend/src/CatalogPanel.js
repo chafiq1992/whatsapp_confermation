@@ -31,6 +31,8 @@ export default function CatalogPanel({
 
   // Pending ops indicator (for optimistic sends)
   const [pendingOperations, setPendingOperations] = useState(new Set());
+  // Outbox for queued sends when WS is unavailable
+  const [sendQueue, setSendQueue] = useState([]);
 
   // Modal state (grid popup)
   const [modalOpen, setModalOpen] = useState(false);
@@ -164,38 +166,78 @@ export default function CatalogPanel({
 
   // Send optimistic message via WebSocket
   const sendOptimisticMessage = useCallback((messageData) => {
-    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-      console.error('WebSocket not connected');
-      return null;
-    }
-
     const tempId = generateTempId();
-    const optimisticMessage = {
+    const payload = {
       id: tempId,
+      temp_id: tempId,
       user_id: activeUser.user_id,
       from_me: true,
       status: 'sending',
       timestamp: new Date().toISOString(),
-      temp_id: tempId,
-      ...messageData
+      ...messageData,
     };
 
-    // Send via WebSocket for instant UI update
-    websocket.send(JSON.stringify({
-      type: 'send_message',
-      data: optimisticMessage
-    }));
-
-    // Track as pending
+    // Notify UI immediately
     setPendingOperations(prev => new Set([...prev, tempId]));
+    if (onMessageSent) onMessageSent(payload);
 
-    // Notify parent about optimistic message
-    if (onMessageSent) {
-      onMessageSent(optimisticMessage);
+    // Try WS first; if not available, fall back to HTTP and queue for WS flush later
+    const wsOpen = websocket && websocket.readyState === WebSocket.OPEN;
+    if (wsOpen) {
+      try {
+        websocket.send(JSON.stringify({ type: 'send_message', data: payload }));
+      } catch (e) {
+        // If WS send fails, enqueue and try HTTP best-effort
+        setSendQueue(q => [...q, payload]);
+        try {
+          api.post(`${API_BASE}/send-message`, {
+            user_id: activeUser.user_id,
+            type: payload.type,
+            message: payload.message,
+            ...(payload.url ? { url: payload.url } : {}),
+            ...(payload.caption ? { caption: payload.caption } : {}),
+            ...(payload.product_retailer_id ? { product_retailer_id: String(payload.product_retailer_id) } : {}),
+            temp_id: tempId,
+          }).catch(() => {});
+        } catch {}
+      }
+    } else {
+      // Queue for WS flush and attempt HTTP send in the background
+      setSendQueue(q => [...q, payload]);
+      try {
+        api.post(`${API_BASE}/send-message`, {
+          user_id: activeUser.user_id,
+          type: payload.type,
+          message: payload.message,
+          ...(payload.url ? { url: payload.url } : {}),
+          ...(payload.caption ? { caption: payload.caption } : {}),
+          ...(payload.product_retailer_id ? { product_retailer_id: String(payload.product_retailer_id) } : {}),
+          temp_id: tempId,
+        }).catch(() => {});
+      } catch {}
     }
 
     return tempId;
   }, [websocket, activeUser?.user_id, onMessageSent]);
+
+  // Flush queued messages when WebSocket reconnects
+  useEffect(() => {
+    if (!websocket) return;
+    const handleOpen = () => {
+      setSendQueue(q => {
+        try {
+          q.forEach(item => {
+            try { websocket.send(JSON.stringify({ type: 'send_message', data: item })); } catch {}
+          });
+        } catch {}
+        return [];
+      });
+    };
+    websocket.addEventListener('open', handleOpen);
+    return () => {
+      try { websocket.removeEventListener('open', handleOpen); } catch {}
+    };
+  }, [websocket]);
 
   // Send a single image (direct link) via WebSocket
   const sendImageUrl = (url, caption = "") => {
@@ -550,12 +592,18 @@ export default function CatalogPanel({
                                   alt={p.name}
                                   className="w-full h-32 object-cover"
                                   loading="lazy"
+                                  decoding="async"
                                   onError={(e) => {
                                     const el = e.currentTarget;
-                                    if (el.dataset.fallback === '1') return;
-                                    el.dataset.fallback = '1';
-                                    const original = el.getAttribute('data-src') || el.src;
-                                    el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}`;
+                                    const step = Number(el.dataset.fbstep || '0');
+                                    if (step === 0) {
+                                      el.dataset.fbstep = '1';
+                                      const original = el.getAttribute('data-src') || el.src;
+                                      el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}`;
+                                    } else if (step === 1) {
+                                      el.dataset.fbstep = '2';
+                                      el.src = '/broken-image.png';
+                                    }
                                   }}
                                 />
                               ) : (
@@ -567,8 +615,7 @@ export default function CatalogPanel({
                               <div className="text-xs text-gray-700 truncate pr-2" title={p.name}>{p.name}</div>
                               <button
                                 type="button"
-                                className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                                disabled={!isWebSocketConnected}
+                                className="text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700"
                                 onClick={() => { sendInteractiveProduct(p); setModalOpen(false); }}
                                 title="Send as catalog product"
                               >
