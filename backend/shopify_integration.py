@@ -482,6 +482,13 @@ async def create_shopify_order(data: dict = Body(...)):
         "name": data.get("name", ""),
         "phone": normalize_phone(data.get("phone", "")),
     }
+    # Helper to ensure 2-decimal string for amounts
+    def _money2(value: float | int | str) -> str:
+        try:
+            return f"{float(value):.2f}"
+        except Exception:
+            return "0.00"
+
     draft_order_payload = {
         "draft_order": {
             "line_items": [
@@ -491,9 +498,11 @@ async def create_shopify_order(data: dict = Body(...)):
                     **(
                         {
                             "applied_discount": {
-                                "amount": str(item.get("discount", 0)),
+                                # Shopify accepts amount (fixed) or percentage. Use fixed amount rounded to 2dp.
+                                "value": _money2(item.get("discount", 0)),
                                 "value_type": "fixed_amount",
-                                "title": "Item discount"
+                                "amount": _money2(item.get("discount", 0)),
+                                "title": "Item discount",
                             }
                         } if float(item.get("discount", 0)) > 0 else {}
                     )

@@ -4,6 +4,74 @@ import api from "./api";
 import { saveCart, loadCart } from "./chatStorage";
 import html2canvas from "html2canvas";
 
+// Lightweight confetti (no dependency) using canvas burst
+function fireConfettiBurst() {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.style.position = 'fixed';
+    canvas.style.left = '0';
+    canvas.style.top = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = '9999';
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const resize = () => {
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+    };
+    resize();
+    const onResize = () => resize();
+    window.addEventListener('resize', onResize);
+
+    const colors = ['#26ccff', '#a25afd', '#ff5e7e', '#88ff5a', '#fcff42', '#ffa62d', '#ff36ff'];
+    const pieces = [];
+    const count = Math.min(180, Math.floor((window.innerWidth + window.innerHeight) / 8));
+    for (let i = 0; i < count; i++) {
+      pieces.push({
+        x: (Math.random() * canvas.width),
+        y: -Math.random() * canvas.height * 0.2,
+        r: 3 + Math.random() * 6,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        vy: 2 + Math.random() * 3,
+        vx: (Math.random() - 0.5) * 4,
+        rot: Math.random() * Math.PI,
+        vr: (Math.random() - 0.5) * 0.3,
+      });
+    }
+
+    let running = true;
+    const start = performance.now();
+    function tick(t) {
+      if (!running) return;
+      const elapsed = t - start;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const p of pieces) {
+        p.vy += 0.03; // gravity
+        p.x += p.vx * dpr;
+        p.y += p.vy * dpr;
+        p.rot += p.vr;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.r, -p.r, p.r * 2, p.r * 2);
+        ctx.restore();
+      }
+      if (elapsed < 1700) {
+        requestAnimationFrame(tick);
+      } else {
+        running = false;
+        window.removeEventListener('resize', onResize);
+        document.body.removeChild(canvas);
+      }
+    }
+    requestAnimationFrame(tick);
+  } catch {}
+}
+
 export default function ShopifyIntegrationsPanel({ activeUser }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
 
@@ -542,7 +610,20 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   // Update line item
   const handleItemChange = (idx, field, value) => {
     setSelectedItems(items =>
-      items.map((item, i) => i === idx ? { ...item, [field]: value } : item)
+      items.map((item, i) => {
+        if (i !== idx) return item;
+        let next = value;
+        if (field === "quantity") {
+          const num = Number.isFinite(Number(value)) ? Math.max(1, Math.floor(Number(value))) : 1;
+          next = num;
+        } else if (field === "discount") {
+          const num = Number(value);
+          // Allow decimals; clamp to >= 0 and round to 2dp to avoid 99.99000000000001
+          const clamped = Number.isFinite(num) ? Math.max(0, num) : 0;
+          next = Math.round(clamped * 100) / 100;
+        }
+        return { ...item, [field]: next };
+      })
     );
   };
 
@@ -606,7 +687,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         variant_id: item.variant.id,
         title: item.variant.title,
         quantity: Number(item.quantity) || 1,
-        discount: Number(item.discount) || 0,
+        discount: Math.round((Number(item.discount) || 0) * 100) / 100,
       })),
       delivery: deliveryOption,
       payment_term: paymentTerm,
@@ -623,6 +704,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       setErrorMsg("");
       setLastResult(res?.data || null);
       alert("Order created successfully!");
+      fireConfettiBurst();
       // Generate the label and send it as image to the customer (best-effort)
       await generateAndSendOrderLabel(res?.data);
     } catch (e) {
@@ -1097,7 +1179,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                       </div>
                     </td>
                     <td className="truncate" title={item.variant.title}>{item.variant.title}</td>
-                    <td className="text-center whitespace-nowrap">{priceNum} MAD</td>
+                    <td className="text-center whitespace-nowrap">{priceNum.toFixed(2)} MAD</td>
                     <td>
                       <input
                         type="number"
@@ -1111,13 +1193,14 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                       <input
                         type="number"
                         min="0"
+                        step="0.01"
                         value={item.discount}
                         onChange={e => handleItemChange(idx, "discount", Number(e.target.value))}
                         className="w-16 bg-gray-800 text-white p-1"
                         placeholder="MAD"
                       />
                     </td>
-                    <td className="text-center font-semibold whitespace-nowrap">{subtotal} MAD</td>
+                    <td className="text-center font-semibold whitespace-nowrap">{subtotal.toFixed(2)} MAD</td>
                     <td>
                       <button
                         type="button"
@@ -1133,12 +1216,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             {selectedItems.length > 0 && (
               <div className="mt-2 text-right font-bold text-sm">
                 {(() => {
-                  const total = selectedItems.reduce((sum, item) => {
+                  const totalRaw = selectedItems.reduce((sum, item) => {
                     const p = Number(item.variant.price || 0);
                     const q = Number(item.quantity || 1);
                     const d = Number(item.discount || 0);
                     return sum + Math.max(0, p * q - d);
                   }, 0);
+                  const total = (Math.round(totalRaw * 100) / 100).toFixed(2);
                   return <span>Total: {total} MAD</span>;
                 })()}
               </div>
