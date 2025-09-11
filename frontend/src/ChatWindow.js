@@ -4,10 +4,8 @@ import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
 import useAudioRecorder from './useAudioRecorder';
 import { VariableSizeList as List } from 'react-window';
-import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile } from 'react-icons/hi2';
 import { saveMessages, loadMessages } from './chatStorage';
 import Composer from './Composer';
-const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
 const MemoMessageBubble = React.memo(MessageBubble);
 
@@ -58,12 +56,7 @@ const sortByTime = (list = []) => {
   });
 };
 
-// Helper: format seconds as mm:ss for audio recording timer
-function formatTime(sec) {
-  const m = String(Math.floor(sec / 60)).padStart(2, '0');
-  const s = String(sec % 60).padStart(2, '0');
-  return `${m}:${s}`;
-}
+//
 
 
 // Generate temporary message ID for optimistic UI
@@ -110,11 +103,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHitIndexes, setSearchHitIndexes] = useState([]);
   const [activeHitIdx, setActiveHitIdx] = useState(-1);
-  const [text, setText] = useState("");
   const [pendingQueues, setPendingQueues] = useState({});
   const [sendingQueues, setSendingQueues] = useState({});
   const [unreadSeparatorIndex, setUnreadSeparatorIndex] = useState(null);
-  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [replyTarget, setReplyTarget] = useState(null);
   const [catalogProducts, setCatalogProducts] = useState({});
   const [isTypingOther, setIsTypingOther] = useState(false);
@@ -594,57 +585,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       });
     }
   };
-  // Send text message with optimistic UI
-  const sendMessage = async () => {
-    if (!text.trim()) return;
-    
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      // Use WebSocket with optimistic UI
-      sendMessageViaWebSocket({
-        message: text,
-        type: 'text'
-      });
-      setText('');
-      setShowEmojiPicker(false);
-      inputRef.current?.focus();
-    } else {
-      // Fallback to HTTP with optimistic UI as well
-      const temp_id = generateTempId();
-      const optimistic = {
-        id: temp_id,
-        temp_id,
-        user_id: activeUser.user_id,
-        message: text,
-        type: 'text',
-        from_me: true,
-        status: 'sending',
-        timestamp: new Date().toISOString(),
-        client_ts: Date.now(),
-      };
-      if (replyTarget && (replyTarget.wa_message_id || replyTarget.id)) {
-        optimistic.reply_to = replyTarget.wa_message_id || replyTarget.id;
-      }
-      setMessages(prev => sortByTime([...prev, optimistic]));
-      const toSend = text;
-      setText('');
-      setShowEmojiPicker(false);
-      inputRef.current?.focus();
-      try {
-        const res = await api.post(`${API_BASE}/send-message`, {
-          user_id: activeUser.user_id,
-          type: 'text',
-          message: toSend,
-          from_me: true,
-          ...(optimistic.reply_to ? { reply_to: optimistic.reply_to } : {})
-        });
-        setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) } : m));
-      } catch (err) {
-        console.error("Failed to send message:", err);
-        setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
-      }
-      setReplyTarget(null);
-    }
-  };
+  // (Text sending handled by Composer via onSendText)
 
   // Audio recording handlers
   const handleAudioFile = async (file) => {
@@ -859,40 +800,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     }
   }, [messages, activeUser?.user_id, ws]);
 
-  const handleTextChange = (e) => {
-    const val = e.target.value;
-    setText(val);
-    // Auto-expand textarea height
-    try {
-      if (inputRef.current) {
-        const prev = lastInputHeightRef.current || 0;
-        inputRef.current.style.height = 'auto';
-        const next = Math.min(160, inputRef.current.scrollHeight);
-        if (Math.abs(next - prev) > 2) {
-          inputRef.current.style.height = `${next}px`;
-          lastInputHeightRef.current = next;
-        } else {
-          // restore previous to avoid tiny oscillations
-          if (prev) inputRef.current.style.height = `${prev}px`;
-        }
-      }
-    } catch {}
-    // Send typing indicator (debounced stop + light throttle on start)
-    try {
-      const now = Date.now();
-      if (ws && ws.readyState === WebSocket.OPEN && now - lastTypingSentRef.current > 1200) {
-        ws.send(JSON.stringify({ type: 'typing', is_typing: true }));
-        lastTypingSentRef.current = now;
-      }
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => {
-        sendTypingFalseDebounced.current();
-      }, 200);
-    } catch {}
-  };
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter') sendMessage();
-  };
+  // (Composer handles typing events and textarea behaviour)
 
   // Listen to forwarded messages and open a simple picker UI
   useEffect(() => {
