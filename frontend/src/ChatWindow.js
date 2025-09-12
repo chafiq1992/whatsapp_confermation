@@ -1168,34 +1168,35 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const key = getItemKeyAtIndex(index);
               return itemHeightsByKey.current[key] || 72;
             }}
-            className={`will-change-transform`}
+            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
             onScroll={({ scrollOffset }) => {
-              if (!hasInitialisedScrollRef.current) return;
               try {
                 const outer = listOuterRef.current;
-                if (outer) {
-                  const distanceFromBottom = (outer.scrollHeight - (outer.scrollTop + outer.clientHeight));
-                  const nearBottom = distanceFromBottom <= NEAR_BOTTOM_PX;
+                if (!outer) return;
+                const distanceFromBottom = (outer.scrollHeight - (outer.scrollTop + outer.clientHeight));
+                const nearBottom = distanceFromBottom <= NEAR_BOTTOM_PX;
+                // Only update near-bottom UI after initialisation, but allow top-load anytime
+                if (hasInitialisedScrollRef.current) {
                   if (isNearBottomRef.current !== nearBottom) {
                     isNearBottomRef.current = nearBottom;
                     setIsNearBottom(nearBottom);
                     if (nearBottom) setShowJumpToLatest(false);
                   }
-                  // Near top: prepend older messages
-                  if (outer.scrollTop <= NEAR_BOTTOM_PX && hasMore && !loadingOlder) {
-                    (async () => {
-                      setPreserveScroll(true);
-                      const prevHeight = outer.scrollHeight;
-                      const prevTop = outer.scrollTop;
-                      const loaded = await fetchMessages({ offset, append: true });
-                      try {
-                        requestAnimationFrame(() => {
-                          const newHeight = outer.scrollHeight;
-                          outer.scrollTop = prevTop + (newHeight - prevHeight);
-                        });
-                      } catch {}
-                    })();
-                  }
+                }
+                // Near top: prepend older messages (always allowed)
+                if (outer.scrollTop <= NEAR_BOTTOM_PX && hasMore && !loadingOlder) {
+                  (async () => {
+                    setPreserveScroll(true);
+                    const prevHeight = outer.scrollHeight;
+                    const prevTop = outer.scrollTop;
+                    await fetchMessages({ offset, append: true });
+                    try {
+                      requestAnimationFrame(() => {
+                        const newHeight = outer.scrollHeight;
+                        outer.scrollTop = prevTop + (newHeight - prevHeight);
+                      });
+                    } catch {}
+                  })();
                 }
               } catch {}
             }}

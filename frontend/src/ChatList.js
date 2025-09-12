@@ -156,6 +156,7 @@ function ChatList({
     if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
     if (tagFilters.length) params.set('tags', tagFilters.join(','));
     if (needsReplyOnly) params.set('unresponded_only', 'true');
+    if (showArchive) params.set('archived', '1');
     (async () => {
       try {
         const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
@@ -165,7 +166,7 @@ function ChatList({
       }
     })();
     return () => controller.abort();
-  }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
+  }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
   // Admin WebSocket handled in App; avoid duplicate WS here to prevent double updates
 
@@ -189,7 +190,7 @@ function ChatList({
       const archiveOK = showArchive ? isDone : !isDone;
       return matches && unreadOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
     });
-  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly]);
+  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
   /* ─── Helpers ─── */
   const isOnline = useCallback(
@@ -366,7 +367,7 @@ function ChatList({
             useIsScrolling
             itemKey={(index) => filteredConversations[index]?.user_id || `row_${index}`}
           >
-            {({ index, style, isScrolling }) => (
+            {({ index, style }) => (
               <ConversationRow
                 style={style}
                 conv={filteredConversations[index]}
@@ -375,7 +376,6 @@ function ChatList({
                 isOnline={isOnline}
                 agents={agents}
                 tagOptions={tagOptions}
-                isScrolling={!!isScrolling}
               />
             )}
           </List>
@@ -395,7 +395,6 @@ const ConversationRow = memo(function Row({
   style, // only used by react-window
   agents = [],
   tagOptions = [],
-  isScrolling = false,
 }) {
   const selected = active === conv.user_id;
   const [assignOpen, setAssignOpen] = useState(false);
@@ -457,13 +456,13 @@ const ConversationRow = memo(function Row({
             })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">
-            {!isScrolling && selectedAgent && (
+            {selectedAgent && (
               <span className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-base flex items-center gap-1">
                 <FiUser className="opacity-90" />
                 {agents.find(a => a.username === selectedAgent)?.name || selectedAgent}
               </span>
             )}
-            {!isScrolling && (tags || []).slice(0,3).map(t => (
+            {(tags || []).slice(0,3).map(t => (
               <span key={t} className="w-8 h-8 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-sm ring-2 ring-white/20">
                 {(() => {
                   const opt = tagOptions.find(o => (o.label || '').toLowerCase() === (t || '').toLowerCase());
@@ -471,7 +470,7 @@ const ConversationRow = memo(function Row({
                 })()}
               </span>
             ))}
-            {!isScrolling && !!conv.unread_count && (
+            {!!conv.unread_count && (
               <span
                 className="bg-green-600 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center"
                 title={`${conv.unread_count} unread`}
@@ -479,7 +478,7 @@ const ConversationRow = memo(function Row({
                 {conv.unread_count > 99 ? "99+" : conv.unread_count}
               </span>
             )}
-            {!isScrolling && !!conv.unresponded_count && (
+            {!!conv.unresponded_count && (
               <span
                 className="bg-yellow-400 text-black text-xs rounded-full px-1.5 py-0.5 min-w-[20px] text-center"
                 title={`${conv.unresponded_count} waiting reply`}

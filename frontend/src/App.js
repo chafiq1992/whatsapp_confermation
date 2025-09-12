@@ -40,6 +40,23 @@ export default function App() {
     activeUserRef.current = activeUser;
   }, [activeUser]);
 
+  // Compute a global scale to preserve proportions on small screens/zoom
+  useEffect(() => {
+    const updateScale = () => {
+      try {
+        const baseWidth = 1200; // design reference width
+        const baseHeight = 800; // design reference height
+        const scaleW = window.innerWidth / baseWidth;
+        const scaleH = window.innerHeight / baseHeight;
+        const scale = Math.min(1, Math.max(0.7, Math.min(scaleW, scaleH)));
+        document.documentElement.style.setProperty('--app-scale', String(scale));
+      } catch {}
+    };
+    updateScale();
+    window.addEventListener('resize', updateScale);
+    return () => window.removeEventListener('resize', updateScale);
+  }, []);
+
   // Clear unread count in chat list when opening a conversation
   useEffect(() => {
     if (!activeUser?.user_id) return;
@@ -271,7 +288,7 @@ export default function App() {
 
   return (
     <AudioProvider>
-    <div className="flex h-screen bg-gray-900 text-white overflow-hidden">
+    <div className="flex h-screen bg-gray-900 text-white overflow-hidden" style={{ transform: 'scale(var(--app-scale, 1))', transformOrigin: 'top left' }}>
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
       <div className="w-[30rem] min-w-[30rem] flex-shrink-0 overflow-hidden flex relative z-0 bg-gray-900">
         <MiniSidebar
