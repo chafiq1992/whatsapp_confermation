@@ -473,10 +473,15 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     const uid = uidParam || activeUser?.user_id;
     if (!uid) return [];
     try {
-      const res = await api.get(
-        `${API_BASE}/messages/${uid}?offset=${off}&limit=${MESSAGE_LIMIT}`,
-        { signal }
-      );
+      // Prefer cursor-based fetch: if app has messages, use before= oldest; else use since= lastTimestamp
+      const oldest = (!append && messages.length > 0) ? messages[0]?.timestamp : null;
+      const newest = (!append && messages.length > 0) ? messages[messages.length - 1]?.timestamp : null;
+      const params = new URLSearchParams();
+      if (!append && newest) params.set('since', newest);
+      if (append && oldest) params.set('before', oldest);
+      params.set('limit', String(MESSAGE_LIMIT));
+      const url = `${API_BASE}/messages/${uid}?${params.toString() || `offset=${off}&limit=${MESSAGE_LIMIT}`}`;
+      const res = await api.get(url, { signal });
       const data = res.data;
       if (!Array.isArray(data) || data.length === 0) {
         // No data from server, fall back to cached messages
@@ -499,10 +504,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
       if (append) {
         setOffset(off + data.length);
+        setHasMore(data.length >= MESSAGE_LIMIT);
       } else {
         setOffset(data.length);
+        setHasMore(data.length > 0);
       }
-      setHasMore(data.length >= MESSAGE_LIMIT);
       setIsInitialLoading(false);
       return data;
     } catch (err) {
@@ -610,8 +616,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     formData.append('files', file);
     formData.append('user_id', activeUser.user_id);
     formData.append('media_type', 'audio');
+    formData.append('temp_id', temp_id);
     const tryOnce = async () => {
-      const res = await api.post(`${API_BASE}/send-media`, formData);
+      const res = await api.post(`${API_BASE}/send-media-async`, formData);
       const first = Array.isArray(res?.data?.messages) ? res.data.messages[0] : null;
       const serverUrl = (first && (first.media_url || first.result?.url)) || res?.data?.url || res?.data?.file_path;
       const waId = first?.result?.wa_message_id || res?.data?.wa_message_id;
@@ -910,6 +917,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       
       try {
         const response = await api.post(`${API_BASE}/send-media`, formData, {
+        const response = await api.post(`${API_BASE}/send-media-async`, formData, {
+        const response = await api.post(`${API_BASE}/send-media-async`, formData, {
           onUploadProgress: (e) => {
             setPendingImages(images => {
               let copy = [...images];

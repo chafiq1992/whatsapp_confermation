@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
+import time
 import os
 import re
 import aiosqlite
@@ -93,7 +94,8 @@ LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
 # Backpressure and rate limiting configuration
 WA_MAX_CONCURRENCY = int(os.getenv("WA_MAX_CONCURRENCY", "4"))
 SEND_TEXT_PER_MIN = int(os.getenv("SEND_TEXT_PER_MIN", "30"))
-SEND_MEDIA_PER_MIN = int(os.getenv("SEND_MEDIA_PER_MIN", "15"))
+SEND_MEDIA_PER_MIN = int(os.getenv("SEND_MEDIA_PER_MIN", "5"))
+BURST_WINDOW_SEC = int(os.getenv("BURST_WINDOW_SEC", "10"))
 ENABLE_WS_PUBSUB = os.getenv("ENABLE_WS_PUBSUB", "1") == "1"
 
 # Global semaphore to cap concurrent WhatsApp Graph API calls per instance
@@ -195,6 +197,8 @@ class ConnectionManager:
         self.connection_metadata: Dict[WebSocket, dict] = {}
         # Optional: will be attached after initialization
         self.redis_manager = None
+        # Per-agent token buckets for backpressure
+        self._ws_buckets: Dict[str, Dict[str, float]] = {}
     
     async def connect(self, websocket: WebSocket, user_id: str, client_info: dict = None):
         """Connect a new WebSocket for a user"""
@@ -248,6 +252,25 @@ class ConnectionManager:
             self.message_queue[user_id].append(message)
             if len(self.message_queue[user_id]) > 100:
                 self.message_queue[user_id] = self.message_queue[user_id][-50:]
+
+    def _consume_ws_token(self, user_id: str, is_media: bool = False) -> bool:
+        try:
+            # Simple leaky bucket using monotonic time
+            bucket_key = f"{user_id}:{'media' if is_media else 'text'}"
+            bucket = self._ws_buckets.get(bucket_key) or {"allowance": float(SEND_MEDIA_PER_MIN if is_media else SEND_TEXT_PER_MIN), "last": time.monotonic()}
+            now = time.monotonic()
+            rate_per_sec = (SEND_MEDIA_PER_MIN if is_media else SEND_TEXT_PER_MIN) / 60.0
+            # Refill based on elapsed time
+            bucket["allowance"] = min(float(SEND_MEDIA_PER_MIN if is_media else SEND_TEXT_PER_MIN), bucket["allowance"] + (now - bucket["last"]) * rate_per_sec)
+            bucket["last"] = now
+            if bucket["allowance"] < 1.0:
+                self._ws_buckets[bucket_key] = bucket
+                return False
+            bucket["allowance"] -= 1.0
+            self._ws_buckets[bucket_key] = bucket
+            return True
+        except Exception:
+            return True
 
     async def send_to_user(self, user_id: str, message: dict):
         """Send locally and, if enabled, publish to Redis for other instances."""
@@ -657,8 +680,8 @@ class DatabaseManager:
             base_script = """
                 CREATE TABLE IF NOT EXISTS messages (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                    wa_message_id  TEXT UNIQUE,
-                    temp_id        TEXT UNIQUE,
+                    wa_message_id  TEXT,
+                    temp_id        TEXT,
                     user_id        TEXT NOT NULL,
                     message        TEXT,
                     type           TEXT DEFAULT 'text',
@@ -712,6 +735,12 @@ class DatabaseManager:
                 -- Additional index to optimize TEXT-based timestamp ordering in SQLite
                 CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text
                     ON messages (user_id, timestamp);
+
+                -- Idempotency: ensure per-chat uniqueness for wa_message_id and temp_id
+                CREATE UNIQUE INDEX IF NOT EXISTS uniq_msg_user_wa
+                    ON messages (user_id, wa_message_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS uniq_msg_user_temp
+                    ON messages (user_id, temp_id);
 
                 -- Orders table used to track payout status
                 CREATE TABLE IF NOT EXISTS orders (
@@ -875,18 +904,18 @@ class DatabaseManager:
 
         async with self._conn() as db:
             row = None
-            if data.get("wa_message_id"):
-                query = self._convert("SELECT * FROM messages WHERE wa_message_id = ?")
-                params = [data["wa_message_id"]]
+            if data.get("wa_message_id") and data.get("user_id"):
+                query = self._convert("SELECT * FROM messages WHERE user_id = ? AND wa_message_id = ?")
+                params = [data["user_id"], data["wa_message_id"]]
                 if self.use_postgres:
                     row = await db.fetchrow(query, *params)
                 else:
                     cur = await db.execute(query, tuple(params))
                     row = await cur.fetchone()
 
-            if not row and data.get("temp_id"):
-                query = self._convert("SELECT * FROM messages WHERE temp_id = ?")
-                params = [data["temp_id"]]
+            if not row and data.get("temp_id") and data.get("user_id"):
+                query = self._convert("SELECT * FROM messages WHERE user_id = ? AND temp_id = ?")
+                params = [data["user_id"], data["temp_id"]]
                 if self.use_postgres:
                     row = await db.fetchrow(query, *params)
                 else:
@@ -918,10 +947,41 @@ class DatabaseManager:
                 cols = ", ".join(data.keys())
                 qs   = ", ".join("?" for _ in data)
                 query = self._convert(f"INSERT INTO messages ({cols}) VALUES ({qs})")
-                if self.use_postgres:
-                    await db.execute(query, *data.values())
-                else:
-                    await db.execute(query, tuple(data.values()))
+                try:
+                    if self.use_postgres:
+                        await db.execute(query, *data.values())
+                    else:
+                        await db.execute(query, tuple(data.values()))
+                except Exception as exc:
+                    # If a concurrent insert violated unique (user_id, temp_id|wa_message_id), fall back to update
+                    try:
+                        if data.get("wa_message_id"):
+                            sel = self._convert("SELECT * FROM messages WHERE user_id = ? AND wa_message_id = ?")
+                            params = [data["user_id"], data["wa_message_id"]]
+                        else:
+                            sel = self._convert("SELECT * FROM messages WHERE user_id = ? AND temp_id = ?")
+                            params = [data["user_id"], data.get("temp_id")]
+                        if self.use_postgres:
+                            row = await db.fetchrow(sel, *params)
+                        else:
+                            cur = await db.execute(sel, tuple(params))
+                            row = await cur.fetchone()
+                        if row:
+                            current_status = row["status"]
+                            new_status = data.get("status", current_status)
+                            if _STATUS_RANK.get(new_status, 0) < _STATUS_RANK.get(current_status, 0):
+                                return
+                            merged = {**dict(row), **data}
+                            cols2 = [k for k in merged.keys() if k != "id"]
+                            sets2 = ", ".join(f"{c}=:{c}" for c in cols2)
+                            merged["id"] = row["id"]
+                            upd = self._convert(f"UPDATE messages SET {sets2} WHERE id = :id")
+                            if self.use_postgres:
+                                await db.execute(upd, *[merged[c] for c in cols2 + ["id"]])
+                            else:
+                                await db.execute(upd, merged)
+                    except Exception:
+                        raise exc
             if not self.use_postgres:
                 await db.commit()
 
@@ -1462,8 +1522,41 @@ class MessageProcessor:
                     # For media messages: support either local path upload or direct link
                     media_path = message.get("media_path")
                     media_url = message.get("url")
+                    # If we have a local path, optionally normalize audio, then upload both to WA and GCS
                     if media_path and Path(media_path).exists():
-                        print(f"📤 Uploading media: {media_path}")
+                        # Background upload to GCS to produce public URL for UI; don't block WA send
+                        gcs_url: Optional[str] = None
+                        try:
+                            # Normalize audio to OGG if needed
+                            if message["type"] == "audio" and not str(media_path).lower().endswith(".ogg"):
+                                try:
+                                    ogg_path = await convert_webm_to_ogg(Path(media_path))
+                                    media_path = str(ogg_path)
+                                except Exception as _exc:
+                                    print(f"Audio normalization skipped: {_exc}")
+                            gcs_url = await upload_file_to_gcs(str(media_path))
+                            if gcs_url:
+                                # Notify UI and persist URL when ready
+                                try:
+                                    await self.connection_manager.send_to_user(user_id, {
+                                        "type": "message_status_update",
+                                        "data": {"temp_id": temp_id, "url": gcs_url}
+                                    })
+                                except Exception:
+                                    pass
+                                try:
+                                    await self.db_manager.upsert_message({
+                                        "user_id": user_id,
+                                        "temp_id": temp_id,
+                                        "url": gcs_url,
+                                    })
+                                    await self.redis_manager.cache_message(user_id, {**message, "url": gcs_url})
+                                except Exception:
+                                    pass
+                        except Exception as _exc:
+                            print(f"GCS upload failed (non-fatal): {_exc}")
+
+                        print(f"📤 Uploading media to WhatsApp: {media_path}")
                         media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
                         if message.get("reply_to"):
                             wa_response = await self.whatsapp_messenger.send_media_message(
@@ -2153,6 +2246,20 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
     if message_type == "send_message":
         message_data = data.get("data", {})
         message_data["user_id"] = user_id
+        # Enforce WS backpressure: token bucket per agent
+        is_media = str(message_data.get("type", "text")) in ("image", "audio", "video", "document")
+        if not connection_manager._consume_ws_token(user_id, is_media=is_media):
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "data": {
+                        "code": "rate_limited",
+                        "message": f"Rate limit exceeded for {'media' if is_media else 'text'} messages. Please slow down.",
+                    }
+                })
+            except Exception:
+                pass
+            return
         # FIXED: Call the method on message_processor instance
         await message_processor.process_outgoing_message(message_data)
 
@@ -2530,16 +2637,23 @@ async def list_archive():
     return await db_manager.get_archived_orders()
 
 @app.get("/messages/{user_id}")
-async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50):
-    """Get messages for a specific user - Frontend expects this endpoint"""
+async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):
+    """Cursor-friendly fetch: use since/before OR legacy offset.
+
+    - since: return messages newer than this timestamp (ascending)
+    - before: return messages older than this timestamp (ascending)
+    - else: use legacy offset/limit window (ascending)
+    """
     try:
-        # First try to get from cache
+        if since:
+            return await db_manager.get_messages_since(user_id, since, limit=max(1, min(limit, 500)))
+        if before:
+            return await db_manager.get_messages_before(user_id, before, limit=max(1, min(limit, 200)))
+        # First try to get from cache for the newest window
         if offset == 0:
             cached_messages = await redis_manager.get_recent_messages(user_id, limit)
             if cached_messages:
                 return cached_messages
-        
-        # Fallback to database
         messages = await db_manager.get_messages(user_id, offset, limit)
         return messages
     except Exception as e:
@@ -2639,6 +2753,68 @@ async def send_media(
         print(f"❌ Error in /send-media: {exc}")
         return {"error": f"Internal server error: {exc}", "status": "failed"}
 
+
+@app.post("/send-media-async", status_code=202)
+async def send_media_async(
+    user_id: str = Form(...),
+    media_type: str = Form(...),
+    files: List[UploadFile] = File(...),
+    caption: str = Form("", description="Optional caption"),
+    price: str = Form("", description="Optional price"),
+    temp_id: str | None = Form(None),
+    _: None = Depends(_optional_rate_limit_media),
+):
+    """Accept media quickly and process in background. UI updates via WebSocket.
+
+    This endpoint avoids synchronous transcode/upload to keep p95 low under bursts.
+    """
+    try:
+        if not user_id:
+            return {"error": "user_id is required", "status": "failed"}
+        if media_type not in ["image", "audio", "video", "document"]:
+            return {"error": "Invalid media_type. Must be: image, audio, video, or document", "status": "failed"}
+        if not files:
+            return {"error": "No files uploaded", "status": "failed"}
+
+        media_dir = MEDIA_DIR
+        media_dir.mkdir(exist_ok=True)
+
+        accepted: List[dict] = []
+        for file in files:
+            if not file.filename:
+                continue
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            file_extension = Path(file.filename).suffix or ".bin"
+            filename = f"{media_type}_{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
+            file_path = media_dir / filename
+            # Save immediately and schedule processing
+            content = await file.read()
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(content)
+
+            optimistic_payload = {
+                "user_id": user_id,
+                "message": str(file_path),
+                "url": str(file_path),
+                "type": media_type,
+                "from_me": True,
+                "caption": caption,
+                "price": price,
+                "timestamp": datetime.utcnow().isoformat(),
+                "media_path": str(file_path),
+            }
+            if temp_id:
+                optimistic_payload["temp_id"] = temp_id
+
+            asyncio.create_task(message_processor.process_outgoing_message(optimistic_payload))
+            accepted.append({"filename": filename, **({"temp_id": temp_id} if temp_id else {})})
+
+        return {"status": "accepted", "accepted": accepted}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Error in /send-media-async: {exc}")
+        return {"error": f"Internal server error: {exc}", "status": "failed"}
 
 @app.post("/send-catalog-set")
 async def send_catalog_set_endpoint(

@@ -8,6 +8,7 @@ class MessageCreate(BaseModel):
     from_me: Optional[bool] = None
     status: Optional[str] = None
     wa_message_id: Optional[str] = None
+    temp_id: Optional[str] = None
     timestamp: Optional[str] = None
     caption: Optional[str] = None
     price: Optional[str] = None
