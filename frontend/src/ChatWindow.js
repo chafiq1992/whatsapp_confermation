@@ -716,15 +716,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       setPreserveScroll(false);
       return;
     }
-    // Only autoscroll if user is already at bottom or the newest message is from self
-    const newest = messages[messages.length - 1];
-    const shouldStickToBottom = isNearBottomRef.current || (newest && newest.from_me);
-    if (shouldStickToBottom) {
-      scrollToBottom();
-      setShowJumpToLatest(false);
-    } else {
-      setShowJumpToLatest(true);
-    }
+    // Disable any automatic scrolling on new messages; only show a prompt when not at bottom
+    const atBottomNow = !!isNearBottomRef.current;
+    setShowJumpToLatest(!atBottomNow);
   }, [messages, preserveScroll]);
 
   useEffect(() => {
@@ -916,8 +910,6 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       formData.append("media_type", "image");
       
       try {
-        const response = await api.post(`${API_BASE}/send-media`, formData, {
-        const response = await api.post(`${API_BASE}/send-media-async`, formData, {
         const response = await api.post(`${API_BASE}/send-media-async`, formData, {
           onUploadProgress: (e) => {
             setPendingImages(images => {
@@ -1176,7 +1168,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const key = getItemKeyAtIndex(index);
               return itemHeightsByKey.current[key] || 72;
             }}
-            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
+            className={`will-change-transform`}
             onScroll={({ scrollOffset }) => {
               if (!hasInitialisedScrollRef.current) return;
               try {
