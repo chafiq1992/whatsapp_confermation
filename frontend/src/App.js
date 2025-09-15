@@ -40,7 +40,7 @@ export default function App() {
     activeUserRef.current = activeUser;
   }, [activeUser]);
 
-  // Compute a global scale to preserve proportions on small screens/zoom
+  // Compute a root font scale to preserve layout while making UI elements smaller
   useEffect(() => {
     const updateScale = () => {
       try {
@@ -48,8 +48,10 @@ export default function App() {
         const baseHeight = 800; // design reference height
         const scaleW = window.innerWidth / baseWidth;
         const scaleH = window.innerHeight / baseHeight;
-        const scale = Math.min(1, Math.max(0.7, Math.min(scaleW, scaleH)));
-        document.documentElement.style.setProperty('--app-scale', String(scale));
+        // Keep within sensible bounds to maintain usability
+        const scale = Math.min(1, Math.max(0.8, Math.min(scaleW, scaleH)));
+        const baseFontPx = 16;
+        document.documentElement.style.setProperty('--app-font-size', `${baseFontPx * scale}px`);
       } catch {}
     };
     updateScale();
@@ -288,7 +290,7 @@ export default function App() {
 
   return (
     <AudioProvider>
-    <div className="flex h-screen bg-gray-900 text-white overflow-hidden" style={{ transform: 'scale(var(--app-scale, 1))', transformOrigin: 'top left' }}>
+    <div className="flex h-screen bg-gray-900 text-white overflow-hidden" style={{ fontSize: 'var(--app-font-size, 16px)' }}>
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
       <div className="w-[30rem] min-w-[30rem] flex-shrink-0 overflow-hidden flex relative z-0 bg-gray-900">
         <MiniSidebar

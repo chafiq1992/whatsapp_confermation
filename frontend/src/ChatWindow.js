@@ -473,14 +473,17 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     if (!uid) return [];
     try {
       const current = messagesRef.current || [];
-      // Prefer cursor-based fetch: if app has messages, use before= oldest; else use since= lastTimestamp
-      const oldest = (!append && current.length > 0) ? current[0]?.timestamp : null;
+      // Prefer cursor-based fetch
+      const oldest = (append && current.length > 0) ? current[0]?.timestamp : null;
       const newest = (!append && current.length > 0) ? current[current.length - 1]?.timestamp : null;
       const params = new URLSearchParams();
       if (!append && newest) params.set('since', newest);
       if (append && oldest) params.set('before', oldest);
+      // Always pass limit; if neither since/before present, backend will use legacy offset
       params.set('limit', String(MESSAGE_LIMIT));
-      const url = `${API_BASE}/messages/${uid}?${params.toString() || `offset=${off}&limit=${MESSAGE_LIMIT}`}`;
+      // If we didn't set since/before, include offset explicitly
+      if (!params.has('since') && !params.has('before')) params.set('offset', String(off));
+      const url = `${API_BASE}/messages/${uid}?${params.toString()}`;
       const res = await api.get(url, { signal });
       const data = res.data;
       if (!Array.isArray(data) || data.length === 0) {
