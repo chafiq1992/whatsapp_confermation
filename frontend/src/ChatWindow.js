@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, Suspense, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, Suspense, useMemo, useLayoutEffect } from 'react';
 import api from './api';
 import MessageBubble from './MessageBubble';
 import ForwardDialog from './ForwardDialog';
@@ -117,6 +117,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const conversationIdRef = useRef(null);
   const [forwardOpen, setForwardOpen] = useState(false);
   const forwardPayloadRef = useRef(null);
+  const messagesRef = useRef([]);
 
   // Helper to merge and deduplicate messages by stable identifiers
   const mergeAndDedupe = useCallback((prevList, incomingList) => {
@@ -141,13 +142,20 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     setOffset(0);
     setHasMore(true);
     setUnreadSeparatorIndex(null);
+    setAllowSmoothScroll(false);
+    hasInitialisedScrollRef.current = false;
+    // First, hydrate from cache for instant UX
     loadMessages(uid).then((msgs) => {
       if (conversationIdRef.current !== uid) return; // ignore stale
       if (Array.isArray(msgs) && msgs.length > 0) {
         setMessages(sortByTime(msgs));
       }
     });
-  }, [activeUser?.user_id]);
+    // Then kick off network fetch with cancellation
+    const controller = new AbortController();
+    fetchMessages({ offset: 0 }, controller.signal, uid);
+    return () => controller.abort();
+  }, [activeUser?.user_id, /* stable */]);
   
   // Track last received timestamp for resume on reconnect
   const lastTimestampRef = useRef(null);
@@ -371,6 +379,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     if (!messages || messages.length === 0) return;
     const newest = messages[messages.length - 1]?.timestamp;
     if (newest) lastTimestampRef.current = newest;
+    messagesRef.current = messages;
   }, [messages]);
 
   // Broadcast latest message preview to ChatList when messages update
@@ -434,17 +443,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     });
   }, [activeUser]);
 
-  useEffect(() => {
-    if (!activeUser?.user_id) return;
-    const uid = activeUser.user_id;
-    const controller = new AbortController();
-    setOffset(0);
-    setHasMore(true);
-    setAllowSmoothScroll(false);
-    hasInitialisedScrollRef.current = false;
-    fetchMessages({ offset: 0 }, controller.signal, uid);
-    return () => controller.abort();
-  }, [activeUser?.user_id]);
+  // (Consolidated into the conversation-change effect above)
 
   // Load catalog products
   useEffect(() => {
@@ -468,14 +467,15 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     fetchAllProducts();
   }, []);
 
-  // Fallback: fetch messages via HTTP if WebSocket fails
-  const fetchMessages = async ({ offset: off = 0, append = false } = {}, signal, uidParam) => {
+  // Fallback: fetch messages via HTTP if WebSocket fails (stabilised reference)
+  const fetchMessages = useCallback(async ({ offset: off = 0, append = false } = {}, signal, uidParam) => {
     const uid = uidParam || activeUser?.user_id;
     if (!uid) return [];
     try {
+      const current = messagesRef.current || [];
       // Prefer cursor-based fetch: if app has messages, use before= oldest; else use since= lastTimestamp
-      const oldest = (!append && messages.length > 0) ? messages[0]?.timestamp : null;
-      const newest = (!append && messages.length > 0) ? messages[messages.length - 1]?.timestamp : null;
+      const oldest = (!append && current.length > 0) ? current[0]?.timestamp : null;
+      const newest = (!append && current.length > 0) ? current[current.length - 1]?.timestamp : null;
       const params = new URLSearchParams();
       if (!append && newest) params.set('since', newest);
       if (append && oldest) params.set('before', oldest);
@@ -526,22 +526,23 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       setIsInitialLoading(false);
       return cached;
     }
-  };
+  }, [activeUser?.user_id, MESSAGE_LIMIT, mergeAndDedupe]);
 
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlder || !hasMore) return;
-    const container = messagesEndRef.current;
-    if (!container) return;
+    const outer = listOuterRef.current;
+    if (!outer) return;
     setLoadingOlder(true);
     setPreserveScroll(true);
-    const prevHeight = container.scrollHeight;
-    const prevTop = container.scrollTop;
+    const prevHeight = outer.scrollHeight;
     try {
       await fetchMessages({ offset, append: true });
     } finally {
       requestAnimationFrame(() => {
-        const newHeight = container.scrollHeight;
-        container.scrollTop = newHeight - prevHeight + prevTop;
+        const newHeight = outer.scrollHeight;
+        const delta = newHeight - prevHeight;
+        // Preserve the user's current viewport position while older messages are prepended
+        try { outer.scrollTop = outer.scrollTop + delta; } catch {}
         setLoadingOlder(false);
       });
     }
@@ -653,7 +654,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   }, [isRecording]);
 
   const [preserveScroll, setPreserveScroll] = useState(false);
-  const NEAR_BOTTOM_PX = 120;
+  const NEAR_BOTTOM_PX = 200;
 
   const scrollToBottom = () => {
     try {
@@ -1141,6 +1142,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       )}
       
       <div className="flex-1 overflow-hidden p-3 bg-gray-900 relative" ref={messagesEndRef}>
+        {loadingOlder && (
+          <div className="absolute top-2 left-0 right-0 flex justify-center" aria-live="polite">
+            <span className="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-200 border border-gray-600">Loading…</span>
+          </div>
+        )}
         {isInitialLoading ? (
           <div className="absolute inset-0 p-4 space-y-4 animate-pulse">
             <div className="h-4 bg-gray-800 rounded w-1/3" />
@@ -1183,20 +1189,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                     if (nearBottom) setShowJumpToLatest(false);
                   }
                 }
-                // Near top: prepend older messages (always allowed)
+                // Near top: show loader and fetch older without altering current scroll position
                 if (outer.scrollTop <= NEAR_BOTTOM_PX && hasMore && !loadingOlder) {
-                  (async () => {
-                    setPreserveScroll(true);
-                    const prevHeight = outer.scrollHeight;
-                    const prevTop = outer.scrollTop;
-                    await fetchMessages({ offset, append: true });
-                    try {
-                      requestAnimationFrame(() => {
-                        const newHeight = outer.scrollHeight;
-                        outer.scrollTop = prevTop + (newHeight - prevHeight);
-                      });
-                    } catch {}
-                  })();
+                  loadOlderMessages();
                 }
               } catch {}
             }}

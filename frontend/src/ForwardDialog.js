@@ -66,7 +66,6 @@ export default function ForwardDialog({ open, onClose, onSelect }) {
       <div className="bg-gray-900 text-white rounded-lg p-3 w-[720px] max-w-[95vw]" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-2">
           <input
-            autoFocus
             className="flex-1 px-2 py-1 bg-gray-800 rounded"
             placeholder="Search chats, numbers, channels, or agents…"
             value={q}
