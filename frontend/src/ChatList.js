@@ -66,6 +66,7 @@ function ChatList({
   const activeUserRef = useRef(activeUser);
   const containerRef = useRef(null);
   const [listHeight, setListHeight] = useState(0);
+  const searchDebounceRef = useRef(null);
 
   useEffect(() => {
     setConversations(initialConversations);
@@ -147,25 +148,30 @@ function ChatList({
     })();
   }, []);
 
-  // Optionally fetch filtered conversations from backend for scalability
+  // Optionally fetch filtered conversations from backend for scalability (debounced)
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams();
-    if (search) params.set('q', search);
-    if (showUnreadOnly) params.set('unread_only', 'true');
-    if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
-    if (tagFilters.length) params.set('tags', tagFilters.join(','));
-    if (needsReplyOnly) params.set('unresponded_only', 'true');
-    if (showArchive) params.set('archived', '1');
-    (async () => {
-      try {
-        const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
-        if (Array.isArray(res.data)) setConversations(res.data);
-      } catch (e) {
-        // network errors fall back to client filtering of existing list
-      }
-    })();
-    return () => controller.abort();
+    const run = () => {
+      const params = new URLSearchParams();
+      if (search) params.set('q', search);
+      if (showUnreadOnly) params.set('unread_only', 'true');
+      if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
+      if (tagFilters.length) params.set('tags', tagFilters.join(','));
+      if (needsReplyOnly) params.set('unresponded_only', 'true');
+      if (showArchive) params.set('archived', '1');
+      (async () => {
+        try {
+          const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
+          if (Array.isArray(res.data)) setConversations(res.data);
+        } catch (e) {
+          // network errors fall back to client filtering of existing list
+        }
+      })();
+    };
+    // Debounce only for keystrokes/filter toggles; immediate on mount/first calls is fine
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(run, 350);
+    return () => { clearTimeout(searchDebounceRef.current); controller.abort(); };
   }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
   // Admin WebSocket handled in App; avoid duplicate WS here to prevent double updates

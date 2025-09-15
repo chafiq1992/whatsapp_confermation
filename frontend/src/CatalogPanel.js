@@ -25,6 +25,8 @@ export default function CatalogPanel({
   const gridRef = useRef(null);
   const abortRef = useRef(null);
   const requestIdRef = useRef(0);
+  const fetchInFlightRef = useRef(false);
+  const fetchLimitTimerRef = useRef(null);
 
   // Selected images (URLs)
   const [selectedImages, setSelectedImages] = useState([]);
@@ -128,29 +130,34 @@ export default function CatalogPanel({
     }
   };
 
-  // Infinite scroll handler
+  // Infinite scroll handler (debounced increment)
   useEffect(() => {
     if (!modalOpen || modalMode !== 'products') return;
     const el = gridRef.current;
     if (!el) return;
     const onScroll = () => {
-      if (loadingProducts || !hasMore) return;
+      if (loadingProducts || !hasMore || fetchInFlightRef.current) return;
       const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50;
       if (nearBottom) {
-        setFetchLimit((l) => l + PAGE_SIZE);
+        if (fetchLimitTimerRef.current) clearTimeout(fetchLimitTimerRef.current);
+        fetchLimitTimerRef.current = setTimeout(() => {
+          setFetchLimit((l) => l + PAGE_SIZE);
+        }, 200);
       }
     };
     el.addEventListener('scroll', onScroll);
-    return () => el.removeEventListener('scroll', onScroll);
+    return () => { el.removeEventListener('scroll', onScroll); if (fetchLimitTimerRef.current) clearTimeout(fetchLimitTimerRef.current); };
   }, [modalOpen, modalMode, loadingProducts, hasMore]);
 
-  // Re-fetch more products when fetchLimit increases
+  // Re-fetch more products when fetchLimit increases; guard to one request at a time
   useEffect(() => {
     if (!modalOpen || modalMode !== 'products' || !selectedSet) return;
-    fetchProducts(selectedSet, fetchLimit);
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+    Promise.resolve(fetchProducts(selectedSet, fetchLimit)).finally(() => { fetchInFlightRef.current = false; });
   }, [fetchLimit]);
 
-  // Auto-load more until scroll is available (bounded attempts)
+  // Auto-load more until scroll is available (bounded attempts; debounced)
   useEffect(() => {
     if (!modalOpen || modalMode !== 'products') return;
     const el = gridRef.current;
@@ -158,7 +165,8 @@ export default function CatalogPanel({
     const canScroll = el.scrollHeight > el.clientHeight + 20;
     if (!canScroll && hasMore && products.length >= fetchLimit && autoLoadAttemptsRef.current < 6) {
       autoLoadAttemptsRef.current += 1;
-      setFetchLimit((l) => l + PAGE_SIZE);
+      if (fetchLimitTimerRef.current) clearTimeout(fetchLimitTimerRef.current);
+      fetchLimitTimerRef.current = setTimeout(() => setFetchLimit((l) => l + PAGE_SIZE), 150);
     }
   }, [products, hasMore, modalOpen, modalMode, fetchLimit]);
 

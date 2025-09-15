@@ -433,22 +433,41 @@ class WhatsAppMessenger:
             return response.json()
 
     async def send_catalog_products(self, user_id: str, product_ids: List[str]) -> List[Dict[str, Any]]:
-        """Send multiple catalog products in chunks"""
+        """Send multiple catalog products in chunks, with clear bilingual part labels."""
         results = []
-        for chunk in chunk_list(product_ids, MAX_CATALOG_ITEMS):
+        # Pre-split to compute part numbers and item ranges
+        chunks: List[List[str]] = list(chunk_list(product_ids, MAX_CATALOG_ITEMS))
+        total_parts: int = len(chunks) if chunks else 0
+        running_index: int = 1
+
+        for part_index, chunk in enumerate(chunks, start=1):
+            start_idx = running_index
+            end_idx = running_index + len(chunk) - 1
+            running_index += len(chunk)
+
+            # Short bilingual header: "Partie X/Y • الجزء X/Y"
+            header_text = f"Partie {part_index}/{total_parts} • الجزء {part_index}/{total_parts}"
+            # Bilingual body explaining which range this part covers
+            body_text_fr = f"Voici la partie {part_index}/{total_parts} des articles (\u2116 {start_idx}–{end_idx})."
+            body_text_ar = f"هذه هي الجزء {part_index}/{total_parts} من العناصر (رقم {start_idx}–{end_idx})."
+            body_text = f"{body_text_fr}\n{body_text_ar}"
+
+            # Also reflect the part info in the section title for extra visibility
+            section_title = f"Part {part_index}/{total_parts}"
+
             data = {
                 "messaging_product": "whatsapp",
                 "to": user_id,
                 "type": "interactive",
                 "interactive": {
                     "type": "product_list",
-                    "header": {"type": "text", "text": "Products"},
-                    "body": {"text": "Découvrez ces produits !\nتفقد هذه المنتجات!"},
+                    "header": {"type": "text", "text": header_text},
+                    "body": {"text": body_text},
                     "action": {
                         "catalog_id": CATALOG_ID,
                         "sections": [
                             {
-                                "title": "Default",
+                                "title": section_title,
                                 "product_items": [
                                     {"product_retailer_id": rid} for rid in chunk
                                 ],
@@ -457,6 +476,7 @@ class WhatsAppMessenger:
                     },
                 },
             }
+
             result = await self._make_request("messages", data)
             results.append(result)
         return results
