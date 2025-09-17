@@ -2995,7 +2995,13 @@ async def get_all_catalog_products():
 
 @app.get("/proxy-audio")
 async def proxy_audio(url: str, request: StarletteRequest):
-    """Proxy remote audio with Range support for reliable HTML5 playback/seek."""
+    """Proxy remote audio with Range support for reliable HTML5 playback/seek.
+
+    Important: keep the upstream HTTP connection open for the entire duration of
+    the downstream streaming response. We do this by creating the AsyncClient
+    and Response outside of a context manager and closing them in a finally
+    block of the streaming generator.
+    """
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
@@ -3004,8 +3010,10 @@ async def proxy_audio(url: str, request: StarletteRequest):
         if range_header:
             fwd_headers["Range"] = range_header
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=fwd_headers, stream=True)
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
+        client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+        # Note: do NOT wrap in a context manager; we close in the generator
+        resp = await client.get(url, headers=fwd_headers, stream=True)
 
         status_code = resp.status_code
         media_type = resp.headers.get("Content-Type", "audio/ogg")
@@ -3017,7 +3025,18 @@ async def proxy_audio(url: str, request: StarletteRequest):
         if "Accept-Ranges" not in passthrough:
             passthrough["Accept-Ranges"] = "bytes"
 
-        return StreamingResponse(resp.aiter_bytes(), status_code=status_code, media_type=media_type, headers=passthrough)
+        async def body_iter():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                try:
+                    await resp.aclose()
+                finally:
+                    await client.aclose()
+
+        return StreamingResponse(body_iter(), status_code=status_code, media_type=media_type, headers=passthrough)
     except Exception as exc:
         print(f"Proxy audio error: {exc}")
         raise HTTPException(status_code=502, detail="Proxy fetch failed")

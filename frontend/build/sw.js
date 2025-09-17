@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 
@@ -25,13 +25,23 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
+  const path = url.pathname;
+  const hasRange = !!req.headers.get('range');
 
-  // Skip non-GET or cross-origin (except same-origin static) and API calls
+  // Skip non-GET, Range requests, or API-like/proxy endpoints entirely
   if (req.method !== 'GET') return;
-  if (url.pathname.startsWith('/api') || url.pathname.startsWith('/ws') || url.pathname.startsWith('/media/proxy')) return;
+  if (hasRange) return;
+  if (
+    path.startsWith('/api') ||
+    path.startsWith('/ws') ||
+    path.startsWith('/media/proxy') ||
+    path.startsWith('/proxy-audio') ||
+    path.startsWith('/proxy-image') ||
+    path.startsWith('/link-preview')
+  ) return;
 
   // Images and fonts: cache-first
-  if (/\/(images?|img|media)\//i.test(url.pathname) || /(\.png|\.jpg|\.jpeg|\.gif|\.webp|\.svg|\.ico|\.woff2?|\.ttf)$/i.test(url.pathname)) {
+  if (/\/(images?|img|media)\//i.test(path) || /(\.png|\.jpg|\.jpeg|\.gif|\.webp|\.svg|\.ico|\.woff2?|\.ttf)$/i.test(path)) {
     event.respondWith(
       caches.match(req).then((cached) => cached || fetch(req).then((res) => {
         const copy = res.clone();
