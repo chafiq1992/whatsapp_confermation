@@ -13,6 +13,7 @@ import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
+from urllib.parse import urlparse
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body, Depends
 from starlette.requests import Request as _LimiterRequest
 from starlette.responses import Response as _LimiterResponse
@@ -47,6 +48,28 @@ from fastapi.responses import JSONResponse
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
+
+
+def _build_public_media_url(path_like: str | None) -> Optional[str]:
+    """Convert a local media path into a public URL served from ``/media``."""
+
+    if not path_like:
+        return None
+
+    parsed = urlparse(path_like)
+    if parsed.scheme in ("http", "https"):
+        return path_like
+
+    base = BASE_URL.rstrip("/")
+
+    if path_like.startswith("/media/"):
+        return f"{base}{path_like}"
+
+    filename = Path(path_like).name
+    if not filename:
+        return None
+
+    return f"{base}/media/{filename}"
 
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
@@ -690,7 +713,9 @@ class DatabaseManager:
             async with pool.acquire() as conn:
                 yield conn
         else:
-            async with aiosqlite.connect(self.db_path) as db:
+            db_path = Path(self.db_path)
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            async with aiosqlite.connect(str(db_path)) as db:
                 db.row_factory = aiosqlite.Row
                 yield db
 
@@ -1462,13 +1487,19 @@ class MessageProcessor:
         
         # For media messages, add URL field
         if message_type in ["image", "audio", "video"]:
-            if message_data.get("url"):
-                optimistic_message["url"] = message_data["url"]
-            elif message_text and not message_text.startswith("http"):
-                filename = Path(message_text).name
-                optimistic_message["url"] = f"{BASE_URL}/media/{filename}"
-            else:
-                optimistic_message["url"] = message_text
+            public_url: Optional[str] = None
+            raw_url = message_data.get("url")
+            if isinstance(raw_url, str):
+                public_url = _build_public_media_url(raw_url)
+
+            if not public_url and isinstance(message_text, str):
+                public_url = _build_public_media_url(message_text)
+
+            if not public_url:
+                public_url = _build_public_media_url(message_data.get("media_path"))
+
+            if public_url:
+                optimistic_message["url"] = public_url
         
         # 1. INSTANT: Send to UI immediately (optimistic update)
         await self.connection_manager.send_to_user(user_id, {
@@ -2812,10 +2843,11 @@ async def send_media_async(
             async with aiofiles.open(file_path, "wb") as f:
                 await f.write(content)
 
+            public_url = _build_public_media_url(str(file_path))
+
             optimistic_payload = {
                 "user_id": user_id,
                 "message": str(file_path),
-                "url": str(file_path),
                 "type": media_type,
                 "from_me": True,
                 "caption": caption,
@@ -2823,6 +2855,8 @@ async def send_media_async(
                 "timestamp": datetime.utcnow().isoformat(),
                 "media_path": str(file_path),
             }
+            if public_url:
+                optimistic_payload["url"] = public_url
             if temp_id:
                 optimistic_payload["temp_id"] = temp_id
 
