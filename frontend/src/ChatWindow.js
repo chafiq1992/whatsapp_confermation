@@ -118,6 +118,30 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [forwardOpen, setForwardOpen] = useState(false);
   const forwardPayloadRef = useRef(null);
   const messagesRef = useRef([]);
+  const pendingBlobUrlsRef = useRef(new Map());
+  const registerBlobUrl = useCallback((key, blobUrl) => {
+    if (!key || !blobUrl) return;
+    const entry = { blobUrl, keys: new Set([key]) };
+    pendingBlobUrlsRef.current.set(key, entry);
+  }, []);
+  const aliasBlobUrlKey = useCallback((existingKey, aliasKey) => {
+    if (!existingKey || !aliasKey) return;
+    const entry = pendingBlobUrlsRef.current.get(existingKey);
+    if (!entry) return;
+    entry.keys.add(aliasKey);
+    pendingBlobUrlsRef.current.set(aliasKey, entry);
+  }, []);
+  const revokeBlobUrlForKey = useCallback((key) => {
+    if (!key) return;
+    const entry = pendingBlobUrlsRef.current.get(key);
+    if (!entry) return;
+    entry.keys.forEach((k) => pendingBlobUrlsRef.current.delete(k));
+    try {
+      if (entry.blobUrl && entry.blobUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(entry.blobUrl);
+      }
+    } catch {}
+  }, []);
 
   // Helper to merge and deduplicate messages by stable identifiers
   const mergeAndDedupe = useCallback((prevList, incomingList) => {
@@ -291,19 +315,41 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             return mergeAndDedupe(prev, [incoming]);
           });
         } else if (data.type === 'message_status_update') {
+          const update = data.data || {};
+          const statusTempId = update.temp_id;
+          const statusWaId = update.wa_message_id;
+          let blobKey = statusTempId || null;
+          if (statusTempId && statusWaId) {
+            aliasBlobUrlKey(statusTempId, statusWaId);
+          } else if (!statusTempId && statusWaId) {
+            const optimistic = (messagesRef.current || []).find((msg) =>
+              (msg.wa_message_id && msg.wa_message_id === statusWaId) ||
+              (msg.id && msg.id === statusWaId)
+            );
+            if (optimistic?.temp_id) {
+              blobKey = optimistic.temp_id;
+              aliasBlobUrlKey(optimistic.temp_id, statusWaId);
+            } else {
+              blobKey = statusWaId;
+            }
+          }
+          const durableUrl = update.url || update.media_url;
           setMessages(prev => sortByTime(prev.map(msg => {
-            const matchesTemp = data.data.temp_id && msg.temp_id === data.data.temp_id;
-            const matchesWa = data.data.wa_message_id && msg.wa_message_id === data.data.wa_message_id;
+            const matchesTemp = update.temp_id && msg.temp_id === update.temp_id;
+            const matchesWa = update.wa_message_id && msg.wa_message_id === update.wa_message_id;
             if (matchesTemp || matchesWa) {
-              const merged = { ...msg, ...data.data };
+              const merged = { ...msg, ...update };
               // If final wa_message_id arrives, promote id to stable WA id to stabilise keys
-              if (data.data.wa_message_id) {
-                merged.id = data.data.wa_message_id;
+              if (update.wa_message_id) {
+                merged.id = update.wa_message_id;
               }
               return merged;
             }
             return msg;
           })));
+          if (durableUrl) {
+            revokeBlobUrlForKey(blobKey || statusWaId || statusTempId);
+          }
         } else if (data.type === 'reaction_update') {
           const { target_wa_message_id, emoji, action } = data.data || {};
           if (!target_wa_message_id || !emoji) return;
@@ -603,6 +649,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     
     // Optimistic audio bubble
     const temp_id = generateTempId();
+    const blobUrl = URL.createObjectURL(file);
+    registerBlobUrl(temp_id, blobUrl);
     const optimistic = {
       id: temp_id,
       temp_id,
@@ -612,7 +660,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       status: 'sending',
       timestamp: new Date().toISOString(),
       client_ts: Date.now(),
-      url: URL.createObjectURL(file),
+      url: blobUrl,
     };
     setMessages(prev => sortByTime([...prev, optimistic]));
 
@@ -626,8 +674,13 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const first = Array.isArray(res?.data?.messages) ? res.data.messages[0] : null;
       const serverUrl = (first && (first.media_url || first.result?.url)) || res?.data?.url || res?.data?.file_path;
       const waId = first?.result?.wa_message_id || res?.data?.wa_message_id;
+      if (waId && temp_id) {
+        aliasBlobUrlKey(temp_id, waId);
+      }
       setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(waId ? { id: waId } : {}), ...(serverUrl ? { url: serverUrl } : {}) } : m));
-      try { if (optimistic.url && optimistic.url.startsWith('blob:')) URL.revokeObjectURL(optimistic.url); } catch {}
+      if (serverUrl) {
+        revokeBlobUrlForKey(waId || temp_id);
+      }
     };
     try {
       try {
