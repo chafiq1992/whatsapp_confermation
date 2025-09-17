@@ -190,6 +190,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
           backend: 'MediaElement',
         });
 
+        setAudioError(false);
+
         wavesurfer.on("ready", () => {
           setAudioError(false);
           try {
@@ -201,24 +203,6 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         });
         wavesurfer.on("finish", () => setPlaying(false));
         wavesurfer.on("error", (error) => {
-          const message =
-            typeof error === "string"
-              ? error
-              : error?.message || "";
-          const name =
-            typeof error === "object" && error !== null
-              ? error.name || ""
-              : "";
-          const isAbortError =
-            name === "AbortError" ||
-            /abort(ed|ing)?/i.test(message) ||
-            /destroy(ed|ing)?/i.test(message);
-
-          if (isAbortError) {
-            console.debug("WaveSurfer aborted/destroyed:", error);
-            return;
-          }
-
           console.error("WaveSurfer error:", error);
           setAudioError(true);
         });
