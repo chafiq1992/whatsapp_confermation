@@ -12,6 +12,8 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
   const analyserRef = useRef(null);
   const dataArrayRef = useRef(null);
   const audioContextRef = useRef(null);
+  const streamRef = useRef(null);
+  const isCancelledRef = useRef(false);
 
   const maxDuration = options.maxDuration || 120; // seconds
 
@@ -81,6 +83,8 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
     const mediaRecorder = new MediaRecorder(stream, { mimeType });
     const chunks = [];
     audioChunksRef.current = chunks;
+    streamRef.current = stream;
+    isCancelledRef.current = false;
 
     mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
 
@@ -88,6 +92,23 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
       clearInterval(timerRef.current);
       cancelAnimationFrame(animationRef.current);
       setRecordingTime(0);
+      const wasCancelled = isCancelledRef.current;
+      isCancelledRef.current = false;
+
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => {
+          if (track.readyState !== "ended") {
+            track.stop();
+          }
+        });
+        streamRef.current = null;
+      }
+      mediaRecorderRef.current = null;
+
+      if (wasCancelled || chunks.length === 0) {
+        audioChunksRef.current = [];
+        return;
+      }
 
       const blob = new Blob(chunks, { type: mimeType });
       const file = new File([blob], "voice_note.webm", { type: mimeType });
@@ -121,7 +142,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
   const stopRecording = () => {
     try {
       if (
-        mediaRecorderRef.current && 
+        mediaRecorderRef.current &&
         mediaRecorderRef.current.state !== "inactive"
       ) {
         mediaRecorderRef.current.stop();
@@ -135,6 +156,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
   };
 
   const cancelRecording = () => {
+    isCancelledRef.current = true;
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
@@ -143,6 +165,14 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
       if (err.name !== "AbortError") {
         console.error("MediaRecorder stop error:", err);
       }
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        if (track.readyState !== "ended") {
+          track.stop();
+        }
+      });
+      streamRef.current = null;
     }
     audioChunksRef.current = [];
     setIsRecording(false);
