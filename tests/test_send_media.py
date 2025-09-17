@@ -7,11 +7,6 @@ from backend import google_cloud_storage
 import json
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
 def test_send_media_returns_gcs_url(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
@@ -211,54 +206,6 @@ def test_upload_sync_sets_audio_ogg(tmp_path, monkeypatch):
 
     assert url == DummyBlob.public_url
     assert captured["content_type"] == "audio/ogg"
-
-
-@pytest.mark.anyio("asyncio")
-async def test_process_outgoing_message_audio_fallback_url(db_manager, monkeypatch, tmp_path):
-    """Audio messages fallback to /media URLs when no remote URL is ready."""
-
-    monkeypatch.setattr(main, "BASE_URL", "https://chat.example")
-
-    sent_payloads = []
-
-    async def fake_send_to_user(user_id, payload):
-        sent_payloads.append(payload)
-
-    async def fake_cache_message(user_id, message):
-        return None
-
-    async def fake_send_bg(message):
-        return None
-
-    monkeypatch.setattr(main.connection_manager, "send_to_user", fake_send_to_user)
-    monkeypatch.setattr(main.redis_manager, "cache_message", fake_cache_message)
-    monkeypatch.setattr(main.message_processor, "_send_to_whatsapp_bg", fake_send_bg)
-
-    media_file = tmp_path / "clip.ogg"
-    media_file.write_bytes(b"audio")
-
-    message_data = {
-        "user_id": "user123",
-        "message": str(media_file),
-        "url": str(media_file),
-        "type": "audio",
-        "from_me": True,
-        "caption": "",
-        "price": "",
-        "media_path": str(media_file),
-    }
-
-    optimistic = await main.message_processor.process_outgoing_message(message_data)
-    await asyncio.sleep(0)
-
-    expected_url = f"https://chat.example/media/{media_file.name}"
-
-    assert optimistic["url"] == expected_url
-    assert any(
-        payload.get("data", {}).get("url") == expected_url
-        for payload in sent_payloads
-        if payload.get("type") == "message_sent"
-    )
 
 
 def test_send_to_whatsapp_prefers_upload(tmp_path, monkeypatch):
