@@ -82,3 +82,95 @@ async def download_file_from_gcs_async(blob_name: str, destination: str) -> None
     """Asynchronously download a file from Google Cloud Storage."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _download_sync, blob_name, destination)
+
+
+# ---------------- Signed URL helpers ----------------
+def _parse_gcs_url(url: str) -> tuple[str | None, str | None]:
+    """Parse a GCS URL into (bucket, blob). Supports:
+    - https://storage.googleapis.com/<bucket>/<object>
+    - https://<bucket>.storage.googleapis.com/<object>
+    - gs://<bucket>/<object>
+    Returns (None, None) if not a recognizable GCS URL.
+    """
+    try:
+        if not url:
+            return None, None
+        lower = url.lower()
+        if lower.startswith("gs://"):
+            rest = url[5:]
+            if "/" in rest:
+                bucket, blob = rest.split("/", 1)
+                return bucket, blob
+            return rest, None
+        if "storage.googleapis.com" in lower:
+            # form 1: https://storage.googleapis.com/<bucket>/<object>
+            # form 2: https://<bucket>.storage.googleapis.com/<object>
+            from urllib.parse import urlparse
+            p = urlparse(url)
+            host = p.netloc
+            path = p.path.lstrip("/")
+            if host == "storage.googleapis.com":
+                if "/" in path:
+                    bucket, blob = path.split("/", 1)
+                    return bucket, blob
+                return path, None
+            elif host.endswith(".storage.googleapis.com"):
+                bucket = host.split(".storage.googleapis.com", 1)[0]
+                return bucket, path
+        return None, None
+    except Exception:
+        return None, None
+
+
+def generate_v4_signed_url(
+    bucket_name: str,
+    blob_name: str,
+    method: str = "GET",
+    expires_seconds: int = 600,
+    response_content_type: str | None = None,
+    response_disposition: str | None = None,
+) -> str:
+    """Generate a V4 signed URL for a GCS object.
+
+    Requires service account credentials (from file or JSON in env).
+    """
+    if storage is None:
+        raise RuntimeError("google-cloud-storage library not installed")
+
+    client = _get_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    params = {}
+    if response_content_type:
+        params["response-content-type"] = response_content_type
+    if response_disposition:
+        params["response-content-disposition"] = response_disposition
+
+    url = blob.generate_signed_url(
+        version="v4",
+        expiration=expires_seconds,
+        method=method,
+        virtual_hosted_style=False,
+        include_google_signing=True,
+        query_parameters=params or None,
+    )
+    return url
+
+
+def maybe_signed_url_for(url: str, ttl_seconds: int = 600) -> str | None:
+    """If the URL points to a GCS object, return a V4 signed URL; otherwise None.
+
+    If the URL doesn't include a bucket (e.g., local file), uses default bucket.
+    """
+    try:
+        bucket, blob = _parse_gcs_url(url)
+        # If it's our default bucket and URL is just object name
+        if (not bucket) and blob is None and url and not url.startswith("http"):
+            bucket = os.getenv("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
+            blob = url
+        if bucket and blob:
+            return generate_v4_signed_url(bucket, blob, expires_seconds=ttl_seconds)
+        return None
+    except Exception:
+        return None

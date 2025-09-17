@@ -317,7 +317,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     ) : (
       <video
         controls
-        src={mediaUrl}
+        src={mediaUrl ? `${API_BASE}/proxy-media?url=${encodeURIComponent(mediaUrl)}` : ""}
         className="mb-1 max-w-[250px] rounded-xl bg-gray-100"
         onError={() => setVideoError(true)}
         preload="metadata"
@@ -560,7 +560,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :
-         isImage ? renderSingleImage(mediaUrl, "Product", msg.caption || msg.price) :
+         isImage ? renderSingleImage(mediaUrl ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}` : mediaUrl, "Product", msg.caption || msg.price) :
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
          isCatalogItem ? (

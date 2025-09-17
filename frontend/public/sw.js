@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 
@@ -37,6 +37,7 @@ self.addEventListener('fetch', (event) => {
     path.startsWith('/media/proxy') ||
     path.startsWith('/proxy-audio') ||
     path.startsWith('/proxy-image') ||
+    path.startsWith('/proxy-media') ||
     path.startsWith('/link-preview')
   ) return;
 

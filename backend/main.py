@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 import subprocess
 import asyncpg
 import mimetypes
-from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs
+from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for
 from prometheus_fastapi_instrumentator import Instrumentator
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
@@ -42,6 +42,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
+from fastapi.responses import RedirectResponse
 
 # Absolute paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -2995,16 +2996,20 @@ async def get_all_catalog_products():
 
 @app.get("/proxy-audio")
 async def proxy_audio(url: str, request: StarletteRequest):
-    """Proxy remote audio with Range support for reliable HTML5 playback/seek.
+    """Proxy/redirect remote audio with Range support.
 
-    Important: keep the upstream HTTP connection open for the entire duration of
-    the downstream streaming response. We do this by creating the AsyncClient
-    and Response outside of a context manager and closing them in a finally
-    block of the streaming generator.
+    Prefer 302 redirect to a short‑lived GCS signed URL when possible (direct CDN
+    delivery, best for scale). Fallback to streaming proxy with Range pass-through.
+    Important when streaming: keep the upstream httpx response open until done.
     """
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
+        # Try to redirect to a signed GCS URL if applicable
+        signed = maybe_signed_url_for(url, ttl_seconds=600)
+        if signed:
+            return RedirectResponse(url=signed, status_code=302)
+
         range_header = request.headers.get("range") or request.headers.get("Range")
         fwd_headers = {"User-Agent": "Mozilla/5.0"}
         if range_header:
@@ -3044,13 +3049,17 @@ async def proxy_audio(url: str, request: StarletteRequest):
 
 @app.get("/proxy-image")
 async def proxy_image(url: str):
-    """Proxy remote images to avoid CORS/expired signed URLs and enable caching.
+    """Proxy/redirect images.
 
-    Accepts an absolute image URL and streams it back with cache headers.
+    Prefer 302 redirect to signed GCS URL when our bucket; otherwise fetch and
+    return bytes (to avoid CORS and allow caching via our domain).
     """
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
+        signed = maybe_signed_url_for(url, ttl_seconds=600)
+        if signed:
+            return RedirectResponse(url=signed, status_code=302)
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
         media_type = resp.headers.get("Content-Type", "image/jpeg")
@@ -3064,6 +3073,56 @@ async def proxy_image(url: str):
         )
     except Exception as exc:
         print(f"Proxy image error: {exc}")
+        raise HTTPException(status_code=502, detail="Proxy fetch failed")
+
+
+@app.get("/proxy-media")
+async def proxy_media(url: str, request: StarletteRequest):
+    """Generic media proxy for videos/documents with signed redirect when possible.
+
+    - If GCS: redirect to V4 signed URL (302) for direct CDN delivery with Range.
+    - Else: stream with Range pass-through like proxy_audio.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid url")
+    try:
+        signed = maybe_signed_url_for(url, ttl_seconds=600)
+        if signed:
+            return RedirectResponse(url=signed, status_code=302)
+
+        range_header = request.headers.get("range") or request.headers.get("Range")
+        fwd_headers = {"User-Agent": "Mozilla/5.0"}
+        if range_header:
+            fwd_headers["Range"] = range_header
+
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
+        client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+        resp = await client.get(url, headers=fwd_headers, stream=True)
+
+        status_code = resp.status_code
+        media_type = resp.headers.get("Content-Type", "application/octet-stream")
+        passthrough = {"Cache-Control": "public, max-age=86400"}
+        for h in ("Content-Length", "Content-Range", "Accept-Ranges"):
+            v = resp.headers.get(h)
+            if v:
+                passthrough[h] = v
+        if "Accept-Ranges" not in passthrough:
+            passthrough["Accept-Ranges"] = "bytes"
+
+        async def body_iter():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                try:
+                    await resp.aclose()
+                finally:
+                    await client.aclose()
+
+        return StreamingResponse(body_iter(), status_code=status_code, media_type=media_type, headers=passthrough)
+    except Exception as exc:
+        print(f"Proxy media error: {exc}")
         raise HTTPException(status_code=502, detail="Proxy fetch failed")
 
 # Lightweight link preview endpoint to extract OG metadata (title/image)
