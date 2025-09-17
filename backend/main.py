@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import logging
 from datetime import datetime, timezone
+import struct
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
 import time
@@ -189,6 +190,77 @@ async def convert_webm_to_ogg(src_path: Path) -> Path:
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode())
     return dst_path
+
+async def compute_audio_waveform(src_path: Path, buckets: int = 56) -> list[int]:
+    """Compute a simple peak-based waveform (0..100) using ffmpeg to decode to PCM.
+
+    - Decodes to mono 16-bit PCM at 16 kHz
+    - Splits into N buckets and records the peak absolute amplitude per bucket
+    - Normalizes to 0..100 for UI
+    """
+    try:
+        # Decode with ffmpeg to raw PCM (s16le), 1 channel, 16 kHz
+        cmd = [
+            "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+            "-i", str(src_path),
+            "-ac", "1", "-ar", "16000",
+            "-f", "s16le",
+            "pipe:1",
+        ]
+        loop = asyncio.get_event_loop()
+        proc = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
+        if proc.returncode != 0:
+            # If decode fails, return a flat placeholder waveform
+            return [30] * max(1, int(buckets))
+        pcm = proc.stdout or b""
+        if not pcm:
+            return [30] * max(1, int(buckets))
+
+        # Interpret bytes as signed 16-bit little-endian samples
+        num_samples = len(pcm) // 2
+        if num_samples <= 0:
+            return [30] * max(1, int(buckets))
+
+        # Avoid extreme memory on edge cases: cap to ~5 minutes at 16 kHz
+        max_samples = 5 * 60 * 16000
+        if num_samples > max_samples:
+            pcm = pcm[: max_samples * 2]
+            num_samples = max_samples
+
+        # Unpack in chunks to avoid a giant tuple at once
+        # We'll compute peaks per bucket on the fly
+        num_buckets = max(8, min(256, int(buckets)))
+        bucket_size = max(1, num_samples // num_buckets)
+        peaks: list[int] = []
+        max_abs = 1
+        for i in range(0, num_samples, bucket_size):
+            chunk = pcm[i * 2 : (i + bucket_size) * 2]
+            if not chunk:
+                break
+            # iterate 2 bytes at a time
+            local_peak = 0
+            for j in range(0, len(chunk), 2):
+                sample = struct.unpack_from('<h', chunk, j)[0]
+                a = abs(sample)
+                if a > local_peak:
+                    local_peak = a
+            peaks.append(local_peak)
+            if local_peak > max_abs:
+                max_abs = local_peak
+
+        # Normalize to 0..100 and clamp to at least 8 and at most 46 like UI bounds
+        norm = []
+        for p in peaks[:num_buckets]:
+            v = int(round((p / max_abs) * 100)) if max_abs > 0 else 0
+            norm.append(max(0, min(100, v)))
+        # Ensure fixed length by padding/truncating
+        if len(norm) < num_buckets:
+            norm += [0] * (num_buckets - len(norm))
+        elif len(norm) > num_buckets:
+            norm = norm[:num_buckets]
+        return norm
+    except Exception:
+        return [30] * max(1, int(buckets))
 
 # Enhanced WebSocket Connection Manager
 class ConnectionManager:
@@ -635,6 +707,7 @@ class DatabaseManager:
             "reaction_to",         # wa_message_id of the message this reaction targets
             "reaction_emoji",      # emoji character (e.g. "👍")
             "reaction_action",     # add/remove per WhatsApp payload
+            "waveform",            # optional JSON array of peaks for audio
         }
 
     async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
@@ -718,6 +791,7 @@ class DatabaseManager:
                     reaction_to    TEXT,
                     reaction_emoji TEXT,
                     reaction_action TEXT,
+                    waveform       TEXT,
                     timestamp      TEXT  DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -802,6 +876,7 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "reaction_to", "TEXT")
             await self._add_column_if_missing(db, "messages", "reaction_emoji", "TEXT")
             await self._add_column_if_missing(db, "messages", "reaction_action", "TEXT")
+            await self._add_column_if_missing(db, "messages", "waveform", "TEXT")
 
             # Create index on temp_id now that the column is guaranteed to exist
             if self.use_postgres:
@@ -1133,6 +1208,7 @@ class DatabaseManager:
             "url": message.get("url"),
             "media_path": message.get("media_path"),
             "timestamp": message.get("timestamp"),
+            "waveform": message.get("waveform"),
         }
         # Remove None values so SQL doesn't fail on NOT NULL columns
         clean = {k: v for k, v in data.items() if v is not None}
@@ -1470,6 +1546,9 @@ class MessageProcessor:
                 optimistic_message["url"] = f"{BASE_URL}/media/{filename}"
             else:
                 optimistic_message["url"] = message_text
+            # pass-through waveform if present
+            if message_type == "audio" and isinstance(message_data.get("waveform"), list):
+                optimistic_message["waveform"] = message_data.get("waveform")
         
         # 1. INSTANT: Send to UI immediately (optimistic update)
         await self.connection_manager.send_to_user(user_id, {
@@ -2740,7 +2819,15 @@ async def send_media(
                 except Exception as exc:
                     raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
-            # ---------- upload to Google Drive ----------
+            # ---------- audio: compute waveform before upload ----------
+            audio_waveform: list[int] | None = None
+            if media_type == "audio":
+                try:
+                    audio_waveform = await compute_audio_waveform(file_path, buckets=56)
+                except Exception:
+                    audio_waveform = None
+
+            # ---------- upload to Google Cloud Storage ----------
             media_url = await upload_file_to_gcs(
                 str(file_path)
             )
@@ -2757,6 +2844,7 @@ async def send_media(
                 "timestamp": datetime.utcnow().isoformat(),
                 # Keep absolute path for internal processing/sending to WhatsApp
                 "media_path": str(file_path),
+                **({"waveform": audio_waveform} if audio_waveform else {}),
             }
 
             # ---------- enqueue / send ----------

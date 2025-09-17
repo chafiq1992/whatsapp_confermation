@@ -43,13 +43,61 @@ export function AudioProvider({ children }) {
     };
   }, []);
 
+  // Simple IndexedDB cache for audio blobs (one DB, one store)
+  const dbRef = useRef(null);
+  useEffect(() => {
+    if (!('indexedDB' in window)) return;
+    const openReq = indexedDB.open('media-cache', 1);
+    openReq.onupgradeneeded = () => {
+      const db = openReq.result;
+      if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio');
+    };
+    openReq.onsuccess = () => { dbRef.current = openReq.result; };
+    openReq.onerror = () => { dbRef.current = null; };
+  }, []);
+
+  const cacheGet = (key) => new Promise((resolve) => {
+    try {
+      const db = dbRef.current; if (!db) return resolve(null);
+      const tx = db.transaction('audio', 'readonly');
+      const store = tx.objectStore('audio');
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  const cachePut = (key, val) => new Promise((resolve) => {
+    try {
+      const db = dbRef.current; if (!db) return resolve(false);
+      const tx = db.transaction('audio', 'readwrite');
+      const store = tx.objectStore('audio');
+      const req = store.put(val, key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    } catch { resolve(false); }
+  });
+
   const play = async (url) => {
     try {
       const audio = audioRef.current;
       if (!audio) return;
       if (url && url !== currentUrl) {
         setCurrentUrl(url);
-        audio.src = url;
+        // Try cache first
+        const cached = await cacheGet(url);
+        if (cached instanceof Blob) {
+          audio.src = URL.createObjectURL(cached);
+        } else {
+          audio.src = url;
+          // Warm cache in background (ignore SW; backend bypasses Range)
+          try {
+            const res = await fetch(url, { method: 'GET' });
+            if (res.ok) {
+              const blob = await res.blob();
+              cachePut(url, blob);
+            }
+          } catch {}
+        }
       }
       // Apply current rate
       audio.playbackRate = playbackRates[playbackRateIndex] || 1;

@@ -13,6 +13,7 @@ from google.oauth2 import service_account
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 GCS_CREDENTIALS_FILE = os.getenv("GCS_CREDENTIALS_FILE")
 GCS_CREDENTIALS_JSON = os.getenv("GCS_CREDENTIALS_JSON")
+GCS_PUBLIC_UPLOADS = os.getenv("GCS_PUBLIC_UPLOADS", "0") == "1"
 
 
 def _get_client():
@@ -46,7 +47,9 @@ def _upload_sync(file_path: str, content_type: str | None = None, bucket_name: s
         if content_type is None and file_path.lower().endswith('.ogg'):
             content_type = 'audio/ogg'
     blob.upload_from_filename(file_path, content_type=content_type)
-    blob.make_public()
+    # Make objects public only if explicitly enabled (default true for backward compatibility)
+    if GCS_PUBLIC_UPLOADS:
+        blob.make_public()
 
     return blob.public_url
 

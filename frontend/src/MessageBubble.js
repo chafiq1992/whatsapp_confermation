@@ -129,34 +129,36 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const isThisActive = !!audioUrl && currentUrl === audioUrl;
   const progress = isThisActive && durationSec > 0 ? Math.max(0, Math.min(1, positionSec / durationSec)) : 0;
 
-  // Deterministic pseudo-random bars similar to WhatsApp
-  const hashString = (s) => {
+  // Waveform bars (prefer real server-provided waveform; fallback to synthetic)
+  const parseWaveform = (w) => {
     try {
-      let h = 2166136261;
-      for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = (h * 16777619) >>> 0;
-      }
-      return h >>> 0;
-    } catch { return 1; }
+      if (!w) return null;
+      const arr = Array.isArray(w) ? w : JSON.parse(w);
+      const nums = arr.map((n) => Math.max(0, Math.min(100, Number(n) || 0)));
+      const count = 56;
+      if (nums.length === count) return nums;
+      if (nums.length > count) return nums.slice(0, count);
+      // pad
+      return nums.concat(Array.from({ length: count - nums.length }, () => 0));
+    } catch { return null; }
   };
-  const generateBars = (seed, count = 56) => {
-    const bars = [];
-    let x = seed || 1;
-    for (let i = 0; i < count; i++) {
-      // xorshift32
-      x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-      const v = (x >>> 0) / 4294967295;
-      const h = 10 + Math.floor(v * 36); // 10..46px (container ~48px)
-      bars.push(h);
+  const realWave = useMemo(() => parseWaveform(msg?.waveform), [msg?.waveform]);
+  const synthBars = useMemo(() => {
+    const s = String(msg?.wa_message_id || msg?.id || audioUrl || primaryUrl || "");
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+    let x = h >>> 0;
+    const out = [];
+    for (let i = 0; i < 56; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; const v = (x>>>0)/4294967295; out.push(Math.floor(20 + v * 60)); }
+    return out.map(v => Math.max(8, Math.min(46, Math.floor(8 + (v/100)*38))));
+  }, [msg?.wa_message_id, msg?.id, audioUrl, primaryUrl]);
+  const bars = useMemo(() => {
+    if (realWave && realWave.length) {
+      // map 0..100 -> 8..46 px
+      return realWave.map((v) => Math.max(8, Math.min(46, Math.floor(8 + (v / 100) * 38))));
     }
-    return bars;
-  };
-  const barSeed = useMemo(
-    () => hashString(String(msg?.wa_message_id || msg?.id || audioUrl || primaryUrl || "")),
-    [msg?.wa_message_id, msg?.id, audioUrl, primaryUrl]
-  );
-  const bars = useMemo(() => generateBars(barSeed, 56), [barSeed]);
+    return synthBars;
+  }, [realWave, synthBars]);
 
   // Video player state and refs
   const [videoError, setVideoError] = useState(false);
