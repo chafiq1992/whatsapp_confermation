@@ -1,5 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
-import WaveSurfer from "wavesurfer.js";
+import React, { useRef, useEffect, useState, useMemo } from "react";
 import { useAudio } from "./AudioManager";
 import { Clock3, Check, CheckCheck, XCircle, Reply, Forward } from "lucide-react"; // 14 KB gzipped
 
@@ -86,12 +85,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         : primaryUrl)
     : null;
 
-  // Track which URL is currently used by the audio player
-  const [activeUrl, setActiveUrl] = useState(mediaUrl);
-
-  useEffect(() => {
-    setActiveUrl(mediaUrl);
-  }, [mediaUrl]);
+  // Effective audio URL used for playback
+  const audioUrl = useMemo(() => (isAudio ? (effectiveAudioUrl || primaryUrl) : ""), [isAudio, effectiveAudioUrl, primaryUrl]);
 
   // Enhanced media type detection
   const isGroupedImages = Array.isArray(msg.message) &&
@@ -127,14 +122,41 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     return () => { aborted = true; };
   }, [isText, msg?.message, API_BASE]);
 
-  // Audio player state and refs
+  // Audio player state and refs (bar-based waveform)
   const waveformRef = useRef(null);
-  const wavesurferRef = useRef(null);
-  const [playing, setPlaying] = useState(false);
-  const [audioError, setAudioError] = useState(false);
-  const [playbackRateIdx, setPlaybackRateIdx] = useState(0); // 0:1x, 1:1.5x, 2:2x
-  const playbackRates = [1, 1.5, 2];
-  const { currentUrl, isPlaying, toggle: toggleGlobalAudio, cycleSpeed: cycleGlobalSpeed, playbackRate: globalRate } = useAudio();
+  const { currentUrl, isPlaying, positionSec, durationSec, toggle: toggleGlobalAudio, cycleSpeed: cycleGlobalSpeed, playbackRate: globalRate, seek: seekGlobal } = useAudio();
+
+  const isThisActive = !!audioUrl && currentUrl === audioUrl;
+  const progress = isThisActive && durationSec > 0 ? Math.max(0, Math.min(1, positionSec / durationSec)) : 0;
+
+  // Deterministic pseudo-random bars similar to WhatsApp
+  const hashString = (s) => {
+    try {
+      let h = 2166136261;
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = (h * 16777619) >>> 0;
+      }
+      return h >>> 0;
+    } catch { return 1; }
+  };
+  const generateBars = (seed, count = 56) => {
+    const bars = [];
+    let x = seed || 1;
+    for (let i = 0; i < count; i++) {
+      // xorshift32
+      x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+      const v = (x >>> 0) / 4294967295;
+      const h = 10 + Math.floor(v * 36); // 10..46px (container ~48px)
+      bars.push(h);
+    }
+    return bars;
+  };
+  const barSeed = useMemo(
+    () => hashString(String(msg?.wa_message_id || msg?.id || audioUrl || primaryUrl || "")),
+    [msg?.wa_message_id, msg?.id, audioUrl, primaryUrl]
+  );
+  const bars = useMemo(() => generateBars(barSeed, 56), [barSeed]);
 
   // Video player state and refs
   const [videoError, setVideoError] = useState(false);
@@ -150,115 +172,27 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {}
   };
 
-  // WaveSurfer setup relying solely on msg.url
-  useEffect(() => {
-    if (!isAudio) return;
-
-    const url = effectiveAudioUrl || primaryUrl;
-    if (!url) {
-      setAudioError(true);
-      setActiveUrl("");
-      return;
-    }
-
-    let wavesurfer = null;
-
-    if (waveformRef.current) {
-      if (wavesurferRef.current) {
-        try {
-          wavesurferRef.current.destroy();
-        } catch (e) {
-          console.warn("Error destroying previous wavesurfer:", e);
-        }
-        wavesurferRef.current = null;
-      }
-
-      try {
-        setActiveUrl(url);
-        wavesurfer = WaveSurfer.create({
-          container: waveformRef.current,
-          url,
-          waveColor: "#8ecae6",
-          progressColor: "#219ebc",
-          height: 48,
-          barWidth: 2,
-          barGap: 1,
-          barRadius: 2,
-          cursorWidth: 1,
-          interact: true,
-          normalize: true,
-          backend: 'MediaElement',
-        });
-
-        setAudioError(false);
-
-        wavesurfer.on("ready", () => {
-          setAudioError(false);
-          try {
-            // Apply current playback rate on ready
-            const rate = playbackRates[playbackRateIdx] || 1;
-            try { wavesurfer.setPlaybackRate(rate, false); } catch {}
-            window.dispatchEvent(new CustomEvent('row-resize'));
-          } catch {}
-        });
-        wavesurfer.on("finish", () => setPlaying(false));
-        wavesurfer.on("error", (error) => {
-          console.error("WaveSurfer error:", error);
-          setAudioError(true);
-        });
-
-        wavesurferRef.current = wavesurfer;
-      } catch (err) {
-        console.error("WaveSurfer initialization error:", err);
-        setAudioError(true);
-      }
-    }
-
-    return () => {
-      if (wavesurfer) {
-        try {
-          wavesurfer.destroy();
-        } catch (e) {
-          console.warn("Error cleaning up wavesurfer:", e);
-        }
-      }
-      if (wavesurferRef.current) {
-        try {
-          wavesurferRef.current.destroy();
-        } catch (e) {
-          console.warn("Error cleaning up wavesurfer ref:", e);
-        }
-        wavesurferRef.current = null;
-      }
-    };
-  }, [primaryUrl, isAudio]);
+  // Click-to-seek on waveform
+  const handleSeekClick = (e) => {
+    if (!audioUrl) return;
+    try {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const fraction = (e.clientX - rect.left) / rect.width;
+      seekGlobal(fraction);
+    } catch {}
+  };
 
   // Toggle playback speed like WhatsApp Business (1x -> 1.5x -> 2x -> 1x)
   const handleToggleSpeed = () => {
-    // Keep local waveform in sync and also control global audio manager
-    const nextIdx = (playbackRateIdx + 1) % playbackRates.length;
-    setPlaybackRateIdx(nextIdx);
-    const ws = wavesurferRef.current;
-    if (ws) {
-      try { ws.setPlaybackRate(playbackRates[nextIdx], false); } catch {}
-    }
     try { cycleGlobalSpeed(); } catch {}
   };
 
   // Audio play/pause handler with error handling
   const handlePlayPause = () => {
-    if (audioError) return;
-    // Use global audio manager to persist playback across conversation changes
     try {
-      const url = effectiveAudioUrl || primaryUrl;
-      if (!url) return;
-      toggleGlobalAudio(url);
-      setPlaying((p) => !p);
-    } catch (error) {
-      console.error("Audio playback error:", error);
-      setPlaying(false);
-      setAudioError(true);
-    }
+      if (!audioUrl) return;
+      toggleGlobalAudio(audioUrl);
+    } catch {}
   };
 
   // Enhanced single image renderer
@@ -317,17 +251,17 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <div className="flex items-center mb-1">
         <button
           onClick={handlePlayPause}
-          disabled={audioError}
+          disabled={!audioUrl}
           className={`mr-2 rounded-full w-8 h-8 flex items-center justify-center focus:outline-none transition-colors ${
-            audioError 
-              ? 'bg-red-500 cursor-not-allowed' 
+            !audioUrl
+              ? 'bg-red-500 cursor-not-allowed'
               : 'bg-gray-600 hover:bg-gray-500'
           }`}
-          aria-label={playing ? "Pause audio" : "Play audio"}
+          aria-label={isThisActive && isPlaying ? "Pause audio" : "Play audio"}
         >
-          {audioError ? (
+          {!audioUrl ? (
             <span className="text-xs">✖</span>
-          ) : playing ? (
+          ) : (isThisActive && isPlaying) ? (
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
               <rect x="3" y="2" width="3" height="12" />
               <rect x="10" y="2" width="3" height="12" />
@@ -338,50 +272,34 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
             </svg>
           )}
         </button>
-        {!audioError && (
+        {!!audioUrl && (
           <button
             onClick={handleToggleSpeed}
             className="mr-2 px-2 h-8 rounded text-xs bg-gray-600 hover:bg-gray-500"
             title="Playback speed"
           >
-            {`${(globalRate || playbackRates[playbackRateIdx])}x`}
+            {`${globalRate || 1}x`}
           </button>
         )}
-        
-          {audioError ? (
-            primaryUrl ? (
-              <div className="flex-1 min-w-[180px] max-w-[320px]">
-                <audio
-                  controls
-                  src={primaryUrl}
-                  className="w-full"
-                  preload="metadata"
-                >
-                  Your browser does not support the audio element.
-                </audio>
-                <div className="mt-1 text-[11px] text-red-300 italic">
-                  Waveform unavailable. Falling back to basic player.
-                  <a
-                    href={primaryUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-1 text-blue-300 underline"
-                  >
-                    Download
-                  </a>
-                </div>
-              </div>
-            ) : (
-              <div className="flex-1 min-w-[180px] text-xs text-red-300 italic">
-                Audio URL missing
-              </div>
-            )
-          ) : (
-            <div
-              ref={waveformRef}
-              className="flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1"
-            />
-          )}
+        <div
+          ref={waveformRef}
+          onClick={handleSeekClick}
+          className="relative flex-1 min-w-[180px] max-w-[320px] h-[48px] mb-1 cursor-pointer select-none"
+          title="Seek"
+        >
+          <div className="absolute inset-0 flex items-end gap-[1px] px-1">
+            {bars.map((h, i) => {
+              const passed = i < Math.floor(progress * bars.length);
+              return (
+                <div
+                  key={i}
+                  className={`${passed ? 'bg-[#219ebc]' : 'bg-[#8ecae6]'} w-[2px] rounded-sm`}
+                  style={{ height: `${Math.max(8, Math.min(46, h))}px` }}
+                />
+              );
+            })}
+          </div>
+        </div>
       </div>
       
       {msg.transcription && (

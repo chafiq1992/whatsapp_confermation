@@ -2994,19 +2994,30 @@ async def get_all_catalog_products():
 
 
 @app.get("/proxy-audio")
-async def proxy_audio(url: str):
-    """Proxy remote audio through this server to avoid CORS issues in waveform decoding."""
+async def proxy_audio(url: str, request: StarletteRequest):
+    """Proxy remote audio with Range support for reliable HTML5 playback/seek."""
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
+        range_header = request.headers.get("range") or request.headers.get("Range")
+        fwd_headers = {"User-Agent": "Mozilla/5.0"}
+        if range_header:
+            fwd_headers["Range"] = range_header
+
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = await client.get(url, headers=fwd_headers, stream=True)
+
+        status_code = resp.status_code
         media_type = resp.headers.get("Content-Type", "audio/ogg")
-        return StarletteResponse(
-            content=resp.content,
-            media_type=media_type,
-            headers={"Cache-Control": "public, max-age=86400"}
-        )
+        passthrough = {"Cache-Control": "public, max-age=86400"}
+        for h in ("Content-Length", "Content-Range", "Accept-Ranges"):
+            v = resp.headers.get(h)
+            if v:
+                passthrough[h] = v
+        if "Accept-Ranges" not in passthrough:
+            passthrough["Accept-Ranges"] = "bytes"
+
+        return StreamingResponse(resp.aiter_bytes(), status_code=status_code, media_type=media_type, headers=passthrough)
     except Exception as exc:
         print(f"Proxy audio error: {exc}")
         raise HTTPException(status_code=502, detail="Proxy fetch failed")
