@@ -3108,13 +3108,62 @@ async def proxy_audio(url: str, request: StarletteRequest):
                 pass
 
         range_header = request.headers.get("range") or request.headers.get("Range")
+
+        # If the URL is a GCS object and signing failed, stream directly via GCS SDK with auth
+        bucket_name, blob_name = _parse_gcs_url(url)
+        if bucket_name and blob_name:
+            try:
+                client_gcs = _get_client()
+                bucket = client_gcs.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                # Ensure metadata loaded
+                try:
+                    blob.reload()
+                except Exception:
+                    pass
+                size = getattr(blob, "size", None)
+                ctype = blob.content_type or "audio/ogg"
+
+                # Parse Range header (single range only)
+                start = end = None
+                if range_header and range_header.lower().startswith("bytes="):
+                    try:
+                        r = range_header.split("=", 1)[1]
+                        s, e = (r.split("-", 1) + [""])[:2]
+                        start = int(s) if s else None
+                        end = int(e) if e else None
+                    except Exception:
+                        start = end = None
+
+                if start is not None and size is not None:
+                    end = end if end is not None else int(size) - 1
+                    data = blob.download_as_bytes(start=start, end=end)
+                    headers = {
+                        "Accept-Ranges": "bytes",
+                        "Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(len(data)),
+                        "Cache-Control": "public, max-age=86400",
+                    }
+                    return StarletteResponse(content=data, media_type=ctype, headers=headers, status_code=206)
+                else:
+                    # Full download (small files) – return 200
+                    data = blob.download_as_bytes()
+                    headers = {
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(len(data)),
+                        "Cache-Control": "public, max-age=86400",
+                    }
+                    return StarletteResponse(content=data, media_type=ctype, headers=headers, status_code=200)
+            except Exception:
+                # Fall back to HTTP proxy below
+                pass
+
         fwd_headers = {"User-Agent": "Mozilla/5.0"}
         if range_header:
             fwd_headers["Range"] = range_header
 
         timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
         client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
-        # Build and send streaming request; keep response open until generator finishes
         req = client.build_request("GET", url, headers=fwd_headers)
         resp = await client.send(req, stream=True)
 
@@ -3193,13 +3242,64 @@ async def proxy_media(url: str, request: StarletteRequest):
     try:
         signed = maybe_signed_url_for(url, ttl_seconds=600)
         if signed:
-            return RedirectResponse(url=signed, status_code=302)
+            try:
+                bucket, blob = _parse_gcs_url(url)
+                if bucket and blob:
+                    client_gcs = _get_client()
+                    if client_gcs.bucket(bucket).blob(blob).exists():
+                        return RedirectResponse(url=signed, status_code=302)
+            except Exception:
+                pass
 
+        # GCS authenticated streaming fallback
         range_header = request.headers.get("range") or request.headers.get("Range")
+        bucket_name, blob_name = _parse_gcs_url(url)
+        if bucket_name and blob_name:
+            try:
+                client_gcs = _get_client()
+                bucket = client_gcs.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                try:
+                    blob.reload()
+                except Exception:
+                    pass
+                size = getattr(blob, "size", None)
+                ctype = blob.content_type or "application/octet-stream"
+
+                start = end = None
+                if range_header and range_header.lower().startswith("bytes="):
+                    try:
+                        r = range_header.split("=", 1)[1]
+                        s, e = (r.split("-", 1) + [""])[:2]
+                        start = int(s) if s else None
+                        end = int(e) if e else None
+                    except Exception:
+                        start = end = None
+                if start is not None and size is not None:
+                    end = end if end is not None else int(size) - 1
+                    data = blob.download_as_bytes(start=start, end=end)
+                    headers = {
+                        "Accept-Ranges": "bytes",
+                        "Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(len(data)),
+                        "Cache-Control": "public, max-age=86400",
+                    }
+                    return StarletteResponse(content=data, media_type=ctype, headers=headers, status_code=206)
+                else:
+                    data = blob.download_as_bytes()
+                    headers = {
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(len(data)),
+                        "Cache-Control": "public, max-age=86400",
+                    }
+                    return StarletteResponse(content=data, media_type=ctype, headers=headers, status_code=200)
+            except Exception:
+                pass
+
+        # Generic HTTP proxy fallback
         fwd_headers = {"User-Agent": "Mozilla/5.0"}
         if range_header:
             fwd_headers["Range"] = range_header
-
         timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
         client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
         req = client.build_request("GET", url, headers=fwd_headers)
