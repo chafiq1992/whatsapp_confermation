@@ -230,19 +230,20 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const renderGroupedImages = () => (
     <div className={`grid ${msg.message.length > 2 ? "grid-cols-2" : "grid-cols-1"} gap-2`}>
       {msg.message.map((img, idx) => {
-        const imgSrc = getSafeMediaUrl(img.url || img.message);
+        const raw = getSafeMediaUrl(img.url || img.message);
+        const proxied = raw && /^https?:\/\//i.test(raw) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(raw)}` : raw;
         const imgCaption = img.caption || img.price;
         
         return (
           <div key={idx} className="flex flex-col items-center">
             <img
-              src={imgSrc}
+              src={proxied}
               alt={`Image ${idx + 1}`}
               className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
               onError={(e) => handleImageError(e)}
               onLoad={notifyResize}
               loading="lazy"
-              onClick={() => window.open(imgSrc, '_blank')}
+              onClick={() => window.open(raw || proxied, '_blank')}
             />
             {imgCaption && (
               <div className="text-xs mt-1 text-gray-700 bg-black/5 px-2 py-1 rounded">

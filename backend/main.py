@@ -3221,6 +3221,30 @@ async def proxy_image(url: str):
                         return RedirectResponse(url=signed, status_code=302)
             except Exception:
                 pass
+        # If GCS signed URL isn't available, attempt authenticated fetch via GCS SDK
+        bucket_name, blob_name = _parse_gcs_url(url)
+        if bucket_name and blob_name:
+            try:
+                client_gcs = _get_client()
+                bucket = client_gcs.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                try:
+                    blob.reload()
+                except Exception:
+                    pass
+                data = blob.download_as_bytes()
+                ctype = blob.content_type or "image/jpeg"
+                return StarletteResponse(
+                    content=data,
+                    media_type=ctype,
+                    headers={
+                        "Cache-Control": "public, max-age=86400",
+                        "Vary": "Accept",
+                    },
+                )
+            except Exception:
+                # Fall back to generic HTTP fetch below
+                pass
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
         media_type = resp.headers.get("Content-Type", "image/jpeg")

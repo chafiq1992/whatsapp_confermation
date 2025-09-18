@@ -9,6 +9,7 @@ function getSafeMediaUrl(raw) {
 
 export default function ImageGroupBubble({ images = [] }) {
   const [zoomIdx, setZoomIdx] = useState(null);
+  const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   // Keyboard navigation for zoomed images
   const handleKey = useCallback(
@@ -33,13 +34,19 @@ export default function ImageGroupBubble({ images = [] }) {
       <div className={`grid ${images.length > 2 ? "grid-cols-2" : "grid-cols-1"} md:grid-cols-3 gap-2 max-w-[420px] max-h-[240px] overflow-x-auto overflow-y-auto rounded-xl p-2 bg-slate-800`}>
         {images.map((img, idx) => (
           <div key={idx} className="relative flex flex-col items-center">
-            <img
-              src={getSafeMediaUrl(img.url || img.message)}
+            {(() => {
+              const raw = getSafeMediaUrl(img.url || img.message);
+              const proxied = raw && /^https?:\/\//i.test(raw) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(raw)}` : raw;
+              return (
+                <img
+              src={proxied}
               alt={`Image ${idx + 1}`}
               className="rounded-lg object-cover h-[90px] w-[90px] cursor-pointer"
               onClick={() => setZoomIdx(idx)}
               onError={e => (e.target.src = "/broken-image.png")}
             />
+              );
+            })()}
             {(img.caption || img.price) && (
               <div className="absolute bottom-1 left-1 right-1 text-xs text-gray-200 bg-black bg-opacity-60 px-1 py-0.5 rounded">
                 {img.caption || img.price}
@@ -54,11 +61,17 @@ export default function ImageGroupBubble({ images = [] }) {
           onClick={() => setZoomIdx(null)}
         >
           <div className="relative" onClick={e => e.stopPropagation()}>
-            <img
-              src={getSafeMediaUrl(images[zoomIdx].url || images[zoomIdx].message)}
+            {(() => {
+              const raw = getSafeMediaUrl(images[zoomIdx].url || images[zoomIdx].message);
+              const proxied = raw && /^https?:\/\//i.test(raw) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(raw)}` : raw;
+              return (
+                <img
+              src={proxied}
               alt="zoomed"
               className="max-w-[90vw] max-h-[90vh] rounded-2xl shadow-lg"
             />
+              );
+            })()}
             {/* Show image index (1 of N) */}
             <div className="absolute bottom-2 left-2 text-xs text-white bg-black bg-opacity-40 rounded px-2 py-0.5">
               {zoomIdx + 1} / {images.length}
