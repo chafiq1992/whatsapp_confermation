@@ -5,6 +5,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
   const [recordingTime, setRecordingTime] = useState(0);
 
   const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
   const timerRef = useRef(null);
   const audioChunksRef = useRef([]);
   const canvasRef = useRef(null);
@@ -12,6 +13,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
   const analyserRef = useRef(null);
   const dataArrayRef = useRef(null);
   const audioContextRef = useRef(null);
+  const canceledRef = useRef(false);
 
   const maxDuration = options.maxDuration || 120; // seconds
 
@@ -69,6 +71,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
 
   const startRecording = async () => {
     setRecordingTime(0);
+    canceledRef.current = false;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -76,6 +79,7 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
       alert("Microphone access denied or not available.");
       return;
     }
+    streamRef.current = stream;
     // Only webm is widely supported
     const mimeType = "audio/webm";
     const mediaRecorder = new MediaRecorder(stream, { mimeType });
@@ -88,10 +92,17 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
       clearInterval(timerRef.current);
       cancelAnimationFrame(animationRef.current);
       setRecordingTime(0);
-
+      try {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+        }
+      } catch {}
+      // If canceled, do not emit any audio
+      if (canceledRef.current) {
+        return;
+      }
       const blob = new Blob(chunks, { type: mimeType });
       const file = new File([blob], "voice_note.webm", { type: mimeType });
-
       if (onComplete) onComplete(file, blob, recordingTime);
     };
 
@@ -131,10 +142,16 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
         console.error("MediaRecorder stop error:", err);
       }
     }
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+      }
+    } catch {}
     setIsRecording(false);
   };
 
   const cancelRecording = () => {
+    canceledRef.current = true;
     try {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
@@ -144,6 +161,11 @@ export default function useAudioRecorder(userId, onComplete, options = {}) {
         console.error("MediaRecorder stop error:", err);
       }
     }
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+      }
+    } catch {}
     audioChunksRef.current = [];
     setIsRecording(false);
     setRecordingTime(0);
