@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 import subprocess
 import asyncpg
 import mimetypes
-from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for
+from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for, _parse_gcs_url, _get_client
 from prometheus_fastapi_instrumentator import Instrumentator
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
@@ -3093,10 +3093,19 @@ async def proxy_audio(url: str, request: StarletteRequest):
     if not url or not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
-        # Try to redirect to a signed GCS URL if applicable
+        # Try to redirect to a signed GCS URL if applicable (only if object exists)
         signed = maybe_signed_url_for(url, ttl_seconds=600)
         if signed:
-            return RedirectResponse(url=signed, status_code=302)
+            try:
+                # Lightweight existence check to avoid redirecting to GCS 403 when bucket is private but URL is wrong
+                bucket, blob = _parse_gcs_url(url)
+                if bucket and blob:
+                    client = _get_client()
+                    if client.bucket(bucket).blob(blob).exists():
+                        return RedirectResponse(url=signed, status_code=302)
+            except Exception:
+                # If anything goes wrong, fall back to proxying
+                pass
 
         range_header = request.headers.get("range") or request.headers.get("Range")
         fwd_headers = {"User-Agent": "Mozilla/5.0"}
@@ -3148,7 +3157,14 @@ async def proxy_image(url: str):
     try:
         signed = maybe_signed_url_for(url, ttl_seconds=600)
         if signed:
-            return RedirectResponse(url=signed, status_code=302)
+            try:
+                bucket, blob = _parse_gcs_url(url)
+                if bucket and blob:
+                    client = _get_client()
+                    if client.bucket(bucket).blob(blob).exists():
+                        return RedirectResponse(url=signed, status_code=302)
+            except Exception:
+                pass
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
         media_type = resp.headers.get("Content-Type", "image/jpeg")
