@@ -23,7 +23,7 @@ export function AudioProvider({ children }) {
 
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
-    const onEnded = () => setIsPlaying(false);
+    const onEnded = () => { setIsPlaying(false); setCurrentUrl(""); };
     const onTime = () => setPositionSec(audio.currentTime || 0);
     const onLoaded = () => setDurationSec(audio.duration || 0);
 
@@ -120,6 +120,7 @@ export function AudioProvider({ children }) {
       audio.pause();
       audio.currentTime = 0;
       setIsPlaying(false);
+      setCurrentUrl("");
     } catch {}
   };
 

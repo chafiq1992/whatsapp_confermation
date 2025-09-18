@@ -327,6 +327,10 @@ export default function App() {
           adminWs={adminWsRef.current}
           onUpdateConversationTags={handleUpdateConversationTags}
         />
+        {/* Persistent audio bar above composer area */}
+        <div className="absolute left-0 right-0 bottom-[88px] px-4">
+          <GlobalAudioBar />
+        </div>
       </div>
       {/* RIGHT: Shopify "contact info" panel, responsive (hidden on small/medium) */}
       <div className="hidden lg:block lg:w-80 lg:min-w-[18rem] lg:flex-shrink-0 border-l border-gray-700 bg-gray-900 overflow-y-auto">
@@ -339,7 +343,6 @@ export default function App() {
           <AdminDashboard onClose={() => setShowAdmin(false)} />
         </Suspense>
       )}
-      <GlobalAudioBar />
     </div>
     </AudioProvider>
   );

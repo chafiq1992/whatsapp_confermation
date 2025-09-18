@@ -74,8 +74,16 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const order = getOrderData();
   const isOrder = msg.type === "order" && order;
 
-  // Compute media URL strictly from msg.url (GCS/absolute); no local fallback
-  const primaryUrl = msg.url ? getSafeMediaUrl(msg.url) : "";
+  // Compute media URL, prefer msg.url, fallback to string msg.message if it looks like a URL
+  const primaryUrl = useMemo(() => {
+    const u1 = getSafeMediaUrl(msg?.url);
+    if (u1) return u1;
+    if (typeof msg?.message === 'string') {
+      const u2 = getSafeMediaUrl(msg.message);
+      if (u2) return u2;
+    }
+    return "";
+  }, [msg?.url, msg?.message]);
   const isAudio = msg.type === "audio";
   const mediaUrl = primaryUrl;
   // Use backend proxy for audio to avoid CORS issues when drawing waveform
