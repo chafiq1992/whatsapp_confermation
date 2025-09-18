@@ -3105,8 +3105,9 @@ async def proxy_audio(url: str, request: StarletteRequest):
 
         timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
         client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
-        # Note: do NOT wrap in a context manager; we close in the generator
-        resp = await client.get(url, headers=fwd_headers, stream=True)
+        # Build and send streaming request; keep response open until generator finishes
+        req = client.build_request("GET", url, headers=fwd_headers)
+        resp = await client.send(req, stream=True)
 
         status_code = resp.status_code
         media_type = resp.headers.get("Content-Type", "audio/ogg")
@@ -3185,7 +3186,8 @@ async def proxy_media(url: str, request: StarletteRequest):
 
         timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=30.0)
         client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
-        resp = await client.get(url, headers=fwd_headers, stream=True)
+        req = client.build_request("GET", url, headers=fwd_headers)
+        resp = await client.send(req, stream=True)
 
         status_code = resp.status_code
         media_type = resp.headers.get("Content-Type", "application/octet-stream")
