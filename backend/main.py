@@ -1636,6 +1636,13 @@ class MessageProcessor:
                                     print(f"Audio normalization skipped: {_exc}")
                             gcs_url = await upload_file_to_gcs(str(media_path))
                             if gcs_url:
+                                # Mutate in-memory message so final DB save includes correct URL
+                                try:
+                                    message["url"] = gcs_url
+                                    if message.get("type") in ("audio", "video", "image"):
+                                        message["message"] = gcs_url
+                                except Exception:
+                                    pass
                                 # Notify UI and persist URL when ready
                                 try:
                                     await self.connection_manager.send_to_user(user_id, {
@@ -1649,8 +1656,8 @@ class MessageProcessor:
                                         "user_id": user_id,
                                         "temp_id": temp_id,
                                         "url": gcs_url,
+                                        "message": gcs_url if message.get("type") in ("audio", "video", "image") else None,
                                     })
-                                    await self.redis_manager.cache_message(user_id, {**message, "url": gcs_url})
                                 except Exception:
                                     pass
                         except Exception as _exc:
