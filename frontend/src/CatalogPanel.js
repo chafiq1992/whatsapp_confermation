@@ -29,11 +29,14 @@ export default function CatalogPanel({
   const [selectedSet, setSelectedSet] = useState(null);
 
   // Products and pagination
-  const PAGE_SIZE = 24;
+  const INITIAL_FETCH_LIMIT = 10000; // fetch many items up-front for instant preview
+  const PREFETCH_LIMIT = 120; // lightweight background prefetch for folder previews
+  const PAGE_STEP = 200; // only used when falling back to infinite scroll for very large sets
+  const CONCURRENT_THUMB_PREFETCH = 6;
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [fetchLimit, setFetchLimit] = useState(PAGE_SIZE);
+  const [fetchLimit, setFetchLimit] = useState(INITIAL_FETCH_LIMIT);
   const gridRef = useRef(null);
   const abortRef = useRef(null);
   const requestIdRef = useRef(0);
@@ -91,7 +94,7 @@ export default function CatalogPanel({
           const cachedSet = await loadCatalogSetProducts(s.id);
           if (!cachedSet || cachedSet.length === 0) {
             try {
-              const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PAGE_SIZE } });
+              const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PREFETCH_LIMIT } });
               const arr = Array.isArray(resp.data) ? resp.data : [];
               if (arr.length) await saveCatalogSetProducts(s.id, arr);
             } catch {}
@@ -107,7 +110,32 @@ export default function CatalogPanel({
     setLoadingSets(false);
   };
 
-  // Fetch products for current set with increasing limit (simple pagination)
+  // Prefetch thumbnails via Service Worker when available; fallback to in-page fetch with concurrency
+  const _precacheThumbs = async (urls) => {
+    try {
+      const unique = Array.from(new Set((urls || []).filter(Boolean)));
+      if (unique.length === 0) return;
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        const CHUNK = 50;
+        for (let i = 0; i < unique.length; i += CHUNK) {
+          const slice = unique.slice(i, i + CHUNK);
+          navigator.serviceWorker.controller.postMessage({ type: 'PRECACHE_THUMBS', urls: slice });
+        }
+        return;
+      }
+      let index = 0;
+      const runNext = async () => {
+        const i = index++;
+        if (i >= unique.length) return;
+        const u = unique[i];
+        try { await fetch(u, { cache: 'no-store' }); } catch {}
+        return runNext();
+      };
+      await Promise.all(Array.from({ length: CONCURRENT_THUMB_PREFETCH }, runNext));
+    } catch {}
+  };
+
+  // Fetch products for current set with large initial limit for instant view
   const fetchProducts = async (setId, limit) => {
     if (!setId) return [];
     if (abortRef.current) abortRef.current.abort();
@@ -117,23 +145,21 @@ export default function CatalogPanel({
     const reqId = ++requestIdRef.current;
     try {
       const res = await api.get(`${API_BASE}/catalog-set-products`, {
-        params: { set_id: setId, limit: limit || PAGE_SIZE },
+        params: { set_id: setId, limit: limit || INITIAL_FETCH_LIMIT },
         signal: controller.signal,
       });
       const list = Array.isArray(res.data) ? res.data : [];
       // Only update if this is the latest request (avoid stale overwrites)
       if (reqId === requestIdRef.current) {
         setProducts(list);
-        setHasMore(list.length >= (limit || PAGE_SIZE));
-        // Prefetch first few thumbnails to render instantly
+        setHasMore(list.length >= (limit || INITIAL_FETCH_LIMIT));
+        // Prefetch thumbnails for the entire list with concurrency limits (via SW when available)
         try {
-          const urls = (list || []).slice(0, 12).map(p => p?.images?.[0]?.url).filter(Boolean);
-          urls.forEach(u => {
-            const img = new Image();
-            img.decoding = 'async';
-            img.loading = 'eager';
-            img.src = thumbUrlFor(u, 256);
-          });
+          const urls = (list || [])
+            .map(p => p?.images?.[0]?.url)
+            .filter(Boolean)
+            .map(u => thumbUrlFor(u, 256));
+          setTimeout(() => { _precacheThumbs(urls); }, 0);
         } catch {}
       }
       try { await saveCatalogSetProducts(setId, list); } catch {}
@@ -163,7 +189,7 @@ export default function CatalogPanel({
       if (nearBottom) {
         if (fetchLimitTimerRef.current) clearTimeout(fetchLimitTimerRef.current);
         fetchLimitTimerRef.current = setTimeout(() => {
-          setFetchLimit((l) => l + PAGE_SIZE);
+          setFetchLimit((l) => l + PAGE_STEP);
         }, 200);
       }
     };
@@ -188,7 +214,7 @@ export default function CatalogPanel({
     if (!canScroll && hasMore && products.length >= fetchLimit && autoLoadAttemptsRef.current < 6) {
       autoLoadAttemptsRef.current += 1;
       if (fetchLimitTimerRef.current) clearTimeout(fetchLimitTimerRef.current);
-      fetchLimitTimerRef.current = setTimeout(() => setFetchLimit((l) => l + PAGE_SIZE), 150);
+      fetchLimitTimerRef.current = setTimeout(() => setFetchLimit((l) => l + PAGE_STEP), 150);
     }
   }, [products, hasMore, modalOpen, modalMode, fetchLimit]);
 
@@ -470,7 +496,7 @@ export default function CatalogPanel({
     setSelectedSet(setObj.id);
     setModalTitle(setObj.name || setObj.id);
     setModalMode('products');
-    setFetchLimit(PAGE_SIZE);
+    setFetchLimit(INITIAL_FETCH_LIMIT);
     autoLoadAttemptsRef.current = 0;
     setSelectedImages([]);
     setLoadingProducts(true);
@@ -481,7 +507,7 @@ export default function CatalogPanel({
       const cached = await loadCatalogSetProducts(setObj.id);
       if (Array.isArray(cached) && cached.length) setProducts(cached);
     } catch {}
-    await fetchProducts(setObj.id, PAGE_SIZE);
+    await fetchProducts(setObj.id, INITIAL_FETCH_LIMIT);
   };
 
   // Keep grid scrolled to top on first render of products after opening
@@ -577,7 +603,7 @@ export default function CatalogPanel({
         const cachedSet = await loadCatalogSetProducts(s.id);
         if (!cachedSet || cachedSet.length === 0) {
           try {
-            const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PAGE_SIZE } });
+            const resp = await api.get(`${API_BASE}/catalog-set-products`, { params: { set_id: s.id, limit: PREFETCH_LIMIT } });
             const arr = Array.isArray(resp.data) ? resp.data : [];
             if (arr.length) await saveCatalogSetProducts(s.id, arr);
           } catch {}
@@ -591,6 +617,16 @@ export default function CatalogPanel({
   const enterFolder = async (setObj) => {
     await openSetModal(setObj);
   };
+
+  const preloadCurrentSetThumbnails = useCallback(() => {
+    try {
+      const urls = (products || [])
+        .map(p => p?.images?.[0]?.url)
+        .filter(Boolean)
+        .map(u => thumbUrlFor(u, 256));
+      _precacheThumbs(urls);
+    } catch {}
+  }, [products]);
 
   return (
     <div className="bg-gray-900 text-white border-t border-gray-800 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
@@ -666,6 +702,7 @@ export default function CatalogPanel({
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
                   <button className="px-3 py-2 text-sm rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
                   <button className="px-3 py-2 text-sm rounded bg-green-600 text-white" onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
+                  <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={preloadCurrentSetThumbnails} title="Download thumbnails for offline/instant view">Preload thumbnails</button>
                 </>
               ) : (
                 <span className="text-sm text-gray-700">Select a set</span>
@@ -720,23 +757,11 @@ export default function CatalogPanel({
                                   src={thumbUrlFor(url, 256)}
                                   srcSet={`${thumbUrlFor(url, 160)} 160w, ${thumbUrlFor(url, 256)} 256w, ${thumbUrlFor(url, 384)} 384w`}
                                   sizes="(max-width: 640px) 45vw, (max-width: 1024px) 22vw, 256px"
-                                  data-src={url}
                                   alt={p.name}
                                   className="w-full h-32 object-cover"
-                                  loading="lazy"
+                                  loading="eager"
                                   decoding="async"
-                                  onError={(e) => {
-                                    const el = e.currentTarget;
-                                    const step = Number(el.dataset.fbstep || '0');
-                                    if (step === 0) {
-                                      el.dataset.fbstep = '1';
-                                      const original = el.getAttribute('data-src') || url;
-                                      el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}&w=256`;
-                                    } else if (step === 1) {
-                                      el.dataset.fbstep = '2';
-                                      el.src = '/broken-image.png';
-                                    }
-                                  }}
+                                  onError={(e) => { try { e.currentTarget.src = '/broken-image.png'; } catch {} }}
                                 />
                               ) : (
                                 <span className="text-xs text-gray-400">No Image</span>

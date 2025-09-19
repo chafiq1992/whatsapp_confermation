@@ -704,6 +704,7 @@ class DatabaseManager:
             "caption",
             "media_path",
             "timestamp",
+            "server_ts",
             "url",  # store public URL for media
             # reply / reactions metadata
             "reply_to",            # wa_message_id of the quoted/original message
@@ -889,6 +890,14 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "product_retailer_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "retailer_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "product_id", "TEXT")
+            # Ensure server-side timestamp column exists
+            await self._add_column_if_missing(db, "messages", "server_ts", "TEXT")
+            # Add index on server_ts for ordering by receive time
+            if self.use_postgres:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_server_ts ON messages (user_id, server_ts)")
+            else:
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_server_ts ON messages (user_id, server_ts)")
+                await db.commit()
 
             # Create index on temp_id now that the column is guaranteed to exist
             if self.use_postgres:
@@ -1288,20 +1297,20 @@ class DatabaseManager:
                 if self.use_postgres:
                     last = await db.fetchrow(
                         self._convert(
-                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1"
+                            "SELECT message, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
                         ),
                         uid,
                     )
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT message, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1"
+                            "SELECT message, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
                         ),
                         (uid,)
                     )
                     last = await cur.fetchone()
                 last_msg = last["message"] if last else None
-                last_time = last["timestamp"] if last else None
+                last_time = last["ts"] if last else None
 
                 if self.use_postgres:
                     unread_row = await db.fetchrow(
@@ -1319,14 +1328,14 @@ class DatabaseManager:
                 if self.use_postgres:
                     last_agent_row = await db.fetchrow(
                         self._convert(
-                            "SELECT MAX(timestamp) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                            "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
                         ),
                         uid,
                     )
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT MAX(timestamp) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                            "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
                         ),
                         (uid,)
                     )
@@ -1336,7 +1345,7 @@ class DatabaseManager:
                 if self.use_postgres:
                     unr_row = await db.fetchrow(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND timestamp > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND COALESCE(server_ts, timestamp) > ?"
                         ),
                         uid,
                         last_agent,
@@ -1344,7 +1353,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND timestamp > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND COALESCE(server_ts, timestamp) > ?"
                         ),
                         (uid, last_agent),
                     )
@@ -1540,6 +1549,7 @@ class MessageProcessor:
             "from_me": True,
             "status": "sending",  # Optimistic status
             "timestamp": timestamp,
+            "server_ts": timestamp,
             "temp_id": temp_id,
             "price": message_data.get("price", ""),
             "caption": message_data.get("caption", ""),
@@ -1871,6 +1881,7 @@ class MessageProcessor:
         msg_type = message["type"]
         wa_message_id = message.get("id")
         timestamp = datetime.utcfromtimestamp(int(message.get("timestamp", 0))).isoformat()
+        server_now = datetime.now(timezone.utc).isoformat()
         
         # Extract contact name from contacts array if available
         contact_name = None
@@ -1934,6 +1945,7 @@ class MessageProcessor:
             "from_me": False,
             "status": "received",
             "timestamp": timestamp,
+            "server_ts": server_now,
             "wa_message_id": wa_message_id
         }
         
@@ -2344,9 +2356,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         if not recent_messages:
             recent_messages = await db_manager.get_messages(user_id, limit=20)
         if recent_messages:
-            # Ensure chronological order for the client
+            # Ensure chronological order for the client by server receive time when available
             try:
-                # Detect if Redis returned newest-first due to LPUSH usage
                 def to_ms(t):
                     if not t: return 0
                     s = str(t)
@@ -2357,7 +2368,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         return int(_dt.fromisoformat(s).timestamp() * 1000)
                     except Exception:
                         return 0
-                recent_messages = sorted(recent_messages, key=lambda m: to_ms(m.get("timestamp")))
+                recent_messages = sorted(recent_messages, key=lambda m: to_ms(m.get("server_ts") or m.get("timestamp")))
             except Exception:
                 pass
             await websocket.send_json({

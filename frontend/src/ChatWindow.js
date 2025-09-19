@@ -42,8 +42,8 @@ const sortByTime = (list = []) => {
     return Number.isNaN(ms) ? 0 : ms;
   };
   return [...list].sort((a, b) => {
-    const aMs = toMs(a.timestamp);
-    const bMs = toMs(b.timestamp);
+    const aMs = toMs(a.server_ts || a.timestamp);
+    const bMs = toMs(b.server_ts || b.timestamp);
     if (aMs !== bMs) return aMs - bMs;
     // If timestamps are equal, always place customer's message (from_me=false) before ours (from_me=true)
     if (Boolean(a.from_me) !== Boolean(b.from_me)) {
@@ -380,7 +380,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   // Track latest timestamp whenever messages change
   useEffect(() => {
     if (!messages || messages.length === 0) return;
-    const newest = messages[messages.length - 1]?.timestamp;
+    const newest = (messages[messages.length - 1]?.server_ts) || messages[messages.length - 1]?.timestamp;
     if (newest) lastTimestampRef.current = newest;
     messagesRef.current = messages;
   }, [messages]);
@@ -393,7 +393,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const last = messages[messages.length - 1];
       const preview = typeof last.message === 'string' ? last.message : (last.caption || '');
       const t = last.type || 'text';
-      const time = last.timestamp || new Date().toISOString();
+      const time = last.server_ts || last.timestamp || new Date().toISOString();
       window.dispatchEvent(new CustomEvent('conversation-preview', { detail: { user_id: uid, last_message: preview, last_message_type: t, last_message_time: time } }));
     } catch {}
   }, [messages, activeUser?.user_id]);

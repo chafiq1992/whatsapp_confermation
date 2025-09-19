@@ -934,7 +934,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                   )}
                 </div>
               )}
-              <span>{formatTime(msg.timestamp)}</span>
+              <span>{formatTime(msg.server_ts || msg.timestamp)}</span>
               {renderTick(msg, self)}
             </div>
           </div>
