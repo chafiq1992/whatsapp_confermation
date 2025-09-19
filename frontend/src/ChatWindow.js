@@ -1210,27 +1210,44 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                 }
               } catch {}
             }}
-            onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
-              lastVisibleStartIndexRef.current = visibleStartIndex;
-              if (!hasInitialisedScrollRef.current && visibleStopIndex >= groupedMessages.length - 1) {
-                hasInitialisedScrollRef.current = true;
-                setTimeout(() => setAllowSmoothScroll(true), 0);
-              }
-              const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
-              if (atBottomRef.current !== isAtBottom) {
-                setAtBottom(isAtBottom);
-                atBottomRef.current = isAtBottom;
-              } else {
-                atBottomRef.current = isAtBottom;
-              }
-              if (isAtBottom) {
-                if (!isNearBottomRef.current) {
-                  isNearBottomRef.current = true;
-                  setIsNearBottom(true);
+            onItemsRendered={(params) => {
+              try {
+                const { visibleStartIndex, visibleStopIndex } = params || {};
+                // Guard against empty list or invalid indexes from virtualization during layout thrash
+                if (
+                  !Array.isArray(groupedMessages) ||
+                  groupedMessages.length === 0 ||
+                  typeof visibleStartIndex !== 'number' ||
+                  typeof visibleStopIndex !== 'number' ||
+                  visibleStartIndex < 0 ||
+                  visibleStopIndex < 0
+                ) {
+                  return;
                 }
-                if (showJumpToLatest) {
-                  setShowJumpToLatest(false);
+                lastVisibleStartIndexRef.current = visibleStartIndex;
+                if (!hasInitialisedScrollRef.current && visibleStopIndex >= groupedMessages.length - 1) {
+                  hasInitialisedScrollRef.current = true;
+                  setTimeout(() => setAllowSmoothScroll(true), 0);
                 }
+                const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
+                if (atBottomRef.current !== isAtBottom) {
+                  setAtBottom(isAtBottom);
+                  atBottomRef.current = isAtBottom;
+                } else {
+                  atBottomRef.current = isAtBottom;
+                }
+                if (isAtBottom) {
+                  if (!isNearBottomRef.current) {
+                    isNearBottomRef.current = true;
+                    setIsNearBottom(true);
+                  }
+                  if (showJumpToLatest) {
+                    setShowJumpToLatest(false);
+                  }
+                }
+              } catch (err) {
+                // Prevent any rendering-time exceptions from crashing the app
+                try { console.warn('onItemsRendered error:', err); } catch {}
               }
             }}
           >
