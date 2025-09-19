@@ -46,6 +46,26 @@ function formatTime(ts) {
 export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
   const [showReactPicker, setShowReactPicker] = useState(false);
+  const retailerId = useMemo(() => {
+    try {
+      const id = msg?.product_retailer_id || msg?.retailer_id || msg?.product_id || "";
+      return id ? String(id) : "";
+    } catch { return ""; }
+  }, [msg?.product_retailer_id, msg?.retailer_id, msg?.product_id]);
+  const [variantData, setVariantData] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!retailerId) return;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/shopify-variant/${retailerId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setVariantData(data || null);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [retailerId, API_BASE]);
   // Helpers to extract and classify URLs inside text messages
   const extractUrls = (text) => {
     try {
@@ -628,10 +648,62 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
          isCatalogItem ? (
-           <div className="whitespace-pre-line break-words leading-relaxed">
-             <div className="text-[10px] uppercase tracking-wide opacity-75 mb-0.5">Product</div>
-             {highlightText(msg.message, highlightQuery)}
-           </div>
+           (() => {
+             const info = catalogProducts[retailerId] || {};
+             const rawImage = variantData?.image_src || info.image || null;
+             const image = rawImage && /^https?:\/\//i.test(rawImage) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(rawImage)}` : rawImage;
+             const title = info.name || variantData?.product_title || msg?.caption || "Product";
+             const priceNum = Number(variantData?.price || info.price || 0);
+             const priceStr = Number.isFinite(priceNum) && priceNum > 0 ? `${priceNum.toFixed(2)} MAD` : null;
+             return (
+               <div className="flex items-center rounded-xl bg-white/95 border border-blue-200 shadow-sm p-3 gap-3">
+                 <div className="flex-shrink-0">
+                   {image ? (
+                     <img
+                       src={image}
+                       alt={title}
+                       className="w-14 h-14 object-cover rounded-lg border border-blue-200 shadow-sm bg-gray-50"
+                       onError={(e) => handleImageError(e, '/placeholder-product.png')}
+                     />
+                   ) : (
+                     <div className="w-14 h-14 rounded-lg bg-gradient-to-br from-blue-100 to-blue-200 flex items-center justify-center text-blue-500 text-xl border border-blue-200 shadow-sm">
+                       🛒
+                     </div>
+                   )}
+                 </div>
+                 <div className="flex-1 min-w-0">
+                   <div className="font-semibold text-gray-800 text-base leading-tight mb-1 truncate">{title}</div>
+                   <div className="flex flex-wrap gap-2 text-sm text-gray-600">
+                     {!!retailerId && (
+                       <span className="flex items-center"><span className="font-medium text-blue-700">Variant ID:</span><span className="ml-1 font-semibold">{retailerId}</span></span>
+                     )}
+                     {priceStr && (
+                       <>
+                         <span className="text-gray-400">|</span>
+                         <span className="flex items-center"><span className="font-medium text-blue-700">Price:</span><span className="ml-1 font-semibold">{priceStr}</span></span>
+                       </>
+                     )}
+                   </div>
+                   <div className="mt-2">
+                     {!!retailerId && (
+                       <button
+                         type="button"
+                         className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded"
+                         onClick={() => {
+                           try {
+                             window.dispatchEvent(new CustomEvent('add-to-order', { detail: { variantId: String(retailerId), quantity: 1 } }));
+                           } catch {}
+                         }}
+                         title="Add this product to the Shopify order panel"
+                       >
+                         Add to Order
+                       </button>
+                     )}
+                   </div>
+                 </div>
+               </div>
+             );
+           })()
          ) :
          isCatalogSet ? (
            <div className="whitespace-pre-line break-words leading-relaxed">

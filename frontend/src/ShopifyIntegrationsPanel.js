@@ -114,6 +114,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [productSearch, setProductSearch] = useState("");
   const [products, setProducts] = useState([]);
   const [variantIdInput, setVariantIdInput] = useState("");
+  const [variantPreview, setVariantPreview] = useState(null);
   const [selectedItems, setSelectedItems] = useState([]);
   const [shippingOptions, setShippingOptions] = useState([]);
   const [deliveryOption, setDeliveryOption] = useState("");
@@ -304,6 +305,23 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       setErrorMsg("Variant not found.");
     }
   };
+
+  // Live preview for Variant ID input (debounced)
+  useEffect(() => {
+    const raw = String(variantIdInput || "").trim();
+    if (!raw) { setVariantPreview(null); return; }
+    // Only attempt for plausible numeric IDs
+    if (!/^\d{4,}$/.test(raw)) { setVariantPreview(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get(`${API_BASE}/shopify-variant/${raw}`);
+        setVariantPreview(res?.data || null);
+      } catch {
+        setVariantPreview(null);
+      }
+    }, 450);
+    return () => clearTimeout(t);
+  }, [variantIdInput, API_BASE]);
 
   // ---- Build and send order label (PNG) from template ----
   const computeTotalPrice = useMemo(() => {
@@ -1104,29 +1122,39 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             {/* Product search and add section */}
             <hr className="my-2" />
             <h3 className="font-bold text-lg mb-2">Add products</h3>
-            <input
-              value={productSearch}
-              onChange={e => setProductSearch(e.target.value)}
-              placeholder="Search products…"
-              className="p-1 rounded bg-gray-800 text-white w-full"
-            />
-            {products.map((product) => (
-              <div key={product.id}>
-                <strong>{product.title}</strong>
-                <div>
-                  {product.variants.map((variant) => (
-                    <button
-                      type="button"
-                      key={variant.id}
-                      className="border p-1 m-1 rounded"
-                      onClick={() => handleAddVariant(variant)}
-                    >
-                      {variant.title} • {variant.price} MAD
-                    </button>
-                  ))}
+            <div className="relative">
+              <input
+                value={productSearch}
+                onChange={e => setProductSearch(e.target.value)}
+                placeholder="Search products…"
+                className="p-1 rounded bg-gray-800 text-white w-full"
+                autoComplete="off"
+              />
+              {!!productSearch && products.length > 0 && (
+                <div className="absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-auto bg-gray-900 border border-gray-600 rounded shadow-lg">
+                  <ul className="divide-y divide-gray-700">
+                    {products.map((product) => (
+                      <li key={product.id} className="p-2">
+                        <div className="font-semibold text-sm text-white truncate" title={product.title}>{product.title}</div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {(product.variants || []).map((variant) => (
+                            <button
+                              type="button"
+                              key={variant.id}
+                              className="text-xs border border-gray-600 text-gray-200 hover:bg-gray-800 px-2 py-1 rounded"
+                              onClick={() => handleAddVariant(variant)}
+                              title={variant.title}
+                            >
+                              {variant.title} • {variant.price} MAD
+                            </button>
+                          ))}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              </div>
-            ))}
+              )}
+            </div>
             <div className="mt-2">
               <input
                 value={variantIdInput}
@@ -1141,6 +1169,34 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               >
                 Add Variant
               </button>
+              {variantPreview && (
+                <div className="mt-2 p-2 bg-gray-800 border border-gray-700 rounded flex items-center gap-2">
+                  {variantPreview.image_src ? (
+                    <img src={variantPreview.image_src} alt={variantPreview.title || "Variant"} className="w-10 h-10 object-cover rounded" />
+                  ) : (
+                    <div className="w-10 h-10 rounded bg-gray-600 flex items-center justify-center">🛒</div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-white truncate" title={variantPreview.product_title || variantPreview.title}>
+                      {variantPreview.product_title || variantPreview.title}
+                    </div>
+                    <div className="text-xs text-gray-300 truncate">
+                      ID: {variantPreview.id} • {Number(variantPreview.price || 0).toFixed(2)} MAD
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-xs bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded"
+                    onClick={() => {
+                      handleAddVariant(variantPreview);
+                      setVariantIdInput("");
+                      setVariantPreview(null);
+                    }}
+                  >
+                    Add
+                  </button>
+                </div>
+              )}
             </div>
             {/* Selected items table with images and pricing */}
             <div className="w-full overflow-x-auto mt-2">
