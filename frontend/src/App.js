@@ -200,6 +200,9 @@ export default function App() {
               const idx = prev.findIndex((c) => c.user_id === userId);
               if (idx !== -1) {
                 const current = prev[idx];
+                // If archived as Done, remove the tag on any new incoming message
+                const oldTags = Array.isArray(current.tags) ? current.tags : [];
+                const newTags = (msg.from_me ? oldTags : oldTags.filter(t => String(t || '').toLowerCase() !== 'done'));
                 const updated = {
                   ...current,
                   last_message: text,
@@ -210,6 +213,7 @@ export default function App() {
                     activeUserRef.current?.user_id === userId
                       ? current.unread_count
                       : (current.unread_count || 0) + 1,
+                  tags: newTags,
                 };
                 return [
                   updated,
@@ -225,6 +229,7 @@ export default function App() {
                 last_message_time: nowIso,
                 unread_count:
                   activeUserRef.current?.user_id === userId ? 0 : 1,
+                tags: [],
               };
               return [newConv, ...prev];
             });

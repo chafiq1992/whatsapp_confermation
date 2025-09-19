@@ -1877,6 +1877,16 @@ class MessageProcessor:
         # Note: contacts info is typically in the webhook's 'contacts' field, not message
         
         await self.db_manager.upsert_user(sender, contact_name, sender)
+        # Auto-unarchive: if conversation is marked as Done, remove the tag on any new incoming message
+        try:
+            meta = await self.db_manager.get_conversation_meta(sender)
+            tags = list(meta.get("tags") or []) if isinstance(meta, dict) else []
+            if any(str(t).lower() == 'done' for t in tags):
+                new_tags = [t for t in tags if str(t).lower() != 'done']
+                await self.db_manager.set_conversation_tags(sender, new_tags)
+        except Exception as _e:
+            # Non-fatal: do not block message processing
+            pass
         
         # Special case: reactions are not normal bubbles – broadcast an update instead
         if msg_type == "reaction":
