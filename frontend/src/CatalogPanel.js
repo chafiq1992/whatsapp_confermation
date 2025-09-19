@@ -109,16 +109,21 @@ export default function CatalogPanel({
         signal: controller.signal,
       });
       const list = Array.isArray(res.data) ? res.data : [];
-      // Only update if this is the latest request and the same set is still selected
-      if (reqId === requestIdRef.current && selectedSet === setId) {
+      // Only update if this is the latest request (avoid stale overwrites)
+      if (reqId === requestIdRef.current) {
         setProducts(list);
         setHasMore(list.length >= (limit || PAGE_SIZE));
+        // Prefetch first few images to render instantly
+        try {
+          const urls = (list || []).slice(0, 12).map(p => p?.images?.[0]?.url).filter(Boolean);
+          urls.forEach(u => { const img = new Image(); img.decoding = 'async'; img.loading = 'eager'; img.src = u; });
+        } catch {}
       }
       try { await saveCatalogSetProducts(setId, list); } catch {}
       return list;
     } catch (err) {
       if (err?.name !== "CanceledError") console.error("Error fetching set products:", err);
-      if (reqId === requestIdRef.current && selectedSet === setId) {
+      if (reqId === requestIdRef.current) {
         // Preserve existing items; just stop further pagination on error
         setHasMore(false);
       }
@@ -416,6 +421,7 @@ export default function CatalogPanel({
     setSelectedImages([]);
     setLoadingProducts(true);
     setModalOpen(true);
+    try { if (gridRef.current) gridRef.current.scrollTop = 0; } catch {}
     // Show cached instantly
     try {
       const cached = await loadCatalogSetProducts(setObj.id);
@@ -423,6 +429,16 @@ export default function CatalogPanel({
     } catch {}
     await fetchProducts(setObj.id, PAGE_SIZE);
   };
+
+  // Keep grid scrolled to top on first render of products after opening
+  useEffect(() => {
+    if (!modalOpen || modalMode !== 'products') return;
+    try {
+      if (gridRef.current && products.length > 0) {
+        requestAnimationFrame(() => { try { gridRef.current.scrollTop = 0; } catch {} });
+      }
+    } catch {}
+  }, [modalOpen, modalMode, products.length]);
 
   // Helpers: filter sets by prefix (case-insensitive)
   const filterSetsByPrefix = (prefix) => {
