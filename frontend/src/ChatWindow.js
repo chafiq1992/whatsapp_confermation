@@ -191,6 +191,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const hasInitialisedScrollRef = useRef(false);
   const resizeRafRef = useRef(null);
   const lastVisibleStartIndexRef = useRef(0);
+  const onItemsRenderedRafRef = useRef(null);
+  const pendingResetIndexRef = useRef(null);
+  const resetRafRef = useRef(null);
   // Throttle list height updates to avoid frequent re-mounts (prevents audio flicker while typing)
   const layoutLastHeightRef = useRef(0);
   const layoutLastUpdateTsRef = useRef(0);
@@ -1190,30 +1193,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               return itemHeightsByKey.current[key] || 72;
             }}
             className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
-            onScroll={({ scrollOffset }) => {
-              try {
-                const outer = listOuterRef.current;
-                if (!outer) return;
-                const distanceFromBottom = (outer.scrollHeight - (outer.scrollTop + outer.clientHeight));
-                const nearBottom = distanceFromBottom <= NEAR_BOTTOM_PX;
-                // Only update near-bottom UI after initialisation, but allow top-load anytime
-                if (hasInitialisedScrollRef.current) {
-                  if (isNearBottomRef.current !== nearBottom) {
-                    isNearBottomRef.current = nearBottom;
-                    setIsNearBottom(nearBottom);
-                    if (nearBottom) setShowJumpToLatest(false);
-                  }
-                }
-                // Near top: show loader and fetch older without altering current scroll position
-                if (outer.scrollTop <= NEAR_BOTTOM_PX && hasMore && !loadingOlder) {
-                  loadOlderMessages();
-                }
-              } catch {}
-            }}
             onItemsRendered={(params) => {
               try {
                 const { visibleStartIndex, visibleStopIndex } = params || {};
-                // Guard against empty list or invalid indexes from virtualization during layout thrash
                 if (
                   !Array.isArray(groupedMessages) ||
                   groupedMessages.length === 0 ||
@@ -1225,29 +1207,56 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                   return;
                 }
                 lastVisibleStartIndexRef.current = visibleStartIndex;
-                if (!hasInitialisedScrollRef.current && visibleStopIndex >= groupedMessages.length - 1) {
+
+                const reachedBottom = visibleStopIndex >= groupedMessages.length - 1;
+                if (!hasInitialisedScrollRef.current && reachedBottom) {
                   hasInitialisedScrollRef.current = true;
-                  setTimeout(() => setAllowSmoothScroll(true), 0);
+                  requestAnimationFrame(() => { try { setAllowSmoothScroll(true); } catch {} });
                 }
-                const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
-                if (atBottomRef.current !== isAtBottom) {
-                  setAtBottom(isAtBottom);
-                  atBottomRef.current = isAtBottom;
+
+                // Defer React state updates to next frame to avoid updating during render of List
+                if (
+                  atBottomRef.current !== reachedBottom ||
+                  (reachedBottom && (!isNearBottomRef.current || showJumpToLatest)) ||
+                  (!reachedBottom && isNearBottomRef.current)
+                ) {
+                  if (onItemsRenderedRafRef.current) cancelAnimationFrame(onItemsRenderedRafRef.current);
+                  onItemsRenderedRafRef.current = requestAnimationFrame(() => {
+                    try {
+                      if (atBottomRef.current !== reachedBottom) {
+                        setAtBottom(reachedBottom);
+                        atBottomRef.current = reachedBottom;
+                      } else {
+                        atBottomRef.current = reachedBottom;
+                      }
+                      if (reachedBottom) {
+                        if (!isNearBottomRef.current) {
+                          setIsNearBottom(true);
+                          isNearBottomRef.current = true;
+                        }
+                        if (showJumpToLatest) {
+                          setShowJumpToLatest(false);
+                        }
+                      } else {
+                        if (isNearBottomRef.current) {
+                          isNearBottomRef.current = false;
+                          setIsNearBottom(false);
+                        }
+                      }
+                    } catch {}
+                  });
                 } else {
-                  atBottomRef.current = isAtBottom;
+                  atBottomRef.current = reachedBottom;
                 }
-                if (isAtBottom) {
-                  if (!isNearBottomRef.current) {
-                    isNearBottomRef.current = true;
-                    setIsNearBottom(true);
+
+                // Trigger older messages load when near top (no scroll handler)
+                try {
+                  if (visibleStartIndex <= 0 && hasMore && !loadingOlder) {
+                    loadOlderMessages();
                   }
-                  if (showJumpToLatest) {
-                    setShowJumpToLatest(false);
-                  }
-                }
+                } catch {}
               } catch (err) {
-                // Prevent any rendering-time exceptions from crashing the app
-                try { console.warn('onItemsRendered error:', err); } catch {}
+                try { console.debug('onItemsRendered error:', err); } catch {}
               }
             }}
           >
@@ -1256,12 +1265,25 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const isTextMsg = !!(msg && !msg.__separator && (msg.type === 'text' || msg.type === 'catalog_item' || msg.type === 'catalog_set'));
               const setRowRef = (el) => {
                 if (!el) return;
-                const h = el.getBoundingClientRect().height;
-                const key = getItemKeyAtIndex(index);
-                if (Math.abs((itemHeightsByKey.current[key] || 0) - h) > 1) {
-                  itemHeightsByKey.current[key] = h;
-                  try { listRef.current?.resetAfterIndex(index, false); } catch {}
-                }
+                requestAnimationFrame(() => {
+                  try {
+                    const h = el.getBoundingClientRect().height;
+                    const key = getItemKeyAtIndex(index);
+                    if (Math.abs((itemHeightsByKey.current[key] || 0) - h) > 1) {
+                      itemHeightsByKey.current[key] = h;
+                      const pending = pendingResetIndexRef.current;
+                      pendingResetIndexRef.current = (pending == null) ? index : Math.min(pending, index);
+                      if (!resetRafRef.current) {
+                        resetRafRef.current = requestAnimationFrame(() => {
+                          const start = pendingResetIndexRef.current == null ? index : pendingResetIndexRef.current;
+                          pendingResetIndexRef.current = null;
+                          try { listRef.current?.resetAfterIndex(start, false); } catch {}
+                          resetRafRef.current = null;
+                        });
+                      }
+                    }
+                  } catch {}
+                });
               };
               if (msg.__separator) {
                 return (
