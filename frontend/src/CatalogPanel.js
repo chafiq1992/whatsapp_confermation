@@ -6,6 +6,16 @@ import { loadCatalogSets, saveCatalogSets, loadCatalogSetProducts, saveCatalogSe
 
 const API_BASE = process.env.REACT_APP_API_BASE || "";
 
+// Build a proxied thumbnail URL with server-side resizing
+const thumbUrlFor = (url, w = 256) => {
+  try {
+    if (!url) return url;
+    return `${API_BASE}/proxy-image?url=${encodeURIComponent(url)}&w=${Math.max(80, Math.min(800, Number(w) || 256))}`;
+  } catch {
+    return url;
+  }
+};
+
 export default function CatalogPanel({
   activeUser,
   websocket,
@@ -113,10 +123,15 @@ export default function CatalogPanel({
       if (reqId === requestIdRef.current) {
         setProducts(list);
         setHasMore(list.length >= (limit || PAGE_SIZE));
-        // Prefetch first few images to render instantly
+        // Prefetch first few thumbnails to render instantly
         try {
           const urls = (list || []).slice(0, 12).map(p => p?.images?.[0]?.url).filter(Boolean);
-          urls.forEach(u => { const img = new Image(); img.decoding = 'async'; img.loading = 'eager'; img.src = u; });
+          urls.forEach(u => {
+            const img = new Image();
+            img.decoding = 'async';
+            img.loading = 'eager';
+            img.src = thumbUrlFor(u, 256);
+          });
         } catch {}
       }
       try { await saveCatalogSetProducts(setId, list); } catch {}
@@ -263,10 +278,37 @@ export default function CatalogPanel({
     });
   };
 
-  // Send interactive catalog product instantly via WebSocket
+  // Helper: fetch Shopify variant price if retailer_id maps to variant id
+  const fetchVariantPricing = async (retailerId) => {
+    try {
+      if (!retailerId) return null;
+      const res = await api.get(`${API_BASE}/shopify-variant/${retailerId}`);
+      const v = res?.data || null;
+      if (!v) return null;
+      return {
+        price: v.price,
+        compare_at_price: v.compare_at_price,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  // Send interactive catalog product instantly via WebSocket (caption uses current price when available)
   const sendInteractiveProduct = async (product) => {
     if (!activeUser?.user_id || !product?.retailer_id) return;
-    const caption = product?.name && product?.price ? `${product.name} • ${product.price}` : (product?.name || "");
+    let caption = product?.name || "";
+    try {
+      const rid = String(product.retailer_id || product.product_retailer_id || product.id || "");
+      const pricing = await fetchVariantPricing(rid);
+      if (pricing && pricing.price) {
+        const num = Number(pricing.price);
+        const priceStr = Number.isFinite(num) ? num.toFixed(2) : String(pricing.price);
+        caption = caption ? `${caption} • ${priceStr}` : priceStr;
+      } else if (product?.price) {
+        caption = `${caption} • ${product.price}`;
+      }
+    } catch {}
     sendOptimisticMessage({
       type: 'catalog_item',
       message: caption || 'Product',
@@ -663,7 +705,9 @@ export default function CatalogPanel({
                             <div className="w-full h-32 bg-gray-100 flex items-center justify-center">
                               {url ? (
                                 <img
-                                  src={url}
+                                  src={thumbUrlFor(url, 256)}
+                                  srcSet={`${thumbUrlFor(url, 160)} 160w, ${thumbUrlFor(url, 256)} 256w, ${thumbUrlFor(url, 384)} 384w`}
+                                  sizes="(max-width: 640px) 45vw, (max-width: 1024px) 22vw, 256px"
                                   data-src={url}
                                   alt={p.name}
                                   className="w-full h-32 object-cover"
@@ -674,8 +718,8 @@ export default function CatalogPanel({
                                     const step = Number(el.dataset.fbstep || '0');
                                     if (step === 0) {
                                       el.dataset.fbstep = '1';
-                                      const original = el.getAttribute('data-src') || el.src;
-                                      el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}`;
+                                      const original = el.getAttribute('data-src') || url;
+                                      el.src = `${API_BASE}/proxy-image?url=${encodeURIComponent(original)}&w=256`;
                                     } else if (step === 1) {
                                       el.dataset.fbstep = '2';
                                       el.src = '/broken-image.png';

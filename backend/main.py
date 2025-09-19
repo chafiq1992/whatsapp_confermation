@@ -44,6 +44,8 @@ from starlette.responses import Response as StarletteResponse
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
+from PIL import Image, ImageOps  # type: ignore
+import io
 
 # Absolute paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -3204,7 +3206,7 @@ async def proxy_audio(url: str, request: StarletteRequest):
 
 
 @app.get("/proxy-image")
-async def proxy_image(url: str):
+async def proxy_image(url: str, w: int | None = None, q: int | None = None):
     """Proxy/redirect images.
 
     Prefer 302 redirect to signed GCS URL when our bucket; otherwise fetch and
@@ -3214,7 +3216,8 @@ async def proxy_image(url: str):
         raise HTTPException(status_code=400, detail="Invalid url")
     try:
         signed = maybe_signed_url_for(url, ttl_seconds=600)
-        if signed:
+        # Only redirect to signed URL when not resizing
+        if signed and not w:
             try:
                 bucket, blob = _parse_gcs_url(url)
                 if bucket and blob:
@@ -3236,6 +3239,29 @@ async def proxy_image(url: str):
                     pass
                 data = blob.download_as_bytes()
                 ctype = blob.content_type or "image/jpeg"
+                # If a thumbnail width is requested, downscale on the fly
+                if w and isinstance(w, int) and w > 0:
+                    try:
+                        quality = int(q) if q is not None else 72
+                        quality = max(40, min(92, quality))
+                        im = Image.open(io.BytesIO(data))
+                        im = im.convert("RGB")
+                        # Contain within width, preserve aspect ratio
+                        im = ImageOps.contain(im, (int(w), int(w) * 10))
+                        buf = io.BytesIO()
+                        im.save(buf, format="JPEG", quality=quality, optimize=True)
+                        thumb_bytes = buf.getvalue()
+                        return StarletteResponse(
+                            content=thumb_bytes,
+                            media_type="image/jpeg",
+                            headers={
+                                "Cache-Control": "public, max-age=86400",
+                                "Vary": "Accept",
+                            },
+                        )
+                    except Exception:
+                        # Fall back to original if resize fails
+                        pass
                 return StarletteResponse(
                     content=data,
                     media_type=ctype,
@@ -3259,6 +3285,28 @@ async def proxy_image(url: str):
             v = resp.headers.get(h)
             if v:
                 passthrough[h] = v
+        # If resize requested and content seems image-like, attempt downscale
+        if w and isinstance(w, int) and w > 0 and ("image" in media_type or media_type.startswith("application/octet-stream")) and resp.status_code < 400:
+            try:
+                quality = int(q) if q is not None else 72
+                quality = max(40, min(92, quality))
+                im = Image.open(io.BytesIO(resp.content))
+                im = im.convert("RGB")
+                im = ImageOps.contain(im, (int(w), int(w) * 10))
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=quality, optimize=True)
+                thumb_bytes = buf.getvalue()
+                # Remove upstream length since content length changed
+                passthrough.pop("Content-Length", None)
+                return StarletteResponse(
+                    content=thumb_bytes,
+                    media_type="image/jpeg",
+                    headers=passthrough,
+                    status_code=200,
+                )
+            except Exception:
+                # Fall back to original bytes on failure
+                pass
         return StarletteResponse(
             content=resp.content,
             media_type=media_type,

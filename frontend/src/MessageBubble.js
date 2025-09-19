@@ -168,7 +168,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
     inFlightRef.current.set(firstPageUrl, p);
     p.then((data) => {
-      if (!aborted) setLinkPreview(data);
+      if (!aborted) {
+        setLinkPreview(data);
+        // Trigger a re-measure so the virtual list accounts for newly added preview
+        try { window.requestAnimationFrame(() => notifyResize()); } catch { notifyResize(); }
+      }
     }).catch(() => {
       if (!aborted) setLinkPreviewError(true);
     }).finally(() => {
@@ -662,16 +666,19 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                const urls = extractUrls(msg?.message);
                const imageUrls = (urls || []).filter(isImageUrl).slice(0, 3);
                if (!imageUrls.length) return null;
-               return (
+              return (
                  <div className="mt-2 flex flex-wrap gap-2">
                    {imageUrls.map((u, i) => (
                      <img
                        key={i}
-                       src={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}`}
+                      src={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=256`}
+                      srcSet={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=160 160w, ${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=256 256w, ${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=384 384w`}
+                      sizes="(max-width: 640px) 45vw, 256px"
                        alt="linked"
                        className="rounded-lg max-w-[160px] cursor-pointer hover:opacity-90"
                        onClick={() => window.open(u, '_blank')}
                        onError={(e) => handleImageError(e)}
+                      onLoad={() => { const key = `${u}|256`; if (!loadedSrcsRef.current.has(key)) { loadedSrcsRef.current.add(key); notifyResize(); } }}
                        loading="lazy"
                      />
                    ))}
@@ -692,11 +699,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                  >
                    {img && (
                      <img
-                       src={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}`}
+                      src={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=512`}
+                      srcSet={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=320 320w, ${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=512 512w, ${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=640 640w`}
                        alt={title || 'preview'}
                        className="w-full max-w-[260px] object-cover bg-gray-800"
                        style={{ aspectRatio: '1200 / 630' }}
                        onError={(e) => handleImageError(e)}
+                      onLoad={() => { const key = `${img}|512`; if (!loadedSrcsRef.current.has(key)) { loadedSrcsRef.current.add(key); notifyResize(); } }}
                        loading="lazy"
                      />
                    )}
