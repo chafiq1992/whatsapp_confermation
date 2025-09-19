@@ -369,7 +369,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     if (!uid) return;
     try {
       // Fire-and-forget HTTP call to mark conversation as read
-      api.post(`${API_BASE}/conversations/${uid}/mark-read`, {})
+      api.post(`${API_BASE}/conversations/${uid}/mark-read`)
         .catch(() => {});
     } catch {}
   }, [activeUser?.user_id]);
@@ -804,7 +804,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     } else {
       api.post(
         `${API_BASE}/conversations/${activeUser.user_id}/mark-read`,
-        { message_ids: unreadIds }
+        unreadIds
       ).catch(() => {});
     }
   }, [messages, activeUser?.user_id, ws]);
@@ -1217,12 +1217,20 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                 setTimeout(() => setAllowSmoothScroll(true), 0);
               }
               const isAtBottom = visibleStopIndex >= groupedMessages.length - 1;
-              setAtBottom(isAtBottom);
-              atBottomRef.current = isAtBottom;
+              if (atBottomRef.current !== isAtBottom) {
+                setAtBottom(isAtBottom);
+                atBottomRef.current = isAtBottom;
+              } else {
+                atBottomRef.current = isAtBottom;
+              }
               if (isAtBottom) {
-                isNearBottomRef.current = true;
-                setIsNearBottom(true);
-                setShowJumpToLatest(false);
+                if (!isNearBottomRef.current) {
+                  isNearBottomRef.current = true;
+                  setIsNearBottom(true);
+                }
+                if (showJumpToLatest) {
+                  setShowJumpToLatest(false);
+                }
               }
             }}
           >
