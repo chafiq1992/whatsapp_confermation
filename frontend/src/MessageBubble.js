@@ -129,6 +129,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
   const [linkPreview, setLinkPreview] = useState(null);
   const [linkPreviewError, setLinkPreviewError] = useState(false);
+  const [linkPreviewImgLoaded, setLinkPreviewImgLoaded] = useState(false);
+  const linkPreviewResizeNotifiedRef = React.useRef(false);
   // Avoid repeated row-resize notifications on re-mounts by remembering loaded images
   const singleImageLoadedRef = React.useRef(false);
   const loadedSrcsRef = React.useRef(new Set());
@@ -190,8 +192,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     p.then((data) => {
       if (!aborted) {
         setLinkPreview(data);
-        // Trigger a re-measure so the virtual list accounts for newly added preview
-        try { window.requestAnimationFrame(() => notifyResize()); } catch { notifyResize(); }
+        // Trigger a re-measure once for the container (image swap will keep height stable)
+        if (!linkPreviewResizeNotifiedRef.current) {
+          linkPreviewResizeNotifiedRef.current = true;
+          try { window.requestAnimationFrame(() => notifyResize()); } catch { notifyResize(); }
+        }
       }
     }).catch(() => {
       if (!aborted) setLinkPreviewError(true);
@@ -757,36 +762,54 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                  </div>
                );
              })()}
-             {(() => {
-               if (!linkPreview || linkPreviewError) return null;
-               const img = linkPreview.image;
-               const title = linkPreview.title || linkPreview.url;
-               if (!img && !title) return null;
-               return (
-                 <a
-                   href={linkPreview.url || '#'}
-                   target="_blank"
-                   rel="noopener noreferrer"
-                   className="mt-2 block bg-black/20 rounded-lg overflow-hidden border border-gray-600 hover:border-gray-400"
-                 >
-                   {img && (
-                     <img
-                      src={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=512`}
-                      srcSet={`${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=320 320w, ${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=512 512w, ${API_BASE}/proxy-image?url=${encodeURIComponent(img)}&w=640 640w`}
-                       alt={title || 'preview'}
-                       className="w-full max-w-[260px] object-cover bg-gray-800"
-                       style={{ aspectRatio: '1200 / 630' }}
-                       onError={(e) => handleImageError(e)}
-                      onLoad={() => { const key = `${img}|512`; if (!loadedSrcsRef.current.has(key)) { loadedSrcsRef.current.add(key); notifyResize(); } }}
-                       loading="lazy"
-                     />
-                   )}
-                   {title && (
-                     <div className="px-2 py-1 text-xs text-white truncate max-w-[260px]">{title}</div>
-                   )}
-                 </a>
-               );
-             })()}
+            {(() => {
+              if (!linkPreview || linkPreviewError) return null;
+              const img = linkPreview.image;
+              const title = linkPreview.title || linkPreview.url;
+              if (!img && !title) return null;
+              const proxied = img ? `${API_BASE}/proxy-image?url=${encodeURIComponent(img)}` : null;
+              return (
+                <a
+                  href={linkPreview.url || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-block border border-gray-600 rounded-lg overflow-hidden hover:border-gray-400"
+                  style={{ width: 260 }}
+                >
+                  {/* Fixed-ratio preview container to avoid layout jumps */}
+                  <div className="relative bg-gray-900" style={{ aspectRatio: '1200 / 630' }}>
+                    {/* Skeleton placeholder */}
+                    <div className={`absolute inset-0 ${linkPreviewImgLoaded ? 'hidden' : 'block'}`}>
+                      <div className="w-full h-full animate-pulse bg-gray-800" />
+                    </div>
+                    {proxied && (
+                      <img
+                        src={proxied}
+                        alt={title || 'preview'}
+                        className={`absolute inset-0 w-full h-full object-cover ${linkPreviewImgLoaded ? 'opacity-100' : 'opacity-0'}`}
+                        decoding="async"
+                        loading="lazy"
+                        onError={(e) => { handleImageError(e); setLinkPreviewImgLoaded(true); }}
+                        onLoad={() => {
+                          if (!linkPreviewImgLoaded) {
+                            setLinkPreviewImgLoaded(true);
+                            const key = `preview:${proxied}`;
+                            if (!loadedSrcsRef.current.has(key)) {
+                              loadedSrcsRef.current.add(key);
+                              try { window.requestAnimationFrame(() => notifyResize()); } catch { notifyResize(); }
+                            }
+                          }
+                        }}
+                        draggable={false}
+                      />
+                    )}
+                  </div>
+                  {title && (
+                    <div className="px-2 py-1 text-xs text-white truncate" title={title}>{title}</div>
+                  )}
+                </a>
+              );
+            })()}
            </div>
          ) : (
            <div className="text-xs italic text-gray-300">
