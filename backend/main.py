@@ -3396,7 +3396,13 @@ async def link_preview(url: str):
             title = get_meta("og:title") or (soup.title.string.strip() if getattr(soup, "title", None) and getattr(soup.title, "string", None) else "")
             description = get_meta("og:description") or get_meta("description")
             image = get_meta("og:image") or get_meta("twitter:image")
-        return {"url": url, "title": title, "description": description, "image": image}
+
+        # Encourage browser/proxy caching to avoid repeated refetches
+        headers = {
+            "Cache-Control": "public, max-age=3600, stale-while-revalidate=60",
+            "Vary": "Accept",
+        }
+        return JSONResponse(content={"url": url, "title": title, "description": description, "image": image}, headers=headers)
     except Exception as exc:
         print(f"Link preview error: {exc}")
         raise HTTPException(status_code=502, detail="Preview fetch failed")

@@ -112,26 +112,71 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const singleImageLoadedRef = React.useRef(false);
   const loadedSrcsRef = React.useRef(new Set());
 
-  useEffect(() => {
-    if (!isText) return;
+  // In-memory link preview cache to avoid refetching on remounts/rerenders
+  // TTL keeps previews reasonably fresh while preventing flicker
+  const LINK_PREVIEW_TTL_MS = 30 * 60 * 1000; // 30 minutes
+  const previewCacheRef = React.useRef(globalThis.__linkPreviewCache || (globalThis.__linkPreviewCache = new Map()));
+  const inFlightRef = React.useRef(globalThis.__linkPreviewInFlight || (globalThis.__linkPreviewInFlight = new Map()));
+
+  const firstPageUrl = useMemo(() => {
+    if (!isText) return "";
     const urls = extractUrls(msg?.message);
-    if (!urls.length) return;
-    const firstPageUrl = urls.find(u => !isImageUrl(u));
+    if (!urls.length) return "";
+    const u = urls.find(u => !isImageUrl(u)) || "";
+    if (!u) return "";
+    try {
+      const nu = new URL(u);
+      // normalize to reduce cache misses
+      nu.hash = "";
+      return nu.toString();
+    } catch {
+      return u;
+    }
+  }, [isText, msg?.message]);
+
+  useEffect(() => {
     if (!firstPageUrl) return;
     let aborted = false;
-    (async () => {
-      try {
+
+    // Serve from cache if fresh
+    try {
+      const cached = previewCacheRef.current.get(firstPageUrl);
+      if (cached && (Date.now() - cached.ts) < LINK_PREVIEW_TTL_MS) {
         setLinkPreviewError(false);
-        const res = await fetch(`${API_BASE}/link-preview?url=${encodeURIComponent(firstPageUrl)}`);
-        if (!res.ok) throw new Error(String(res.status));
-        const data = await res.json();
-        if (!aborted) setLinkPreview(data);
-      } catch (e) {
-        if (!aborted) setLinkPreviewError(true);
+        setLinkPreview(cached.data);
+        return;
       }
+    } catch {}
+
+    // Attach to in-flight promise if already fetching
+    const inFlight = inFlightRef.current.get(firstPageUrl);
+    if (inFlight) {
+      inFlight.then((data) => { if (!aborted) { setLinkPreviewError(false); setLinkPreview(data); } })
+              .catch(() => { if (!aborted) setLinkPreviewError(true); });
+      return () => { aborted = true; };
+    }
+
+    setLinkPreviewError(false);
+    const p = (async () => {
+      const res = await fetch(`${API_BASE}/link-preview?url=${encodeURIComponent(firstPageUrl)}`);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      try { previewCacheRef.current.set(firstPageUrl, { ts: Date.now(), data }); } catch {}
+      return data;
     })();
+
+    inFlightRef.current.set(firstPageUrl, p);
+    p.then((data) => {
+      if (!aborted) setLinkPreview(data);
+    }).catch(() => {
+      if (!aborted) setLinkPreviewError(true);
+    }).finally(() => {
+      // Clear in-flight regardless of outcome to allow future retries after TTL
+      try { inFlightRef.current.delete(firstPageUrl); } catch {}
+    });
+
     return () => { aborted = true; };
-  }, [isText, msg?.message, API_BASE]);
+  }, [firstPageUrl, API_BASE]);
 
   // Audio player state and refs (bar-based waveform)
   const waveformRef = useRef(null);
