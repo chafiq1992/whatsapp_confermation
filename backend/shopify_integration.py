@@ -106,34 +106,54 @@ async def shopify_products(q: str = Query("", description="Search product titles
 async def shopify_variant(variant_id: str):
     endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/variants/{variant_id}.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint, **_client_args())
-        resp.raise_for_status()
-        variant = resp.json().get("variant")
-        # Try to fetch product title and resolve variant image for display
+        try:
+            resp = await client.get(endpoint, **_client_args())
+        except httpx.RequestError as e:
+            logger.warning("Shopify variant request failed: %s", e)
+            raise HTTPException(status_code=502, detail="Shopify unreachable")
+
+        if resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks read_products scope or app not installed.")
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Variant not found")
+        if resp.status_code >= 400:
+            detail = ""
+            try:
+                detail = (resp.text or "").strip()[:300]
+            except Exception:
+                detail = "Shopify error"
+            raise HTTPException(status_code=resp.status_code, detail=detail or "Shopify error")
+
+        variant = (resp.json() or {}).get("variant")
+        # Try to fetch product title and resolve variant image for display (best-effort)
         if variant:
-            product_id = variant.get("product_id")
-            prod_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products/{product_id}.json"
-            p_resp = await client.get(prod_endpoint, **_client_args())
-            if p_resp.status_code == 200:
-                prod = p_resp.json().get("product") or {}
-                variant["product_title"] = prod.get("title", "")
-                # Resolve image URL for the variant
-                image_src = None
-                image_id = variant.get("image_id")
-                images = prod.get("images") or []
-                if image_id and images:
-                    try:
-                        match = next((img for img in images if str(img.get("id")) == str(image_id)), None)
-                        if match and match.get("src"):
-                            image_src = match["src"]
-                    except Exception:
+            try:
+                product_id = variant.get("product_id")
+                if product_id:
+                    prod_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products/{product_id}.json"
+                    p_resp = await client.get(prod_endpoint, **_client_args())
+                    if p_resp.status_code == 200:
+                        prod = (p_resp.json() or {}).get("product") or {}
+                        variant["product_title"] = prod.get("title", "")
+                        # Resolve image URL for the variant
                         image_src = None
-                # Fallbacks: product featured image or first image
-                if not image_src:
-                    image_src = (prod.get("image") or {}).get("src") or (images[0].get("src") if images else None)
-                if image_src:
-                    variant["image_src"] = image_src
-        return variant
+                        image_id = variant.get("image_id")
+                        images = prod.get("images") or []
+                        if image_id and images:
+                            try:
+                                match = next((img for img in images if str(img.get("id")) == str(image_id)), None)
+                                if match and match.get("src"):
+                                    image_src = match["src"]
+                            except Exception:
+                                image_src = None
+                        # Fallbacks: product featured image or first image
+                        if not image_src:
+                            image_src = (prod.get("image") or {}).get("src") or (images[0].get("src") if images else None)
+                        if image_src:
+                            variant["image_src"] = image_src
+            except Exception as e:
+                logger.debug("Variant enrichment failed: %s", e)
+        return variant or {}
 
 # =============== CUSTOMER BY PHONE ===============
 async def fetch_customer_by_phone(phone_number: str):

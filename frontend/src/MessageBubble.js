@@ -55,19 +55,45 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     } catch { return ""; }
   }, [msg?.product_retailer_id, msg?.retailer_id, msg?.product_id]);
   const [variantData, setVariantData] = useState(null);
+  // Global caches to avoid repeated variant fetches across mounts/renders
+  const VARIANT_TTL_MS = 60 * 60 * 1000; // 1 hour
+  const variantCacheRef = React.useRef(globalThis.__variantCache || (globalThis.__variantCache = new Map()));
+  const variantInFlightRef = React.useRef(globalThis.__variantInFlight || (globalThis.__variantInFlight = new Map()));
   useEffect(() => {
     let cancelled = false;
-    if (!retailerId) return;
+    // Only fetch for catalog items and when visible to reduce work
+    const isCatalogItem = msg?.type === 'catalog_item' || msg?.type === 'interactive_product';
+    if (!retailerId || !isCatalogItem || !isVisible) return;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/shopify-variant/${retailerId}`);
-        if (!res.ok) return;
-        const data = await res.json();
+        // Serve from cache if fresh
+        const cached = variantCacheRef.current.get(retailerId);
+        if (cached && (Date.now() - cached.ts) < VARIANT_TTL_MS) {
+          if (!cancelled) setVariantData(cached.data || null);
+          return;
+        }
+        // Attach to in-flight if exists
+        const inflight = variantInFlightRef.current.get(retailerId);
+        if (inflight) {
+          inflight.then((data) => { if (!cancelled) setVariantData(data || null); }).catch(() => {});
+          return;
+        }
+        const p = (async () => {
+          const res = await fetch(`${API_BASE}/shopify-variant/${retailerId}`);
+          if (!res.ok) return null;
+          const data = await res.json();
+          try { variantCacheRef.current.set(retailerId, { ts: Date.now(), data }); } catch {}
+          return data;
+        })();
+        variantInFlightRef.current.set(retailerId, p);
+        const data = await p;
         if (!cancelled) setVariantData(data || null);
-      } catch {}
+      } catch {} finally {
+        try { variantInFlightRef.current.delete(retailerId); } catch {}
+      }
     })();
     return () => { cancelled = true; };
-  }, [retailerId, API_BASE]);
+  }, [retailerId, API_BASE, isVisible, msg?.type]);
   // Helpers to extract and classify URLs inside text messages
   const extractUrls = (text) => {
     try {
