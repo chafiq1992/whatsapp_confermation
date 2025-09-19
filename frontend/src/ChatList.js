@@ -390,7 +390,7 @@ function ChatList({
             itemCount={filteredConversations.length}
             itemSize={80}
             width={'100%'}
-            className="scroll-smooth will-change-transform"
+            className=""
             overscanCount={12}
             useIsScrolling
             itemKey={(index) => filteredConversations[index]?.user_id || `row_${index}`}

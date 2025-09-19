@@ -392,6 +392,9 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
 
   // Enhanced audio renderer
   const renderAudio = () => (
+    !isVisible ? (
+      <div className="h-[56px] w-[260px] rounded bg-gray-800/70 border border-gray-700" aria-label="Audio clip" />
+    ) : (
     <div className="flex flex-col">
       <div className="flex items-center mb-1">
         <button
@@ -453,6 +456,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         </div>
       )}
     </div>
+    )
   );
 
   // Enhanced video renderer

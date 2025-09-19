@@ -171,6 +171,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const messagesEndRef = useRef(null);
   const listRef = useRef(null);
   const listOuterRef = useRef(null);
+  const topSentinelRef = useRef(null);
   const itemHeights = useRef({});
   const itemHeightsByKey = useRef({});
   const [listHeight, setListHeight] = useState(0);
@@ -198,6 +199,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const onItemsRenderedRafRef = useRef(null);
   const pendingResetIndexRef = useRef(null);
   const resetRafRef = useRef(null);
+  const rowResizeEarliestIndexRef = useRef(null);
+  const rowResizeIdleIdRef = useRef(null);
   // Throttle list height updates to avoid frequent re-mounts (prevents audio flicker while typing)
   const layoutLastHeightRef = useRef(0);
   const layoutLastUpdateTsRef = useRef(0);
@@ -668,20 +671,36 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [preserveScroll, setPreserveScroll] = useState(false);
   const NEAR_BOTTOM_PX = 200;
 
-  const scrollToBottom = () => {
+  const runWithSmoothScroll = (fn) => {
     try {
-      if (listRef.current && groupedMessages.length > 0) {
-        listRef.current.scrollToItem(groupedMessages.length - 1, 'end');
-      }
+      setAllowSmoothScroll(true);
+      requestAnimationFrame(() => {
+        try { fn(); } catch {}
+        setTimeout(() => { try { setAllowSmoothScroll(false); } catch {} }, 160);
+      });
     } catch {}
+  };
+
+  const scrollToBottom = () => {
+    runWithSmoothScroll(() => {
+      try {
+        if (listRef.current && groupedMessages.length >= 0) {
+          // +1 because index 0 is the sentinel row
+          listRef.current.scrollToItem(groupedMessages.length, 'end');
+        }
+      } catch {}
+    });
   };
 
   const scrollToHit = (hitListIndex) => {
     if (hitListIndex < 0 || hitListIndex >= searchHitIndexes.length) return;
     const childIndex = searchHitIndexes[hitListIndex];
-    try {
-      listRef.current?.scrollToItem(childIndex, 'center');
-    } catch {}
+    runWithSmoothScroll(() => {
+      try {
+        // +1 because index 0 is the sentinel row
+        listRef.current?.scrollToItem(childIndex + 1, 'center');
+      } catch {}
+    });
   };
 
   // Stable callbacks to avoid re-rendering bubbles unnecessarily
@@ -764,39 +783,84 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     };
   }, []);
 
-  // Listen for row-resize events from media components and force re-measure
+  // Listen for row-resize events from media components and batch re-measure
   useEffect(() => {
-    const handler = (ev) => {
-      if (!listRef.current) return;
-      if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
-      resizeRafRef.current = requestAnimationFrame(() => {
-        // If a row key was provided, only reset from that index for efficiency and accuracy
-        let startIdx = 0;
-        try {
-          const key = ev && ev.detail && ev.detail.key;
-          if (key && Array.isArray(groupedMessagesRef.current) && groupedMessagesRef.current.length) {
-            const idx = groupedMessagesRef.current.findIndex((row, i) => {
-              if (!row) return false;
-              if (row.__separator) return row.key === key;
-              const rk = row.temp_id || row.id || row.wa_message_id || `${row.timestamp}_${i}`;
-              return rk === key;
-            });
-            if (idx >= 0) startIdx = idx;
-          }
-        } catch {}
-        try { listRef.current.resetAfterIndex(startIdx, true); } catch {}
-        // If the user is at bottom, keep them pinned after resize
+    const scheduleReset = () => {
+      if (rowResizeIdleIdRef.current) return;
+      const cb = () => {
+        const start = rowResizeEarliestIndexRef.current == null ? 0 : rowResizeEarliestIndexRef.current;
+        rowResizeEarliestIndexRef.current = null;
+        rowResizeIdleIdRef.current = null;
+        try { listRef.current?.resetAfterIndex(start, false); } catch {}
         if (atBottomRef.current) {
-          try { listRef.current.scrollToItem(groupedLenRef.current - 1, 'end'); } catch {}
+          try { listRef.current?.scrollToItem(groupedLenRef.current, 'end'); } catch {}
         }
-      });
+      };
+      try {
+        if (typeof window.requestIdleCallback === 'function') {
+          rowResizeIdleIdRef.current = window.requestIdleCallback(cb, { timeout: 120 });
+        } else {
+          rowResizeIdleIdRef.current = setTimeout(cb, 60);
+        }
+      } catch {
+        rowResizeIdleIdRef.current = setTimeout(cb, 60);
+      }
     };
+
+    const handler = (ev) => {
+      let startDataIdx = 0;
+      try {
+        const key = ev && ev.detail && ev.detail.key;
+        if (key && Array.isArray(groupedMessagesRef.current) && groupedMessagesRef.current.length) {
+          const idx = groupedMessagesRef.current.findIndex((row, i) => {
+            if (!row) return false;
+            if (row.__separator) return row.key === key;
+            const rk = row.temp_id || row.id || row.wa_message_id || `${row.timestamp}_${i}`;
+            return rk === key;
+          });
+          if (idx >= 0) startDataIdx = idx;
+        }
+      } catch {}
+      // +1 for sentinel row
+      const listIdx = startDataIdx + 1;
+      rowResizeEarliestIndexRef.current = (rowResizeEarliestIndexRef.current == null)
+        ? listIdx
+        : Math.min(rowResizeEarliestIndexRef.current, listIdx);
+      scheduleReset();
+    };
+
     window.addEventListener('row-resize', handler);
     return () => {
       try { window.removeEventListener('row-resize', handler); } catch {}
-      try { if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current); } catch {}
+      try {
+        if (rowResizeIdleIdRef.current) {
+          if (typeof window.cancelIdleCallback === 'function') {
+            window.cancelIdleCallback(rowResizeIdleIdRef.current);
+          } else {
+            clearTimeout(rowResizeIdleIdRef.current);
+          }
+          rowResizeIdleIdRef.current = null;
+        }
+      } catch {}
     };
   }, []);
+
+  // Top sentinel observer to load older messages when visible
+  useEffect(() => {
+    const el = topSentinelRef.current;
+    const root = listOuterRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver((entries) => {
+      const entry = entries && entries[0];
+      if (entry && entry.isIntersecting) {
+        if (hasMore && !loadingOlder) {
+          loadOlderMessages();
+        }
+      }
+    }, { root, rootMargin: '0px', threshold: 0 });
+    try { io.observe(el); } catch {}
+    return () => { try { io.disconnect(); } catch {} };
+  }, [hasMore, loadingOlder, loadOlderMessages, listHeight, groupedMessages.length]);
 
   // Persist messages to IndexedDB whenever they change
   useEffect(() => {
@@ -1200,19 +1264,25 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             outerRef={listOuterRef}
             height={listHeight}
             width={'100%'}
-            itemCount={groupedMessages.length}
+            itemCount={groupedMessages.length + 1}
             overscanCount={12}
             itemData={groupedMessages}
             itemKey={(index, data) => {
-              const row = data[index];
-              if (!row) return `row_${index}`;
-              return row.__separator ? row.key : (row.wa_message_id || row.id || row.temp_id || `${row.timestamp}_${index}`);
+              if (index === 0) return 'top_sentinel';
+              const childIndex = index - 1;
+              const row = data[childIndex];
+              if (!row) return `row_${childIndex}`;
+              return row.__separator ? row.key : (row.wa_message_id || row.id || row.temp_id || `${row.timestamp}_${childIndex}`);
             }}
             itemSize={(index) => {
-              const key = getItemKeyAtIndex(index);
-              return itemHeightsByKey.current[key] || 72;
+              if (index === 0) return 1;
+              const childIndex = index - 1;
+              const key = getItemKeyAtIndex(childIndex);
+              const msg = groupedMessages[childIndex];
+              const fallback = msg?.__separator ? 36 : (msg?.type === 'audio' ? 112 : 72);
+              return itemHeightsByKey.current[key] || fallback;
             }}
-            className={`${allowSmoothScroll ? 'scroll-smooth' : ''} will-change-transform`}
+            className={`${allowSmoothScroll ? 'scroll-smooth' : ''}`}
             onItemsRendered={(params) => {
               try {
                 const { visibleStartIndex, visibleStopIndex } = params || {};
@@ -1226,13 +1296,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                 ) {
                   return;
                 }
-                lastVisibleStartIndexRef.current = visibleStartIndex;
+                lastVisibleStartIndexRef.current = Math.max(0, visibleStartIndex - 1);
 
-                const reachedBottom = visibleStopIndex >= groupedMessages.length - 1;
-                if (!hasInitialisedScrollRef.current && reachedBottom) {
-                  hasInitialisedScrollRef.current = true;
-                  requestAnimationFrame(() => { try { setAllowSmoothScroll(true); } catch {} });
-                }
+                const reachedBottom = visibleStopIndex >= groupedMessages.length; // +1 for sentinel
 
                 // Defer React state updates to next frame to avoid updating during render of List
                 if (
@@ -1269,26 +1335,29 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                   atBottomRef.current = reachedBottom;
                 }
 
-                // Trigger older messages load when near top (no scroll handler)
-                try {
-                  if (visibleStartIndex <= 0 && hasMore && !loadingOlder) {
-                    loadOlderMessages();
-                  }
-                } catch {}
+                // Load older via sentinel + IntersectionObserver now
               } catch (err) {
                 try { console.debug('onItemsRendered error:', err); } catch {}
               }
             }}
           >
             {({ index, style }) => {
-              const msg = groupedMessages[index];
+              if (index === 0) {
+                return (
+                  <div style={style}>
+                    <div ref={topSentinelRef} style={{ height: 1 }} />
+                  </div>
+                );
+              }
+              const childIndex = index - 1;
+              const msg = groupedMessages[childIndex];
               const isTextMsg = !!(msg && !msg.__separator && (msg.type === 'text' || msg.type === 'catalog_item' || msg.type === 'catalog_set'));
               const setRowRef = (el) => {
                 if (!el) return;
                 requestAnimationFrame(() => {
                   try {
                     const h = el.getBoundingClientRect().height;
-                    const key = getItemKeyAtIndex(index);
+                    const key = getItemKeyAtIndex(childIndex);
                     if (Math.abs((itemHeightsByKey.current[key] || 0) - h) > 1) {
                       itemHeightsByKey.current[key] = h;
                       const pending = pendingResetIndexRef.current;
@@ -1317,7 +1386,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               return (
                 <div style={style}>
                   <div ref={setRowRef} className="space-y-1.5">
-                    {index === unreadSeparatorIndex && (
+                    {childIndex === unreadSeparatorIndex && (
                       <div className="text-center text-xs text-gray-400 my-2">Unread Messages</div>
                     )}
                     <MemoMessageBubble
@@ -1344,7 +1413,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                       onReply={handleReply}
                       onReact={handleReact}
                       onForward={handleForward}
-                      rowKey={getItemKeyAtIndex(index)}
+                      rowKey={getItemKeyAtIndex(childIndex)}
                     />
                   </div>
                 </div>
@@ -1355,7 +1424,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         {unreadSeparatorIndex != null && (
           <button
             className="absolute right-4 top-4 px-3 py-1 rounded-full bg-gray-800 text-white border border-gray-600 shadow hover:bg-gray-700"
-            onClick={() => { try { listRef.current?.scrollToItem(unreadSeparatorIndex, 'start'); } catch {} }}
+            onClick={() => { runWithSmoothScroll(() => { try { listRef.current?.scrollToItem(unreadSeparatorIndex + 1, 'start'); } catch {} }); }}
             title="Jump to first unread"
           >
             Unread ↑
