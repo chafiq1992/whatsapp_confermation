@@ -45,6 +45,8 @@ function formatTime(ts) {
 
 export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
+  const containerRef = useRef(null);
+  const [isVisible, setIsVisible] = useState(true);
   const [showReactPicker, setShowReactPicker] = useState(false);
   const retailerId = useMemo(() => {
     try {
@@ -158,7 +160,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }, [isText, msg?.message]);
 
   useEffect(() => {
-    if (!firstPageUrl) return;
+    if (!firstPageUrl || !isVisible) return;
     let aborted = false;
 
     // Serve from cache if fresh
@@ -206,7 +208,19 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     });
 
     return () => { aborted = true; };
-  }, [firstPageUrl, API_BASE]);
+  }, [firstPageUrl, API_BASE, isVisible]);
+
+  // Observe visibility to avoid offscreen fetch/work
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver((entries) => {
+      const e = entries[0];
+      setIsVisible(!!(e && e.isIntersecting));
+    }, { root: null, rootMargin: '120px', threshold: 0 });
+    obs.observe(el);
+    return () => { try { obs.disconnect(); } catch {} };
+  }, []);
 
   // Audio player state and refs (bar-based waveform)
   const waveformRef = useRef(null);
@@ -619,7 +633,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }
 
   return (
-    <div className={`relative flex ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
+    <div ref={containerRef} className={`relative flex ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
       <div
         className={`group relative max-w-[80%] px-4 py-2 rounded-2xl shadow-sm transition-colors ${
           self 
@@ -654,10 +668,11 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
          isVideo ? renderVideo() :
          isCatalogItem ? (
            (() => {
-             const info = catalogProducts[retailerId] || {};
-             const rawImage = variantData?.image_src || info.image || null;
+            const info = catalogProducts[retailerId] || {};
+            const rawImage = variantData?.image_src || info.image || null;
              const image = rawImage && /^https?:\/\//i.test(rawImage) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(rawImage)}` : rawImage;
-             const title = info.name || variantData?.product_title || msg?.caption || "Product";
+            // Show only variant title (no product title)
+            const title = variantData?.title || msg?.caption || "";
              const priceNum = Number(variantData?.price || info.price || 0);
              const priceStr = Number.isFinite(priceNum) && priceNum > 0 ? `${priceNum.toFixed(2)} MAD` : null;
              return (
@@ -676,8 +691,10 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                      </div>
                    )}
                  </div>
-                 <div className="flex-1 min-w-0">
-                   <div className="font-semibold text-gray-800 text-base leading-tight mb-1 truncate">{title}</div>
+                <div className="flex-1 min-w-0">
+                  {title && (
+                    <div className="font-semibold text-gray-800 text-base leading-tight mb-1 truncate">{title}</div>
+                  )}
                    <div className="flex flex-wrap gap-2 text-sm text-gray-600">
                      {!!retailerId && (
                        <span className="flex items-center"><span className="font-medium text-blue-700">Variant ID:</span><span className="ml-1 font-semibold">{retailerId}</span></span>
@@ -748,7 +765,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                    {imageUrls.map((u, i) => (
                      <img
                        key={i}
-                      src={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=256`}
+                      src={isVisible ? `${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=256` : ""}
                       srcSet={`${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=160 160w, ${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=256 256w, ${API_BASE}/proxy-image?url=${encodeURIComponent(u)}&w=384 384w`}
                       sizes="(max-width: 640px) 45vw, 256px"
                        alt="linked"
@@ -784,7 +801,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                     </div>
                     {proxied && (
                       <img
-                        src={proxied}
+                        src={isVisible ? proxied : ""}
                         alt={title || 'preview'}
                         className={`absolute inset-0 w-full h-full object-cover ${linkPreviewImgLoaded ? 'opacity-100' : 'opacity-0'}`}
                         decoding="async"

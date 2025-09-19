@@ -278,16 +278,18 @@ export default function CatalogPanel({
     });
   };
 
-  // Helper: fetch Shopify variant price if retailer_id maps to variant id
-  const fetchVariantPricing = async (retailerId) => {
+  // Helper: fetch Shopify variant info if retailer_id maps to variant id
+  const fetchVariantInfo = async (retailerId) => {
     try {
       if (!retailerId) return null;
       const res = await api.get(`${API_BASE}/shopify-variant/${retailerId}`);
       const v = res?.data || null;
       if (!v) return null;
       return {
+        id: v.id,
         price: v.price,
         compare_at_price: v.compare_at_price,
+        title: v.title, // variant title (e.g., Size/Color)
       };
     } catch {
       return null;
@@ -297,16 +299,24 @@ export default function CatalogPanel({
   // Send interactive catalog product instantly via WebSocket (caption uses current price when available)
   const sendInteractiveProduct = async (product) => {
     if (!activeUser?.user_id || !product?.retailer_id) return;
-    let caption = product?.name || "";
+    let caption = "";
     try {
       const rid = String(product.retailer_id || product.product_retailer_id || product.id || "");
-      const pricing = await fetchVariantPricing(rid);
-      if (pricing && pricing.price) {
-        const num = Number(pricing.price);
-        const priceStr = Number.isFinite(num) ? num.toFixed(2) : String(pricing.price);
-        caption = caption ? `${caption} • ${priceStr}` : priceStr;
+      const info = await fetchVariantInfo(rid);
+      if (info && (info.price || info.id || info.title)) {
+        const num = Number(info.price);
+        const priceStr = Number.isFinite(num) ? num.toFixed(2) : (info.price ? String(info.price) : "");
+        // Only include price, variant title, and variant id (do not include product title)
+        const parts = [];
+        if (priceStr) parts.push(priceStr);
+        if (info.title) parts.push(String(info.title));
+        if (info.id) parts.push(String(info.id));
+        caption = parts.join(' • ');
       } else if (product?.price) {
-        caption = `${caption} • ${product.price}`;
+        // Fallback: price + retailer id
+        const num = Number(product.price);
+        const priceStr = Number.isFinite(num) ? num.toFixed(2) : String(product.price);
+        caption = [priceStr, String(rid)].filter(Boolean).join(' • ');
       }
     } catch {}
     sendOptimisticMessage({
