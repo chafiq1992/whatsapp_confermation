@@ -618,15 +618,7 @@ export default function CatalogPanel({
     await openSetModal(setObj);
   };
 
-  const preloadCurrentSetThumbnails = useCallback(() => {
-    try {
-      const urls = (products || [])
-        .map(p => p?.images?.[0]?.url)
-        .filter(Boolean)
-        .map(u => thumbUrlFor(u, 256));
-      _precacheThumbs(urls);
-    } catch {}
-  }, [products]);
+  // Thumbnails are now preloaded automatically after products are fetched.
 
   return (
     <div className="bg-gray-900 text-white border-t border-gray-800 p-2 w-full max-h-[110px] overflow-hidden rounded-b-xl shadow-sm flex-none">
@@ -702,7 +694,7 @@ export default function CatalogPanel({
                   <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={clearSelection}>Clear</button>
                   <button className="px-3 py-2 text-sm rounded bg-blue-600 text-white disabled:opacity-50" disabled={!isWebSocketConnected || selectedCount === 0} onClick={() => { sendSelectedImages(); setModalOpen(false); }}>Send selected</button>
                   <button className="px-3 py-2 text-sm rounded bg-green-600 text-white" onClick={() => { sendWholeSet(); setModalOpen(false); }}>Send whole set</button>
-                  <button className="px-3 py-2 text-sm rounded bg-gray-200 hover:bg-gray-300" onClick={preloadCurrentSetThumbnails} title="Download thumbnails for offline/instant view">Preload thumbnails</button>
+                  {/* Preload thumbnails happens automatically; no button required */}
                 </>
               ) : (
                 <span className="text-sm text-gray-700">Select a set</span>
