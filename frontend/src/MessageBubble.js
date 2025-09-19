@@ -43,7 +43,7 @@ function formatTime(ts) {
   }
 }
 
-export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact }) {
+export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact, rowKey = null }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
   const containerRef = useRef(null);
   const [isVisible, setIsVisible] = useState(true);
@@ -297,7 +297,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     e.target.alt = "Image failed to load";
   };
   const notifyResize = () => {
-    try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {}
+    try { window.dispatchEvent(new CustomEvent('row-resize', { detail: { key: rowKey } })); } catch {}
   };
 
   // Click-to-seek on waveform
@@ -816,8 +816,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                   href={linkPreview.url || '#'}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="mt-2 inline-block border border-gray-600 rounded-lg overflow-hidden hover:border-gray-400"
-                  style={{ width: 260 }}
+                  className="mt-2 block border border-gray-600 rounded-lg overflow-hidden hover:border-gray-400 relative z-0"
+                  style={{ width: 260, minHeight: 140 }}
                 >
                   {/* Fixed-ratio preview container to avoid layout jumps */}
                   <div className="relative bg-gray-900" style={{ aspectRatio: '1200 / 630' }}>

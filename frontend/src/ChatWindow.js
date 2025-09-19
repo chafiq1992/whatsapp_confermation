@@ -226,6 +226,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const groupedMessages = useMemo(() => withDateSeparators(groupConsecutiveImages(messages)), [messages]);
   const groupedLenRef = useRef(0);
   useEffect(() => { groupedLenRef.current = groupedMessages.length; }, [groupedMessages.length]);
+  const groupedMessagesRef = useRef([]);
+  useEffect(() => { groupedMessagesRef.current = groupedMessages; }, [groupedMessages]);
 
   const getItemKeyAtIndex = useCallback((index) => {
     const msg = groupedMessages[index];
@@ -760,11 +762,25 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
 
   // Listen for row-resize events from media components and force re-measure
   useEffect(() => {
-    const handler = () => {
+    const handler = (ev) => {
       if (!listRef.current) return;
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       resizeRafRef.current = requestAnimationFrame(() => {
-        try { listRef.current.resetAfterIndex(0, true); } catch {}
+        // If a row key was provided, only reset from that index for efficiency and accuracy
+        let startIdx = 0;
+        try {
+          const key = ev && ev.detail && ev.detail.key;
+          if (key && Array.isArray(groupedMessagesRef.current) && groupedMessagesRef.current.length) {
+            const idx = groupedMessagesRef.current.findIndex((row, i) => {
+              if (!row) return false;
+              if (row.__separator) return row.key === key;
+              const rk = row.temp_id || row.id || row.wa_message_id || `${row.timestamp}_${i}`;
+              return rk === key;
+            });
+            if (idx >= 0) startIdx = idx;
+          }
+        } catch {}
+        try { listRef.current.resetAfterIndex(startIdx, true); } catch {}
         // If the user is at bottom, keep them pinned after resize
         if (atBottomRef.current) {
           try { listRef.current.scrollToItem(groupedLenRef.current - 1, 'end'); } catch {}
@@ -1324,6 +1340,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                       onReply={handleReply}
                       onReact={handleReact}
                       onForward={handleForward}
+                      rowKey={getItemKeyAtIndex(index)}
                     />
                   </div>
                 </div>

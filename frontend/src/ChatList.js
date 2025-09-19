@@ -80,13 +80,26 @@ function ChatList({
       setConversations(prev => {
         const list = Array.isArray(prev) ? [...prev] : [];
         const idx = list.findIndex(c => c.user_id === d.user_id);
-        if (idx === -1) return prev;
+        const nowIso = new Date().toISOString();
+        if (idx === -1) {
+          // If conversation not present locally, create a minimal one
+          const created = {
+            user_id: d.user_id,
+            name: d.name || d.user_id,
+            last_message: d.last_message || '',
+            last_message_type: d.last_message_type || 'text',
+            last_message_time: d.last_message_time || nowIso,
+            unread_count: 0,
+          };
+          return [created, ...list];
+        }
         const updated = { ...list[idx] };
         if (d.last_message_type) updated.last_message_type = d.last_message_type;
-        if (d.last_message_time) updated.last_message_time = d.last_message_time;
-        if (typeof d.last_message === 'string' && d.last_message) updated.last_message = d.last_message;
-        list[idx] = updated;
-        return list;
+        if (typeof d.last_message === 'string') updated.last_message = d.last_message;
+        updated.last_message_time = d.last_message_time || updated.last_message_time || nowIso;
+        // Move to top like WhatsApp
+        const without = list.filter((_, i) => i !== idx);
+        return [updated, ...without];
       });
     };
     window.addEventListener('conversation-preview', handler);
@@ -179,7 +192,7 @@ function ChatList({
   /* ─── Derived data (memoised) ─── */
   const filteredConversations = useMemo(() => {
     const list = Array.isArray(conversations) ? conversations : [];
-    return list.filter((c) => {
+    const filtered = list.filter((c) => {
       // Hide internal team and DM conversations from the chat list
       const uid = String(c.user_id || '');
       if (uid.startsWith('dm:') || uid.startsWith('team:')) return false;
@@ -196,6 +209,14 @@ function ChatList({
       const archiveOK = showArchive ? isDone : !isDone;
       return matches && unreadOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
     });
+    // Sort by most recent activity (desc), like WhatsApp
+    const toMs = (t) => {
+      if (!t) return 0;
+      const s = String(t);
+      const ms = Date.parse(s);
+      return Number.isNaN(ms) ? 0 : ms;
+    };
+    return filtered.sort((a, b) => toMs(b.last_message_time) - toMs(a.last_message_time));
   }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
   /* ─── Helpers ─── */
