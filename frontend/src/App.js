@@ -313,6 +313,7 @@ export default function App() {
             showArchive={showArchive}
             currentAgent={currentAgent}
             loading={loadingConversations}
+            onUpdateConversationTags={handleUpdateConversationTags}
           />
         </div>
       </div>

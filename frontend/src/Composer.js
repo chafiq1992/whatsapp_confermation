@@ -90,7 +90,7 @@ function ComposerInternal({
       {showEmojiPicker && (
         <div className="absolute -top-56 left-2 z-10 bg-white rounded shadow">
           <Suspense fallback={<div className="p-2 text-sm">Loading…</div>}>
-            <EmojiPicker onEmojiClick={(emojiData) => setText((prev) => prev + emojiData.emoji)} />
+            <EmojiPicker onEmojiClick={(emojiData) => { setText((prev) => prev + emojiData.emoji); setShowEmojiPicker(false); }} />
           </Suspense>
         </div>
       )}

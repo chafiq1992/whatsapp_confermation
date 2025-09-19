@@ -133,7 +133,18 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     }
     return "";
   }, [msg?.url, msg?.message]);
-  const isAudio = msg.type === "audio";
+  const isAudioLikeUrl = useMemo(() => {
+    try {
+      if (typeof msg?.message !== 'string') return false;
+      const text = msg.message.trim();
+      if (!text) return false;
+      const urls = extractUrls(text);
+      if (!urls || urls.length === 0) return false;
+      const AUDIO_EXT_RE = /\.(ogg|opus|mp3|m4a|wav|webm)(\?.*)?$/i;
+      return urls.some(u => AUDIO_EXT_RE.test(u) || /\/audio_/i.test(u));
+    } catch { return false; }
+  }, [msg?.message]);
+  const isAudio = msg.type === "audio" || isAudioLikeUrl;
   const mediaUrl = primaryUrl;
   // Use backend proxy for audio to avoid CORS issues when drawing waveform
   const effectiveAudioUrl = isAudio
@@ -770,11 +781,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                text.replace(/https?:\/\/[\w.-]+(?:\/[\w\-._~:/?#[\]@!$&'()*+,;=%]*)?/gi, (match, offset) => {
                  const before = text.slice(lastIndex, offset);
                  if (before) parts.push(<React.Fragment key={`t_${lastIndex}`}>{highlightText(before, highlightQuery)}</React.Fragment>);
-                 parts.push(
-                   <a key={`a_${offset}`} href={match} target="_blank" rel="noopener noreferrer" className="underline text-blue-200 break-all">
-                     {match}
-                   </a>
-                 );
+                const isAudioHref = /\.(ogg|opus|mp3|m4a|wav|webm)(\?.*)?$/i.test(match) || /\/audio_/i.test(match);
+                const href = isAudioHref ? `${API_BASE}/proxy-audio?url=${encodeURIComponent(match)}` : match;
+                parts.push(
+                  <a key={`a_${offset}`} href={href} target="_blank" rel="noopener noreferrer" className="underline text-blue-200 break-all">
+                    {match}
+                  </a>
+                );
                  lastIndex = offset + match.length;
                  return match;
                });

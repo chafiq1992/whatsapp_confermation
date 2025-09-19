@@ -50,6 +50,7 @@ function ChatList({
   showArchive = false,
   currentAgent = '',
   loading = false,
+  onUpdateConversationTags,
 }) {
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
@@ -403,6 +404,7 @@ function ChatList({
                 isOnline={isOnline}
                 agents={agents}
                 tagOptions={tagOptions}
+                onUpdateConversationTags={onUpdateConversationTags}
               />
             )}
           </List>
@@ -422,6 +424,7 @@ const ConversationRow = memo(function Row({
   style, // only used by react-window
   agents = [],
   tagOptions = [],
+  onUpdateConversationTags,
 }) {
   const selected = active === conv.user_id;
   const [assignOpen, setAssignOpen] = useState(false);
@@ -545,7 +548,12 @@ const ConversationRow = memo(function Row({
                             const newTags = [...tags, val];
                             setTags(newTags);
                             setTagsInput('');
-                            (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
+                            (async ()=>{
+                              try {
+                                await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags });
+                                try { typeof onUpdateConversationTags === 'function' && onUpdateConversationTags(conv.user_id, newTags); } catch {}
+                              } catch(e) {}
+                            })();
                             setAssignOpen(false);
                           }
                         }}
@@ -570,7 +578,13 @@ const ConversationRow = memo(function Row({
                           <button onClick={() => {
                             const newTags = tags.filter(x => x !== t);
                             setTags(newTags);
-                            (async ()=>{ try { await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags }); } catch(e) {} })();
+                            (async ()=>{
+                              try {
+                                await api.post(`/conversations/${conv.user_id}/tags`, { tags: newTags });
+                                try { typeof onUpdateConversationTags === 'function' && onUpdateConversationTags(conv.user_id, newTags); } catch {}
+                              } catch(e) {}
+                            })();
+                            setAssignOpen(false);
                           }} className="text-xs text-gray-300 hover:text-white">✕</button>
                         </div>
                       ))}
