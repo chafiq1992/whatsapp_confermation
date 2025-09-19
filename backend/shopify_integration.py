@@ -36,12 +36,28 @@ def _load_store_config() -> tuple[str, str | None, str, str | None]:
     raise RuntimeError("\u274c\u00a0Missing Shopify environment variables")
 
 
-API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN = _load_store_config()
+try:
+    API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN = _load_store_config()
+except Exception as _exc:
+    # Defer failure to request time so the router can still be included.
+    API_KEY = PASSWORD = STORE_URL = ACCESS_TOKEN = None  # type: ignore[assignment]
+    logging.getLogger(__name__).warning("Shopify config missing or invalid: %s", _exc)
+
 API_VERSION = "2023-04"
 
-SEARCH_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers/search.json"
-ORDERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/orders.json"
-ORDER_COUNT_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/orders/count.json"
+def admin_api_base() -> str:
+    """Return the Admin API base URL or raise 503 if not configured.
+
+    Lazily loads env on first use to allow dynamic configuration in runtime.
+    """
+    global API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN
+    if not STORE_URL:
+        try:
+            API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN = _load_store_config()
+        except Exception:
+            raise HTTPException(status_code=503, detail="Shopify not configured")
+    return f"{STORE_URL}/admin/api/{API_VERSION}"
+
 def _client_args(headers: dict | None = None) -> dict:
     args: dict = {}
     hdrs = dict(headers or {})
@@ -90,7 +106,7 @@ router = APIRouter()
 @router.get("/shopify-products")
 async def shopify_products(q: str = Query("", description="Search product titles (optional)")):
     params = {"title": q} if q else {}
-    endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products.json"
+    endpoint = f"{admin_api_base()}/products.json"
     async with httpx.AsyncClient() as client:
         resp = await client.get(endpoint, params=params, **_client_args())
         resp.raise_for_status()
@@ -104,7 +120,7 @@ async def shopify_products(q: str = Query("", description="Search product titles
 # --- Lookup a single variant by ID ---
 @router.get("/shopify-variant/{variant_id}")
 async def shopify_variant(variant_id: str):
-    endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/variants/{variant_id}.json"
+    endpoint = f"{admin_api_base()}/variants/{variant_id}.json"
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(endpoint, **_client_args())
@@ -130,7 +146,7 @@ async def shopify_variant(variant_id: str):
             try:
                 product_id = variant.get("product_id")
                 if product_id:
-                    prod_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/products/{product_id}.json"
+                    prod_endpoint = f"{admin_api_base()}/products/{product_id}.json"
                     p_resp = await client.get(prod_endpoint, **_client_args())
                     if p_resp.status_code == 200:
                         prod = (p_resp.json() or {}).get("product") or {}
@@ -162,7 +178,8 @@ async def fetch_customer_by_phone(phone_number: str):
         params = {'query': f'phone:{phone_number}'}
         async with httpx.AsyncClient() as client:
             # Search customer
-            resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+            search_endpoint = f"{admin_api_base()}/customers/search.json"
+            resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args())
             if resp.status_code == 403:
                 logger.error("Shopify API 403 on customers/search. Missing read_customers scope for token or app not installed.")
                 return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
@@ -173,7 +190,7 @@ async def fetch_customer_by_phone(phone_number: str):
             if not customers and phone_number.startswith("+212"):
                 alt_phone = "0" + phone_number[4:]
                 params = {'query': f'phone:{alt_phone}'}
-                resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+                resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args())
                 if resp.status_code == 403:
                     logger.error("Shopify API 403 on customers/search (fallback). Missing read_customers scope.")
                     return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
@@ -194,7 +211,7 @@ async def fetch_customer_by_phone(phone_number: str):
                 "limit": 1,
                 "order": "created_at desc"
             }
-            orders_resp = await client.get(ORDERS_ENDPOINT, params=order_params, timeout=10, **_client_args())
+            orders_resp = await client.get(f"{admin_api_base()}/orders.json", params=order_params, timeout=10, **_client_args())
             orders_data = orders_resp.json()
             orders_list = orders_data.get('orders', [])
 
@@ -294,7 +311,7 @@ async def search_customers_all(phone_number: str):
     async with httpx.AsyncClient() as client:
         for pn in cand:
             params = {'query': f'phone:{pn}'}
-            resp = await client.get(SEARCH_ENDPOINT, params=params, timeout=10, **_client_args())
+            resp = await client.get(f"{admin_api_base()}/customers/search.json", params=params, timeout=10, **_client_args())
             if resp.status_code == 403:
                 raise HTTPException(status_code=403, detail="Shopify token lacks read_customers scope or app not installed.")
             customers = resp.json().get('customers', [])
@@ -338,7 +355,7 @@ async def search_customers_all(phone_number: str):
                 "order": "created_at desc",
             }
             try:
-                orders_resp = await client.get(ORDERS_ENDPOINT, params=order_params, timeout=10, **_client_args())
+                orders_resp = await client.get(f"{admin_api_base()}/orders.json", params=order_params, timeout=10, **_client_args())
                 orders_list = orders_resp.json().get('orders', [])
                 if orders_list:
                     o = orders_list[0]
@@ -369,10 +386,10 @@ async def shopify_orders(customer_id: str, limit: int = 50):
         "limit": max(1, min(int(limit), 250)),
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.get(ORDERS_ENDPOINT, params=params, timeout=15, **_client_args())
+        resp = await client.get(f"{admin_api_base()}/orders.json", params=params, timeout=15, **_client_args())
         resp.raise_for_status()
         orders = resp.json().get("orders", [])
-        domain = STORE_URL.replace("https://", "").replace("http://", "")
+        domain = admin_api_base().replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
         simplified = []
         for o in orders:
             simplified.append({
@@ -389,7 +406,7 @@ async def shopify_orders(customer_id: str, limit: int = 50):
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():
-    endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/shipping_zones.json"
+    endpoint = f"{admin_api_base()}/shipping_zones.json"
     async with httpx.AsyncClient() as client:
         resp = await client.get(endpoint, **_client_args())
         resp.raise_for_status()
@@ -427,6 +444,7 @@ async def get_shipping_options():
 
 @router.post("/create-shopify-order")
 async def create_shopify_order(data: dict = Body(...)):
+    base = admin_api_base()
     warnings: list[str] = []
     shipping_title = data.get("delivery", "Home Delivery")
     shipping_lines = [{
@@ -460,7 +478,7 @@ async def create_shopify_order(data: dict = Body(...)):
         try:
             email_q = (data.get("email") or "").strip()
             async with httpx.AsyncClient() as client:
-                resp = await client.get(SEARCH_ENDPOINT, params={"query": f"email:{email_q}"}, timeout=10, **_client_args())
+                resp = await client.get(f"{base}/customers/search.json", params={"query": f"email:{email_q}"}, timeout=10, **_client_args())
                 if resp.status_code == 200:
                     items = (resp.json() or {}).get("customers") or []
                     if items:
@@ -495,7 +513,7 @@ async def create_shopify_order(data: dict = Body(...)):
                     ],
                 }
             }
-            CUSTOMERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/customers.json"
+            CUSTOMERS_ENDPOINT = f"{base}/customers.json"
             async with httpx.AsyncClient() as client:
                 c_resp = await client.post(CUSTOMERS_ENDPOINT, json=customer_payload, **_client_args())
                 if c_resp.status_code in (201, 200):
@@ -585,7 +603,7 @@ async def create_shopify_order(data: dict = Body(...)):
             **order_block
         }
     }
-    DRAFT_ORDERS_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/draft_orders.json"
+    DRAFT_ORDERS_ENDPOINT = f"{base}/draft_orders.json"
     async with httpx.AsyncClient() as client:
         resp = await client.post(DRAFT_ORDERS_ENDPOINT, json=draft_order_payload, **_client_args())
         resp.raise_for_status()
@@ -593,7 +611,7 @@ async def create_shopify_order(data: dict = Body(...)):
         draft_id = draft_data["draft_order"]["id"]
 
         # Draft admin URL
-        domain = STORE_URL.replace("https://", "").replace("http://", "")
+        domain = base.replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
         draft_admin_url = f"https://{domain}/admin/draft_orders/{draft_id}"
 
         # If not asked to complete now, return draft info
@@ -610,7 +628,7 @@ async def create_shopify_order(data: dict = Body(...)):
             }
 
         # Complete the draft order (payment pending)
-        COMPLETE_ENDPOINT = f"{STORE_URL}/admin/api/{API_VERSION}/draft_orders/{draft_id}/complete.json"
+        COMPLETE_ENDPOINT = f"{base}/draft_orders/{draft_id}/complete.json"
         comp_resp = await client.post(COMPLETE_ENDPOINT, params={"payment_pending": "true"}, **_client_args())
         comp_resp.raise_for_status()
         comp_json = comp_resp.json() or {}
@@ -624,7 +642,7 @@ async def create_shopify_order(data: dict = Body(...)):
             order_admin_link = f"https://{domain}/admin/orders/{order_id}"
 
             # Write metafields if provided
-            metafields_endpoint = f"{STORE_URL}/admin/api/{API_VERSION}/orders/{order_id}/metafields.json"
+            metafields_endpoint = f"{base}/orders/{order_id}/metafields.json"
             metafields_payloads = []
             if order_image_url:
                 metafields_payloads.append({

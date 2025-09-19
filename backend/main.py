@@ -3078,9 +3078,10 @@ async def get_catalog_set_products(set_id: str, limit: int = 60):
         return []
 
 @app.api_route("/refresh-catalog-cache", methods=["GET", "POST"])
-async def refresh_catalog_cache_endpoint():
-    count = await catalog_manager.refresh_catalog_cache()
-    return {"status": "ok", "count": count}
+async def refresh_catalog_cache_endpoint(background_tasks: BackgroundTasks):
+    # Kick off a background refresh to avoid request timeouts
+    background_tasks.add_task(catalog_manager.refresh_catalog_cache)
+    return {"status": "started"}
 
 
 @app.get("/all-catalog-products")

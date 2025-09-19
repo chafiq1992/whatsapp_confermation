@@ -31,6 +31,8 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET, Range requests, or API-like/proxy endpoints entirely
   if (req.method !== 'GET') return;
   if (hasRange) return;
+  // Skip non-http(s) schemes (e.g., chrome-extension:, blob:)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
   if (
     path.startsWith('/api') ||
     path.startsWith('/ws') ||

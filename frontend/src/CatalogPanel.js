@@ -10,6 +10,8 @@ const API_BASE = process.env.REACT_APP_API_BASE || "";
 const thumbUrlFor = (url, w = 256) => {
   try {
     if (!url) return url;
+    // Only proxy http/https URLs; return other schemes (blob:, data:, chrome-extension:) as-is
+    if (!/^https?:\/\//i.test(String(url))) return url;
     return `${API_BASE}/proxy-image?url=${encodeURIComponent(url)}&w=${Math.max(80, Math.min(800, Number(w) || 256))}`;
   } catch {
     return url;
