@@ -181,7 +181,9 @@ async def convert_webm_to_ogg(src_path: Path) -> Path:
     cmd = [
         "ffmpeg", "-y",                      # overwrite if exists
         "-i", str(src_path),                 # input
-        "-c:a", "libopus", "-b:a", "64k",    # Opus settings
+        # Voice-friendly Opus: mono, 16 kHz, voip application, modest bitrate
+        "-ac", "1", "-ar", "16000",
+        "-c:a", "libopus", "-b:a", "48k", "-application", "voip",
         str(dst_path),
     ]
 
