@@ -1314,6 +1314,13 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 {lastResult.message && (
                   <div className="text-gray-300 mt-1">{lastResult.message}</div>
                 )}
+                {Array.isArray(lastResult.warnings) && lastResult.warnings.length > 0 && (
+                  <ul className="mt-1 text-yellow-300 list-disc list-inside">
+                    {lastResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
           </form>

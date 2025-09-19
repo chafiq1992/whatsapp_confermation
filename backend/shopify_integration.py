@@ -74,6 +74,15 @@ def normalize_phone(phone):
         return "+212" + phone[1:]
     return phone
 
+def _split_name(full_name: str) -> tuple[str, str]:
+    full = (full_name or "").strip()
+    if not full:
+        return "", ""
+    parts = full.split(" ", 1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
 # =============== FASTAPI ROUTER ===============
 router = APIRouter()
 
@@ -398,6 +407,7 @@ async def get_shipping_options():
 
 @router.post("/create-shopify-order")
 async def create_shopify_order(data: dict = Body(...)):
+    warnings: list[str] = []
     shipping_title = data.get("delivery", "Home Delivery")
     shipping_lines = [{
         "title": shipping_title,
@@ -425,28 +435,40 @@ async def create_shopify_order(data: dict = Body(...)):
         except Exception:
             customer_id = None
 
+    # If still not found, try to resolve by email (Shopify supports email search)
+    if not customer_id and (data.get("email") or "").strip():
+        try:
+            email_q = (data.get("email") or "").strip()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(SEARCH_ENDPOINT, params={"query": f"email:{email_q}"}, timeout=10, **_client_args())
+                if resp.status_code == 200:
+                    items = (resp.json() or {}).get("customers") or []
+                    if items:
+                        customer_id = items[0].get("id")
+        except Exception:
+            pass
+
     # Optionally create a new Shopify customer if missing
     create_if_missing = bool(data.get("create_customer_if_missing", True))
     if not customer_id and create_if_missing:
         try:
-            first_name = (data.get("name") or "").strip()
-            last_name = ""
-            if first_name and " " in first_name:
-                parts = first_name.split(" ", 1)
-                first_name, last_name = parts[0], parts[1]
+            fn, ln = _split_name(data.get("name", ""))
             customer_payload = {
                 "customer": {
-                    "first_name": first_name or "",
-                    "last_name": last_name,
+                    "first_name": fn or "",
+                    "last_name": ln or "",
                     "email": data.get("email") or "",
                     "phone": normalize_phone(data.get("phone", "")),
                     "addresses": [
                         {
+                            "first_name": fn or "",
+                            "last_name": ln or "",
                             "address1": data.get("address", ""),
                             "city": data.get("city", ""),
                             "province": data.get("province", ""),
                             "zip": data.get("zip", ""),
                             "country": "Morocco",
+                            "country_code": "MA",
                             "phone": normalize_phone(data.get("phone", "")),
                             "name": data.get("name", ""),
                         }
@@ -461,18 +483,33 @@ async def create_shopify_order(data: dict = Body(...)):
                     created = (c_json.get("customer") or {})
                     if created.get("id"):
                         customer_id = created["id"]
+                elif c_resp.status_code == 403:
+                    warnings.append("Shopify token lacks write_customers scope; could not create/link customer.")
+                elif c_resp.status_code >= 400:
+                    try:
+                        err_txt = (c_resp.text or "").strip()
+                    except Exception:
+                        err_txt = ""
+                    if err_txt:
+                        warnings.append(f"Customer creation failed: {err_txt[:200]}")
         except Exception as e:
             logger.warning("Failed to auto-create customer: %s", e)
 
     if customer_id:
         order_block["customer"] = {"id": customer_id}
     else:
+        fn, ln = _split_name(data.get("name", ""))
         order_block["customer"] = {
-            "first_name": data.get("name", ""),
+            "first_name": fn,
+            "last_name": ln,
             "email": data.get("email", ""),
             "phone": normalize_phone(data.get("phone", ""))
         }
+
+    fn_sa, ln_sa = _split_name(data.get("name", ""))
     shipping_address = {
+        "first_name": fn_sa or "",
+        "last_name": ln_sa or "",
         "address1": data.get("address", ""),
         "city": data.get("city", ""),
         "province": data.get("province", ""),
@@ -482,6 +519,15 @@ async def create_shopify_order(data: dict = Body(...)):
         "name": data.get("name", ""),
         "phone": normalize_phone(data.get("phone", "")),
     }
+
+    # If we couldn't attach a customer, also persist customer fields in draft note for visibility
+    if not customer_id:
+        if data.get("name"):
+            note_attributes.append({"name": "customer_name", "value": str(data.get("name"))})
+        if data.get("phone"):
+            note_attributes.append({"name": "customer_phone", "value": normalize_phone(data.get("phone", ""))})
+        if data.get("email"):
+            note_attributes.append({"name": "customer_email", "value": str(data.get("email"))})
     # Helper to ensure 2-decimal string for amounts
     def _money2(value: float | int | str) -> str:
         try:
@@ -510,6 +556,7 @@ async def create_shopify_order(data: dict = Body(...)):
                 for item in data.get("items", [])
             ],
             "shipping_address": shipping_address,
+            "billing_address": shipping_address,
             "shipping_lines": shipping_lines,
             "email": data.get("email", ""),
             "phone": normalize_phone(data.get("phone", "")),
@@ -538,7 +585,8 @@ async def create_shopify_order(data: dict = Body(...)):
                 "completed": False,
                 "message": (
                     "Draft order created. Open the link in Shopify admin, and click 'Create order' with 'Payment due later' when customer pays."
-                )
+                ),
+                **({"warnings": warnings} if warnings else {})
             }
 
         # Complete the draft order (payment pending)
@@ -593,4 +641,5 @@ async def create_shopify_order(data: dict = Body(...)):
             "shopify_admin_link": draft_admin_url,
             **({"order_admin_link": order_admin_link} if order_admin_link else {}),
             "message": "Draft order completed with payment pending." if order_id else "Draft order created, but completion response did not include order id.",
+            **({"warnings": warnings} if warnings else {})
         }

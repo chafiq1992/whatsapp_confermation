@@ -443,7 +443,56 @@ export default function CatalogPanel({
   // Helpers: filter sets by prefix (case-insensitive)
   const filterSetsByPrefix = (prefix) => {
     const p = String(prefix || '').trim().toLowerCase();
-    return sets.filter(s => (s?.name || s?.id || '').toString().toLowerCase().startsWith(p));
+    const has = (txt) => (txt || '').toString().toLowerCase().includes(p);
+    return sets.filter(s => has(s?.name) || has(s?.id));
+  };
+
+  // Sorting helpers for folder view: order by age ranges, then shoes sizes
+  const _extractSortKey = (rawName) => {
+    const name = (rawName || '').toString().toLowerCase();
+    // Identify shoes categories (EN/FR keywords)
+    const isShoes = /(shoe|shoes|chauss|sneaker)/i.test(name);
+    // Age: months ranges like "0-3 mois" or "3-6 months"
+    const rgxRangeMonths = /(\d+)\s*[-–]\s*(\d+)\s*(mois|months?)/i;
+    const rgxSingleMonths = /(\d+)\s*(mois|months?)/i;
+    const rgxRangeYears = /(\d+)\s*[-–]\s*(\d+)\s*(ans|years?)/i;
+    const rgxSingleYears = /(\d+)\s*(ans|years?)/i;
+
+    const toNum = (x) => { const n = Number(x); return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER; };
+    const toMonths = (n) => n * 1;
+    const yearsToMonths = (n) => n * 12;
+
+    let category = 2; // 0 = age, 1 = shoes, 2 = other
+    let numeric = Number.MAX_SAFE_INTEGER;
+
+    // Try age ranges first (months then years), using lower bound for ordering
+    let m;
+    if ((m = name.match(rgxRangeMonths))) {
+      category = 0; numeric = toMonths(toNum(m[1]));
+    } else if ((m = name.match(rgxSingleMonths))) {
+      category = 0; numeric = toMonths(toNum(m[1]));
+    } else if ((m = name.match(rgxRangeYears))) {
+      category = 0; numeric = yearsToMonths(toNum(m[1]));
+    } else if ((m = name.match(rgxSingleYears))) {
+      category = 0; numeric = yearsToMonths(toNum(m[1]));
+    } else if (isShoes) {
+      category = 1;
+      // Extract first reasonable size number from name
+      const sizeMatch = name.match(/\b(\d{1,2})\b/);
+      numeric = sizeMatch ? toNum(sizeMatch[1]) : Number.MAX_SAFE_INTEGER;
+    }
+
+    return [category, numeric, name];
+  };
+
+  const sortFolderSets = (arr) => {
+    return [...arr].sort((a, b) => {
+      const ka = _extractSortKey(a?.name || a?.id);
+      const kb = _extractSortKey(b?.name || b?.id);
+      if (ka[0] !== kb[0]) return ka[0] - kb[0];
+      if (ka[1] !== kb[1]) return ka[1] - kb[1];
+      return ka[2] < kb[2] ? -1 : ka[2] > kb[2] ? 1 : 0;
+    });
   };
 
   // Open folder view modal for a filter (girls/boys/all)
@@ -456,7 +505,10 @@ export default function CatalogPanel({
     setProducts([]);
     setModalOpen(true);
 
-    const fsets = filter === 'all' ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
+    let fsets = filter === 'all' ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
+    if (filter === 'girls' || filter === 'boys') {
+      fsets = sortFolderSets(fsets);
+    }
     setFolderSets(fsets);
 
     // Prefetch first few sets in the background for instant entry
