@@ -712,6 +712,10 @@ class DatabaseManager:
             "reaction_emoji",      # emoji character (e.g. "👍")
             "reaction_action",     # add/remove per WhatsApp payload
             "waveform",            # optional JSON array of peaks for audio
+            # product identifiers (ensure catalog items render after reload)
+            "product_retailer_id",
+            "retailer_id",
+            "product_id",
         }
 
     async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
@@ -881,6 +885,10 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "reaction_emoji", "TEXT")
             await self._add_column_if_missing(db, "messages", "reaction_action", "TEXT")
             await self._add_column_if_missing(db, "messages", "waveform", "TEXT")
+            # Ensure product identifiers columns exist for catalog items
+            await self._add_column_if_missing(db, "messages", "product_retailer_id", "TEXT")
+            await self._add_column_if_missing(db, "messages", "retailer_id", "TEXT")
+            await self._add_column_if_missing(db, "messages", "product_id", "TEXT")
 
             # Create index on temp_id now that the column is guaranteed to exist
             if self.use_postgres:
@@ -1213,6 +1221,14 @@ class DatabaseManager:
             "media_path": message.get("media_path"),
             "timestamp": message.get("timestamp"),
             "waveform": message.get("waveform"),
+            # persist product identifiers so frontend can restore rich bubble
+            "product_retailer_id": (
+                message.get("product_retailer_id")
+                or message.get("retailer_id")
+                or message.get("product_id")
+            ),
+            "retailer_id": message.get("retailer_id"),
+            "product_id": message.get("product_id"),
         }
         # Remove None values so SQL doesn't fail on NOT NULL columns
         clean = {k: v for k, v in data.items() if v is not None}

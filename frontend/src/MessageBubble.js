@@ -50,10 +50,15 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const [showReactPicker, setShowReactPicker] = useState(false);
   const retailerId = useMemo(() => {
     try {
-      const id = msg?.product_retailer_id || msg?.retailer_id || msg?.product_id || "";
-      return id ? String(id) : "";
+      const direct = msg?.product_retailer_id || msg?.retailer_id || msg?.product_id;
+      if (direct) return String(direct);
+      // Fallback: parse a plausible variant id (6+ digit sequence) from caption/text
+      const source = String(msg?.caption || msg?.message || "");
+      const matches = source.match(/(\d{6,})/g);
+      if (matches && matches.length) return String(matches[matches.length - 1]);
+      return "";
     } catch { return ""; }
-  }, [msg?.product_retailer_id, msg?.retailer_id, msg?.product_id]);
+  }, [msg?.product_retailer_id, msg?.retailer_id, msg?.product_id, msg?.caption, msg?.message]);
   const [variantData, setVariantData] = useState(null);
   // Global caches to avoid repeated variant fetches across mounts/renders
   const VARIANT_TTL_MS = 60 * 60 * 1000; // 1 hour
