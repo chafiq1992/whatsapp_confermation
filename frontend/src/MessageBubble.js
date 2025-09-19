@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from "react";
 import { useAudio } from "./AudioManager";
 import { Clock3, Check, CheckCheck, XCircle, Reply, Forward } from "lucide-react"; // 14 KB gzipped
+/* eslint-env es2020 */
 
 /* prettier, pixel-perfect WhatsApp ticks */
 const ICONS = {
