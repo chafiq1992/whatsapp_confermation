@@ -10,6 +10,7 @@ function getSafeMediaUrl(raw) {
 export default function ImageGroupBubble({ images = [] }) {
   const [zoomIdx, setZoomIdx] = useState(null);
   const API_BASE = process.env.REACT_APP_API_BASE || "";
+  const loadedSrcsRef = React.useRef(new Set());
 
   // Keyboard navigation for zoomed images
   const handleKey = useCallback(
@@ -44,6 +45,7 @@ export default function ImageGroupBubble({ images = [] }) {
               className="rounded-lg object-cover h-[90px] w-[90px] cursor-pointer"
               onClick={() => setZoomIdx(idx)}
               onError={e => (e.target.src = "/broken-image.png")}
+              onLoad={() => { const key = proxied || ''; if (!loadedSrcsRef.current.has(key)) { loadedSrcsRef.current.add(key); try { window.dispatchEvent(new CustomEvent('row-resize')); } catch {} } }}
             />
               );
             })()}

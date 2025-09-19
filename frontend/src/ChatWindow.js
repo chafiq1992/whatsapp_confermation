@@ -221,11 +221,14 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   };
 
   const groupedMessages = useMemo(() => withDateSeparators(groupConsecutiveImages(messages)), [messages]);
+  const groupedLenRef = useRef(0);
+  useEffect(() => { groupedLenRef.current = groupedMessages.length; }, [groupedMessages.length]);
 
   const getItemKeyAtIndex = useCallback((index) => {
     const msg = groupedMessages[index];
     if (!msg) return `row_${index}`;
-    return msg.__separator ? msg.key : (msg.wa_message_id || msg.id || msg.temp_id || `${msg.timestamp}_${index}`);
+    // Prefer temp_id for outgoing (stable); then id (stable for incoming); then wa_message_id
+    return msg.__separator ? msg.key : (msg.temp_id || msg.id || msg.wa_message_id || `${msg.timestamp}_${index}`);
   }, [groupedMessages]);
 
   // Helpers for current user's pendingImages queue state
@@ -295,11 +298,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             const matchesTemp = data.data.temp_id && msg.temp_id === data.data.temp_id;
             const matchesWa = data.data.wa_message_id && msg.wa_message_id === data.data.wa_message_id;
             if (matchesTemp || matchesWa) {
-              const merged = { ...msg, ...data.data };
-              // If final wa_message_id arrives, promote id to stable WA id to stabilise keys
-              if (data.data.wa_message_id) {
-                merged.id = data.data.wa_message_id;
-              }
+              // Merge status and fields, but keep existing id to preserve stable React keys
+              const merged = { ...msg, ...data.data, id: msg.id };
               return merged;
             }
             return msg;
@@ -762,6 +762,10 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       if (resizeRafRef.current) cancelAnimationFrame(resizeRafRef.current);
       resizeRafRef.current = requestAnimationFrame(() => {
         try { listRef.current.resetAfterIndex(0, true); } catch {}
+        // If the user is at bottom, keep them pinned after resize
+        if (atBottomRef.current) {
+          try { listRef.current.scrollToItem(groupedLenRef.current - 1, 'end'); } catch {}
+        }
       });
     };
     window.addEventListener('row-resize', handler);

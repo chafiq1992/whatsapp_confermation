@@ -3248,13 +3248,20 @@ async def proxy_image(url: str):
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
         media_type = resp.headers.get("Content-Type", "image/jpeg")
+        # Forward upstream status code and caching headers to enable proper browser caching/conditional requests
+        passthrough = {
+            "Cache-Control": resp.headers.get("Cache-Control", "public, max-age=86400"),
+            "Vary": resp.headers.get("Vary", "Accept"),
+        }
+        for h in ("ETag", "Last-Modified", "Content-Length"):
+            v = resp.headers.get(h)
+            if v:
+                passthrough[h] = v
         return StarletteResponse(
             content=resp.content,
             media_type=media_type,
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "Vary": "Accept",
-            },
+            headers=passthrough,
+            status_code=resp.status_code,
         )
     except Exception as exc:
         print(f"Proxy image error: {exc}")

@@ -108,6 +108,9 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
   const [linkPreview, setLinkPreview] = useState(null);
   const [linkPreviewError, setLinkPreviewError] = useState(false);
+  // Avoid repeated row-resize notifications on re-mounts by remembering loaded images
+  const singleImageLoadedRef = React.useRef(false);
+  const loadedSrcsRef = React.useRef(new Set());
 
   useEffect(() => {
     if (!isText) return;
@@ -214,7 +217,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         className="rounded-xl mb-1 w-[250px] h-auto object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
         style={{ aspectRatio: '4 / 3' }}
         onError={(e) => handleImageError(e)}
-        onLoad={notifyResize}
+        onLoad={() => { if (!singleImageLoadedRef.current) { singleImageLoadedRef.current = true; notifyResize(); } }}
         loading="lazy"
         onClick={() => window.open(src, '_blank')}
       />
@@ -241,7 +244,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
               alt={`Image ${idx + 1}`}
               className="rounded-xl mb-1 w-[160px] h-[120px] object-cover cursor-pointer hover:opacity-90 transition-opacity bg-gray-100"
               onError={(e) => handleImageError(e)}
-              onLoad={notifyResize}
+              onLoad={() => { const key = proxied || ''; if (!loadedSrcsRef.current.has(key)) { loadedSrcsRef.current.add(key); notifyResize(); } }}
               loading="lazy"
               onClick={() => window.open(raw || proxied, '_blank')}
             />
