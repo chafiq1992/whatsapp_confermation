@@ -194,21 +194,18 @@ export default function App() {
               typeof msg.message === "string"
                 ? msg.message
                 : msg.caption || msg.type || "";
-            const time = msg.timestamp || new Date().toISOString();
+            const nowIso = new Date().toISOString();
+            const msgTime = msg.timestamp || nowIso;
             setConversations((prev) => {
               const idx = prev.findIndex((c) => c.user_id === userId);
               if (idx !== -1) {
                 const current = prev[idx];
-                if (
-                  current.last_message_time &&
-                  new Date(current.last_message_time) > new Date(time)
-                ) {
-                  return prev;
-                }
                 const updated = {
                   ...current,
                   last_message: text,
-                  last_message_time: time,
+                  last_message_type: msg.type || current.last_message_type,
+                  // Always treat an incoming message as latest activity for ordering purposes
+                  last_message_time: nowIso,
                   unread_count:
                     activeUserRef.current?.user_id === userId
                       ? current.unread_count
@@ -224,7 +221,8 @@ export default function App() {
                 user_id: userId,
                 name: msg.name || userId,
                 last_message: text,
-                last_message_time: time,
+                last_message_type: msg.type || 'text',
+                last_message_time: nowIso,
                 unread_count:
                   activeUserRef.current?.user_id === userId ? 0 : 1,
               };

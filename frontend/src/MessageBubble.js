@@ -675,7 +675,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   }
 
   return (
-    <div ref={containerRef} className={`relative flex ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
+    <div ref={containerRef} className={`relative flex w-full ${self ? "justify-end" : "justify-start"} px-3 my-2`}>
       <div
         className={`group relative max-w-[80%] px-4 py-2 rounded-2xl shadow-sm transition-colors ${
           self 

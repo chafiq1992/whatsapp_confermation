@@ -45,6 +45,10 @@ const sortByTime = (list = []) => {
     const aMs = toMs(a.timestamp);
     const bMs = toMs(b.timestamp);
     if (aMs !== bMs) return aMs - bMs;
+    // If timestamps are equal, always place customer's message (from_me=false) before ours (from_me=true)
+    if (Boolean(a.from_me) !== Boolean(b.from_me)) {
+      return a.from_me ? 1 : -1;
+    }
     // Tie-breaker using client-side monotonic ts if available
     const aCt = a.client_ts || 0;
     const bCt = b.client_ts || 0;
