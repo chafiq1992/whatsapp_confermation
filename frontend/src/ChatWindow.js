@@ -912,6 +912,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       formData.append('files', imgObj.file);
       formData.append("user_id", getUserId());
       formData.append("media_type", "image");
+      // Pass through temp_id so backend can update the same optimistic bubble
+      formData.append("temp_id", temp_id);
+      // Optional metadata
+      if (imgObj.caption) formData.append("caption", imgObj.caption);
+      if (imgObj.price) formData.append("price", imgObj.price);
       
       try {
         const response = await api.post(`${API_BASE}/send-media-async`, formData, {
@@ -940,13 +945,16 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           };
           return copy;
         });
-        // Update the optimistic message with final URL and mark as sent
+        // Update the optimistic message with final URL (if available) and mark as sent
         try {
           const first = Array.isArray(response?.data?.messages) ? response.data.messages[0] : null;
           const finalUrl = (first && (first.media_url || first.result?.url)) || response.data?.url || response.data?.file_path || '';
           const oldLocalUrl = imgObj.url;
           setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(finalUrl ? { url: finalUrl } : {}) } : m));
-          try { if (oldLocalUrl && oldLocalUrl.startsWith('blob:')) URL.revokeObjectURL(oldLocalUrl); } catch {}
+          // Only revoke the blob URL once we have a durable URL; otherwise keep it alive until WS update arrives
+          if (finalUrl) {
+            try { if (oldLocalUrl && oldLocalUrl.startsWith('blob:')) URL.revokeObjectURL(oldLocalUrl); } catch {}
+          }
         } catch {}
         
         resolve({ success: true, idx });
