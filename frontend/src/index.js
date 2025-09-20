@@ -30,6 +30,11 @@ if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
         .then((registration) => {
           try { registration.update(); } catch {}
+          try {
+            setInterval(() => {
+              try { registration.update(); } catch {}
+            }, 5 * 60 * 1000);
+          } catch {}
         })
         .catch(() => {});
     } catch {}
