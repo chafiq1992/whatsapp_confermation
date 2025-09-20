@@ -17,6 +17,21 @@ const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsP
 // Default to relative paths if not provided
 const API_BASE = process.env.REACT_APP_API_BASE || "";
 
+// Normalize timestamps across types and formats; treat naive ISO as UTC
+const toMsNormalized = (t) => {
+  if (!t) return 0;
+  if (t instanceof Date) return t.getTime();
+  if (typeof t === 'number') return t;
+  const s = String(t);
+  if (/^\d+$/.test(s)) return Number(s) * (s.length <= 10 ? 1000 : 1);
+  if (s.includes('T') && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    const ms = Date.parse(s + 'Z');
+    if (!Number.isNaN(ms)) return ms;
+  }
+  const ms = Date.parse(s);
+  return Number.isNaN(ms) ? 0 : ms;
+};
+
 export default function App() {
   const [products, setProducts] = useState([]);
   const [catalogProducts, setCatalogProducts] = useState({});
@@ -57,6 +72,48 @@ export default function App() {
     updateScale();
     window.addEventListener('resize', updateScale);
     return () => window.removeEventListener('resize', updateScale);
+  }, []);
+
+  // Reflect latest message previews from ChatWindow globally so ChatList stays in sync
+  useEffect(() => {
+    const handler = (ev) => {
+      const d = ev.detail || {};
+      if (!d.user_id) return;
+      setConversations((prev) => {
+        const list = Array.isArray(prev) ? [...prev] : [];
+        const idx = list.findIndex((c) => c.user_id === d.user_id);
+        const nowIso = new Date().toISOString();
+        const incomingIso = d.last_message_time || nowIso;
+        if (idx === -1) {
+          const created = {
+            user_id: d.user_id,
+            name: d.name || d.user_id,
+            last_message: d.last_message || '',
+            last_message_type: d.last_message_type || 'text',
+            last_message_time: incomingIso,
+            last_message_from_me: typeof d.last_message_from_me === 'boolean' ? d.last_message_from_me : undefined,
+            last_message_status: d.last_message_status,
+            unread_count: activeUserRef.current?.user_id === d.user_id ? 0 : 1,
+            tags: [],
+          };
+          return [created, ...list];
+        }
+        const updated = { ...list[idx] };
+        if (d.last_message_type) updated.last_message_type = d.last_message_type;
+        if (typeof d.last_message === 'string') updated.last_message = d.last_message;
+        if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
+        if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
+        const prevMs = toMsNormalized(updated.last_message_time || 0);
+        const incomingMs = toMsNormalized(incomingIso);
+        const chosenMs = Math.max(prevMs, incomingMs);
+        updated.last_message_time = new Date(chosenMs).toISOString();
+        if (activeUserRef.current?.user_id === d.user_id) updated.unread_count = 0;
+        const without = list.filter((_, i) => i !== idx);
+        return [updated, ...without];
+      });
+    };
+    window.addEventListener('conversation-preview', handler);
+    return () => window.removeEventListener('conversation-preview', handler);
   }, []);
 
   // Clear unread count in chat list when opening a conversation

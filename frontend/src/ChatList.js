@@ -105,47 +105,7 @@ function ChatList({
     setConversations(initialConversations);
   }, [initialConversations]);
 
-  // Live preview updates from ChatWindow
-  useEffect(() => {
-    const handler = (ev) => {
-      const d = ev.detail || {};
-      if (!d.user_id) return;
-      setConversations(prev => {
-        const list = Array.isArray(prev) ? [...prev] : [];
-        const idx = list.findIndex(c => c.user_id === d.user_id);
-        const nowIso = new Date().toISOString();
-        if (idx === -1) {
-          // If conversation not present locally, create a minimal one
-          const created = {
-            user_id: d.user_id,
-            name: d.name || d.user_id,
-            last_message: d.last_message || '',
-            last_message_type: d.last_message_type || 'text',
-            last_message_time: d.last_message_time || nowIso,
-            last_message_from_me: typeof d.last_message_from_me === 'boolean' ? d.last_message_from_me : undefined,
-            last_message_status: d.last_message_status,
-            unread_count: 0,
-          };
-          return [created, ...list];
-        }
-        const updated = { ...list[idx] };
-        if (d.last_message_type) updated.last_message_type = d.last_message_type;
-        if (typeof d.last_message === 'string') updated.last_message = d.last_message;
-        if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
-        if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
-        // Monotonic update: avoid time flicker from late-arriving server/client timestamps
-        const prevMs = toMsNormalized(updated.last_message_time || 0);
-        const incomingMs = toMsNormalized(d.last_message_time || nowIso);
-        const chosenMs = Math.max(prevMs, incomingMs);
-        updated.last_message_time = new Date(chosenMs).toISOString();
-        // Move to top like WhatsApp
-        const without = list.filter((_, i) => i !== idx);
-        return [updated, ...without];
-      });
-    };
-    window.addEventListener('conversation-preview', handler);
-    return () => window.removeEventListener('conversation-preview', handler);
-  }, []);
+  // Live preview updates are handled in App to keep a single source of truth
 
   useEffect(() => {
     activeUserRef.current = activeUser;
