@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { FaShopify } from "react-icons/fa";
 import api from "./api";
 import { saveCart, loadCart } from "./chatStorage";
@@ -81,6 +81,27 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [selectedAddressIdx, setSelectedAddressIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState([]);
+  const ordersCooldownRef = useRef(0);
+  const fetchOrdersWithCooldown = async (customerId) => {
+    if (!customerId) return;
+    const now = Date.now();
+    if (now < (ordersCooldownRef.current || 0)) {
+      return;
+    }
+    try {
+      const res = await api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: customerId, limit: 50 } });
+      setOrders(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      const status = err?.response?.status;
+      if (status === 429) {
+        const retryAfterHeader = Number(err?.response?.headers?.["retry-after"]) || 0;
+        const retryAfterBody = Number(err?.response?.data?.retry_after) || 0;
+        const backoffSec = Math.max(retryAfterHeader, retryAfterBody, 5);
+        ordersCooldownRef.current = Date.now() + backoffSec * 1000;
+      }
+      setOrders([]);
+    }
+  };
 
   const normalizePhone = (phone) => {
     if (!phone) return "";
@@ -233,9 +254,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           complete_now: false,
         });
         // Fetch orders list
-        api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: first.customer_id, limit: 50 } })
-          .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
-          .catch(() => setOrders([]));
+        fetchOrdersWithCooldown(first.customer_id);
       } else if (single?.data) {
         const c = single.data;
         setCustomer(c);
@@ -252,9 +271,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
           complete_now: false,
         });
         if (c.customer_id) {
-          api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
-            .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
-            .catch(() => setOrders([]));
+          fetchOrdersWithCooldown(c.customer_id);
         } else {
           setOrders([]);
         }
@@ -798,6 +815,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                   <div className="space-y-2">
                     <div className="text-sm text-gray-300">Select customer for this phone:</div>
                     <select
+                      id="customer-select"
+                      name="customer_id"
                       className="w-full bg-gray-800 text-white p-2 rounded"
                       value={selectedCustomerId || ''}
                       onChange={(e) => {
@@ -818,9 +837,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                           province: addr.province || "",
                           zip: addr.zip || "",
                         }));
-                        api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
-                          .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
-                          .catch(() => setOrders([]));
+                        fetchOrdersWithCooldown(c.customer_id);
                       }}
                     >
                       {customersList.map((c) => (
@@ -833,8 +850,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                       <details>
                         <summary className="cursor-pointer text-xs text-gray-300">Addresses ({customer.addresses.length})</summary>
                         <div className="mt-1">
-                          <div className="text-xs mb-1">Select address:</div>
+                          <label htmlFor="address-select" className="text-xs mb-1 block">Select address:</label>
                           <select
+                            id="address-select"
+                            name="address_index"
                             className="bg-gray-800 text-white p-1 rounded"
                             value={selectedAddressIdx}
                             onChange={(e) => {
@@ -867,8 +886,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                       <details>
                         <summary className="cursor-pointer">Addresses ({customer.addresses.length})</summary>
                         <div className="ml-4 mt-1">
-                          <div className="text-xs mb-1">Select address:</div>
+                          <label htmlFor="address-select-single" className="text-xs mb-1 block">Select address:</label>
                           <select
+                            id="address-select-single"
+                            name="address_index"
                             className="bg-gray-800 text-white p-1 rounded"
                             value={selectedAddressIdx}
                             onChange={(e) => {
@@ -952,6 +973,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                   <div className="text-xs text-gray-300 mb-1">Search customers by phone or email (different from WhatsApp):</div>
                   <div className="flex gap-2">
                     <input
+                      id="customer-search"
+                      name="customer_search"
                       className="flex-1 p-1 rounded bg-gray-900 text-white"
                       placeholder="Enter phone or email"
                       value={customerSearchInput}
@@ -1005,9 +1028,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                               }));
                               setCustomerSearchResults([]);
                               setCustomerSearchInput("");
-                              api.get(`${API_BASE}/shopify-orders`, { params: { customer_id: c.customer_id, limit: 50 } })
-                                .then(res => setOrders(Array.isArray(res.data) ? res.data : []))
-                                .catch(() => setOrders([]));
+                              fetchOrdersWithCooldown(c.customer_id);
                             }}
                           >Select</button>
                         </li>
@@ -1042,8 +1063,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             )}
             <div className="space-y-1">
               {/* ... All your address and customer fields, as in your code ... */}
-              <label className="block text-xs font-bold">Name</label>
+              <label htmlFor="order-name" className="block text-xs font-bold">Name</label>
               <input
+                id="order-name"
+                name="name"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.name}
                 onChange={e => handleOrderDataChange('name', e.target.value)}
@@ -1051,8 +1074,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 placeholder="Customer name"
                 title="Customer full name"
               />
-              <label className="block text-xs font-bold">Email</label>
+              <label htmlFor="order-email" className="block text-xs font-bold">Email</label>
               <input
+                id="order-email"
+                name="email"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.email}
                 onChange={e => handleOrderDataChange('email', e.target.value)}
@@ -1060,8 +1085,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 placeholder="customer@example.com"
                 title="Customer email (optional)"
               />
-              <label className="block text-xs font-bold">Phone</label>
+              <label htmlFor="order-phone" className="block text-xs font-bold">Phone</label>
               <input
+                id="order-phone"
+                name="phone"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.phone}
                 onChange={e => handleOrderDataChange('phone', e.target.value)}
@@ -1069,8 +1096,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 placeholder="+212..."
                 title="Customer phone number"
               />
-              <label className="block text-xs font-bold">City <span className="text-red-400">*</span></label>
+              <label htmlFor="order-city" className="block text-xs font-bold">City <span className="text-red-400">*</span></label>
               <input
+                id="order-city"
+                name="city"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.city}
                 onChange={e => handleOrderDataChange('city', e.target.value)}
@@ -1079,8 +1108,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 placeholder="City"
                 title="Shipping city"
               />
-              <label className="block text-xs font-bold">Province <span className="text-red-400">*</span></label>
+              <label htmlFor="order-province" className="block text-xs font-bold">Province <span className="text-red-400">*</span></label>
               <select
+                id="order-province"
+                name="province"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.province}
                 onChange={e => handleOrderDataChange('province', e.target.value)}
@@ -1092,8 +1123,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                    <option key={prov} value={prov}>{prov}</option>
                  ))}
                </select>
-              <label className="block text-xs font-bold">ZIP <span className="text-red-400">*</span></label>
+              <label htmlFor="order-zip" className="block text-xs font-bold">ZIP <span className="text-red-400">*</span></label>
               <input
+                id="order-zip"
+                name="zip"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.zip}
                 onChange={e => handleOrderDataChange('zip', e.target.value)}
@@ -1102,8 +1135,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 placeholder="Postal code"
                 title="Postal/ZIP code"
               />
-              <label className="block text-xs font-bold">Address <span className="text-red-400">*</span></label>
+              <label htmlFor="order-address" className="block text-xs font-bold">Address <span className="text-red-400">*</span></label>
               <input
+                id="order-address"
+                name="address"
                 className="w-full p-1 rounded bg-gray-800 text-white"
                 value={orderData.address}
                 onChange={e => handleOrderDataChange('address', e.target.value)}
@@ -1116,16 +1151,20 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               <details className="mt-2">
                 <summary className="cursor-pointer text-xs text-gray-300">Additional details</summary>
                 <div className="mt-2 space-y-1">
-                  <label className="block text-xs font-bold">Order note (timeline text)</label>
+                  <label htmlFor="order-note" className="block text-xs font-bold">Order note (timeline text)</label>
                   <textarea
+                    id="order-note"
+                    name="order_note"
                     className="w-full p-1 rounded bg-gray-800 text-white"
                     rows={3}
                     placeholder="e.g. Customer requested gift wrap."
                     value={orderData.order_note}
                     onChange={e => handleOrderDataChange('order_note', e.target.value)}
                   />
-                  <label className="block text-xs font-bold">Image URL (will be saved in note)</label>
+                  <label htmlFor="order-image-url" className="block text-xs font-bold">Image URL (will be saved in note)</label>
                   <input
+                    id="order-image-url"
+                    name="order_image_url"
                     className="w-full p-1 rounded bg-gray-800 text-white"
                     placeholder="https://..."
                     value={orderData.order_image_url}
@@ -1153,6 +1192,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             <h3 className="font-bold text-lg mb-2">Add products</h3>
             <div className="relative">
               <input
+                id="product-search"
+                name="product_search"
                 value={productSearch}
                 onChange={e => setProductSearch(e.target.value)}
                 placeholder="Search products…"
@@ -1186,6 +1227,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             </div>
             <div className="mt-2">
               <input
+                id="variant-id"
+                name="variant_id"
                 value={variantIdInput}
                 onChange={e => setVariantIdInput(e.target.value)}
                 placeholder="Add by Variant ID"
@@ -1317,8 +1360,10 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
             )}
             {/* Delivery Option */}
             <div className="mt-2">
-              <label className="block font-bold text-xs mb-1">Delivery</label>
+              <label htmlFor="delivery-option" className="block font-bold text-xs mb-1">Delivery</label>
               <select
+                id="delivery-option"
+                name="delivery"
                 className="bg-gray-800 text-white px-2 py-1 rounded"
                 value={deliveryOption}
                 onChange={e => setDeliveryOption(e.target.value)}

@@ -69,6 +69,9 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     // Only fetch for catalog items and when visible to reduce work
     const isCatalogItem = msg?.type === 'catalog_item' || msg?.type === 'interactive_product';
     if (!retailerId || !isCatalogItem || !isVisible) return;
+    // Avoid spurious fetches: Shopify variant IDs are long numeric ids
+    const plausibleShopifyId = /^[1-9]\d{10,}$/.test(retailerId);
+    if (!plausibleShopifyId) return;
     (async () => {
       try {
         // Serve from cache if fresh

@@ -105,6 +105,8 @@ function ComposerInternal({
             <HiFaceSmile size={20} />
           </button>
           <textarea
+            id="message-input"
+            name="message"
             ref={inputRef}
             className="flex-1 bg-transparent text-white placeholder-gray-300 outline-none resize-none leading-5 max-h-40"
             value={text}
@@ -118,12 +120,15 @@ function ComposerInternal({
           {!isRecording && (
             <>
               <input
+                id="file-input"
+                name="attachments"
                 type="file"
                 accept="image/*"
                 multiple
                 style={{ display: 'none' }}
                 ref={fileInputRef}
                 onChange={onFileInputChange}
+                aria-label="Attach files"
               />
               <button
                 className="text-[#5AA0FF] hover:opacity-90"
