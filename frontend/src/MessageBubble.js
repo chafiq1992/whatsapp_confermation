@@ -686,8 +686,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <div
         className={`group relative max-w-[80%] px-4 py-2 rounded-2xl shadow-sm transition-colors ${
           self 
-            ? `${highlighted ? 'bg-[#d4e4ff]' : 'bg-[#e6f0ff]'} text-black rounded-br-none hover:bg-[#d8e8ff]`
-            : `${highlighted ? 'bg-[#fff5d7]' : 'bg-white'} text-black rounded-bl-none hover:bg-gray-50 border border-gray-200`
+            ? `${highlighted ? 'bg-red-50 ring-2 ring-red-500 border border-red-500' : 'bg-[#e6f0ff]'} text-black rounded-br-none hover:bg-[#d8e8ff]`
+            : `${highlighted ? 'bg-red-50 ring-2 ring-red-500 border border-red-500' : 'bg-white'} text-black rounded-bl-none hover:bg-gray-50 ${highlighted ? '' : 'border border-gray-200'}`
         } text-[13px] leading-relaxed`}
       >
         
