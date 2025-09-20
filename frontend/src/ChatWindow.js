@@ -148,6 +148,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     setUnreadSeparatorIndex(null);
     setAllowSmoothScroll(false);
     hasInitialisedScrollRef.current = false;
+    justOpenedRef.current = true;
     // First, hydrate from cache for instant UX
     loadMessages(uid).then((msgs) => {
       if (conversationIdRef.current !== uid) return; // ignore stale
@@ -190,6 +191,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   );
   const [allowSmoothScroll, setAllowSmoothScroll] = useState(false);
   const hasInitialisedScrollRef = useRef(false);
+  const justOpenedRef = useRef(false);
   const lastVisibleStartIndexRef = useRef(0);
   const [firstItemIndex, setFirstItemIndex] = useState(0);
   // Throttle list height updates to avoid frequent re-mounts (prevents audio flicker while typing)
@@ -425,6 +427,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     try {
       const uid = activeUser?.user_id;
       if (!uid || messages.length === 0) return;
+      if (justOpenedRef.current) { justOpenedRef.current = false; return; }
       const last = messages[messages.length - 1];
       const preview = typeof last.message === 'string' ? last.message : (last.caption || '');
       const t = last.type || 'text';
@@ -1206,9 +1209,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         ) : (
           listHeight > 0 && (
           <Virtuoso
+            key={activeUser?.user_id || 'chat'}
             ref={listRef}
             style={{ height: listHeight, width: '100%' }}
             data={groupedMessages}
+            initialTopMostItemIndex={Math.max(0, groupedMessages.length - 1)}
             firstItemIndex={firstItemIndex}
             increaseViewportBy={{ top: 400, bottom: 600 }}
             className={`${allowSmoothScroll ? 'scroll-smooth' : ''}`}
