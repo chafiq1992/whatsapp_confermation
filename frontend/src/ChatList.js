@@ -492,7 +492,11 @@ const ConversationRow = memo(function Row({
           />
         ) : (
           (() => {
-            const initial = String(conv.name || conv.user_id || '?').trim().charAt(0).toUpperCase() || '?';
+            const raw = String(conv.name || '').trim();
+            const firstChar = raw.charAt(0);
+            const isDigit = /^\d$/.test(firstChar);
+            const showIcon = !firstChar || isDigit;
+            const initial = showIcon ? '' : firstChar.toUpperCase();
             const colorClass = typeof conv.last_message_from_me === 'boolean'
               ? (conv.last_message_from_me ? 'bg-green-600' : 'bg-blue-600')
               : 'bg-gray-600';
@@ -501,7 +505,7 @@ const ConversationRow = memo(function Row({
                 className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold ${colorClass}`}
                 aria-label={conv.name || conv.user_id}
               >
-                {initial}
+                {initial || <FiUser className="opacity-90" />}
               </div>
             );
           })()

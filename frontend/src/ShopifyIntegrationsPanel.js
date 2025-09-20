@@ -349,11 +349,14 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     totalDiscount,
     total,
     currency,
+    // Optional single-item fallback fields (used if items not provided)
     productImageUrl,
     productTitle,
     productVariantTitle,
     qty,
     moreCount,
+    // New: full items array to render all variants
+    items = [],
     addressName,
     address1,
     address2,
@@ -361,6 +364,42 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     provinceCode,
     zip,
   }) => {
+    const itemsHtml = Array.isArray(items) && items.length > 0
+      ? `
+        <div class="section-title">Items</div>
+        ${items.map((it) => `
+          <div class="product">
+            <div class="thumb">
+              ${it.image ? `<img src="${it.image}" crossorigin="anonymous" alt="${(it.title || 'Item').replace(/[/\\]/g,'-')}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
+            </div>
+            <div class="prod-info">
+              <div class="prod-title">${it.title || ''}</div>
+              ${it.variant ? `<div class="prod-variant">${it.variant}</div>` : ''}
+              <div class="chips">
+                <span class="chip">Qty ×${Number(it.qty || 1)}</span>
+                ${Number(it.lineTotal || 0) > 0 ? `<span class="chip">${Number(it.lineTotal).toFixed(2)} ${currency}</span>` : ''}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      `
+      : `
+        <div class="section-title">Item</div>
+        <div class="product">
+          <div class="thumb">
+            ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
+          </div>
+          <div class="prod-info">
+            <div class="prod-title">${productTitle || ''}</div>
+            ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
+            <div class="chips">
+              <span class="chip">Qty ×${qty}</span>
+              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+
     return `<!DOCTYPE html>
 <html lang="en" dir="ltr">
 <head>
@@ -458,21 +497,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
 
         <div class="rule" aria-hidden="true"></div>
 
-        <!-- Product (first item) -->
-        <div class="section-title">Item</div>
-        <div class="product">
-          <div class="thumb">
-            ${productImageUrl ? `<img src="${productImageUrl}" crossorigin="anonymous" alt="${productTitle || 'Item'}" />` : `<img src="https://cdn.shopify.com/s/images/admin/no-image-compact-1.gif" alt="No image" />`}
-          </div>
-          <div class="prod-info">
-            <div class="prod-title">${productTitle || ''}</div>
-            ${productVariantTitle ? `<div class="prod-variant">${productVariantTitle}</div>` : ''}
-            <div class="chips">
-              <span class="chip">Qty ×${qty}</span>
-              ${moreCount > 0 ? `<span class="chip">+${moreCount} more</span>` : ''}
-            </div>
-          </div>
-        </div>
+        ${itemsHtml}
 
         <!-- Address -->
         <div class="section-title">Customer</div>
@@ -546,12 +571,20 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         (creationResult?.order_admin_link ? creationResult.order_admin_link.split("/").pop() : "") ||
         (creationResult?.draft_order_id ? `Draft #${creationResult.draft_order_id}` : `Order ${new Date().toISOString().slice(0,10)}`);
 
-      const firstItem = (selectedItems || [])[0] || null;
-      const productImageUrl = firstItem?.variant?.image_src || "";
-      const productTitle = firstItem?.variant?.product_title || firstItem?.variant?.title || "";
-      const productVariantTitle = firstItem?.variant?.title || "";
-      const qty = Number(firstItem?.quantity || 0);
-      const moreCount = Math.max(0, itemsCount - 1);
+      // Build full items list for the label (show each variant with image and details)
+      const items = (selectedItems || []).map((it) => {
+        const priceNum = Number(it?.variant?.price || 0);
+        const qtyNum = Number(it?.quantity || 1);
+        const discountNum = Number(it?.discount || 0);
+        const lineTotal = Math.max(0, priceNum * qtyNum - discountNum);
+        return {
+          image: it?.variant?.image_src || "",
+          title: it?.variant?.product_title || it?.variant?.title || "",
+          variant: it?.variant?.title || "",
+          qty: qtyNum,
+          lineTotal,
+        };
+      });
 
       const html = buildOrderLabelHtml({
         orderName,
@@ -562,11 +595,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         totalDiscount: Number(totalDiscount.toFixed(2)),
         total,
         currency: "MAD",
-        productImageUrl,
-        productTitle,
-        productVariantTitle,
-        qty,
-        moreCount,
+        items,
         addressName: fullName || "",
         address1: orderData?.address || "",
         address2: "",
