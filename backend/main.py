@@ -176,6 +176,22 @@ AUTO_REPLY_TEST_NUMBERS: Set[str] = set(
     _digits_only(n.strip()) for n in _TEST_NUMBERS_RAW.split(",") if n.strip()
 )
 
+# Survey test config (override scheduler for specific numbers)
+_SURVEY_TEST_NUMBERS_RAW = os.getenv("SURVEY_TEST_NUMBERS", "")
+SURVEY_TEST_NUMBERS: Set[str] = set(
+    _digits_only(n.strip()) for n in _SURVEY_TEST_NUMBERS_RAW.split(",") if n.strip()
+)
+try:
+    SURVEY_TEST_DELAY_SEC = int(os.getenv("SURVEY_TEST_DELAY_SEC", "0") or "0")
+except Exception:
+    SURVEY_TEST_DELAY_SEC = 0
+SURVEY_TEST_IGNORE_INVOICE = os.getenv("SURVEY_TEST_IGNORE_INVOICE", "0") == "1"
+SURVEY_TEST_BYPASS_COOLDOWN = os.getenv("SURVEY_TEST_BYPASS_COOLDOWN", "0") == "1"
+try:
+    SURVEY_TEST_COOLDOWN_SEC = int(os.getenv("SURVEY_TEST_COOLDOWN_SEC", "60") or "60")
+except Exception:
+    SURVEY_TEST_COOLDOWN_SEC = 60
+
 _vlog(f"🔧 Configuration loaded:")
 _vlog(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
 _vlog(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
@@ -2605,6 +2621,8 @@ class MessageProcessor:
     async def _handle_survey_interaction(self, user_id: str, reply_id: str, title: str) -> None:
         state = await self.redis_manager.get_survey_state(user_id) or {}
         stage = state.get("stage") or "start"
+        uid_digits = _digits_only(user_id)
+        is_test = uid_digits in SURVEY_TEST_NUMBERS
 
         # Start → ask rating
         if reply_id == "survey_start_ok":
@@ -2638,7 +2656,11 @@ class MessageProcessor:
         # Decline → thank you
         if reply_id == "survey_decline":
             await self.redis_manager.clear_survey_state(user_id)
-            await self.redis_manager.mark_survey_invited(user_id)
+            if not (is_test and SURVEY_TEST_BYPASS_COOLDOWN):
+                if is_test and SURVEY_TEST_COOLDOWN_SEC > 0:
+                    await self.redis_manager.mark_survey_invited(user_id, window_sec=SURVEY_TEST_COOLDOWN_SEC)
+                else:
+                    await self.redis_manager.mark_survey_invited(user_id)
             await self.process_outgoing_message({
                 "user_id": user_id,
                 "type": "text",
@@ -2708,7 +2730,11 @@ class MessageProcessor:
             state["improvement"] = reply_id
             state["stage"] = "done"
             await self.redis_manager.set_survey_state(user_id, state, ttl_sec=7 * 24 * 60 * 60)
-            await self.redis_manager.mark_survey_invited(user_id)
+            if not (is_test and SURVEY_TEST_BYPASS_COOLDOWN):
+                if is_test and SURVEY_TEST_COOLDOWN_SEC > 0:
+                    await self.redis_manager.mark_survey_invited(user_id, window_sec=SURVEY_TEST_COOLDOWN_SEC)
+                else:
+                    await self.redis_manager.mark_survey_invited(user_id)
 
             summary = (
                 f"Merci pour votre aide ! Cela nous aidera à nous améliorer.\n"
@@ -3199,6 +3225,8 @@ async def _survey_sweep_once() -> None:
             # Skip internal channels
             if user_id.startswith("team:") or user_id.startswith("agent:") or user_id.startswith("dm:"):
                 continue
+            uid_digits = _digits_only(user_id)
+            is_test = uid_digits in SURVEY_TEST_NUMBERS
             # Only if customer hasn't replied since last agent msg
             unresponded = int(conv.get("unresponded_count") or 0)
             if unresponded != 0:
@@ -3212,14 +3240,19 @@ async def _survey_sweep_once() -> None:
             # Make naive for comparison with now
             if dt.tzinfo is not None:
                 dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-            if (now - dt) < timedelta(hours=4):
+            threshold = (
+                timedelta(seconds=SURVEY_TEST_DELAY_SEC)
+                if (is_test and SURVEY_TEST_DELAY_SEC > 0)
+                else timedelta(hours=4)
+            )
+            if (now - dt) < threshold:
                 continue
             # Do not re-invite within cooldown window
-            if await redis_manager.was_survey_invited_recent(user_id):
+            if not (is_test and SURVEY_TEST_BYPASS_COOLDOWN) and await redis_manager.was_survey_invited_recent(user_id):
                 continue
             # Skip if an invoice was sent in this chat (order exists for this number)
             try:
-                if await db_manager.has_invoice_message(user_id):
+                if (not (is_test and SURVEY_TEST_IGNORE_INVOICE)) and await db_manager.has_invoice_message(user_id):
                     continue
             except Exception:
                 # On error, be safe and skip
@@ -3227,7 +3260,13 @@ async def _survey_sweep_once() -> None:
             # Send invite and mark
             try:
                 await message_processor.send_survey_invite(user_id)
-                await redis_manager.mark_survey_invited(user_id)
+                if is_test and SURVEY_TEST_BYPASS_COOLDOWN:
+                    # no-op; allow rapid retests
+                    pass
+                elif is_test and SURVEY_TEST_COOLDOWN_SEC > 0:
+                    await redis_manager.mark_survey_invited(user_id, window_sec=SURVEY_TEST_COOLDOWN_SEC)
+                else:
+                    await redis_manager.mark_survey_invited(user_id)
             except Exception as exc:
                 print(f"survey invite failed for {user_id}: {exc}")
         except Exception:
