@@ -474,21 +474,38 @@ const ConversationRow = memo(function Row({
       onClick={() => onSelect(conv)}
       className={`group flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
         selected ? "bg-[#004AAD] text-white" : ""
-      } ${
-        typeof conv.last_message_from_me === 'boolean'
-          ? (conv.last_message_from_me ? 'border-l-4 border-green-500' : 'border-l-4 border-blue-500')
-          : ''
       }`}
     >
       {/* Avatar */}
       <div className="relative shrink-0">
-        <img
-          src={conv.avatar || '/broken-image.png'}
-          alt={conv.name || conv.user_id}
-          className="w-10 h-10 rounded-full object-cover bg-gray-700"
-          onError={(e) => { e.currentTarget.src = '/broken-image.png'; }}
-          loading="lazy"
-        />
+        {conv.avatar ? (
+          <img
+            src={conv.avatar}
+            alt={conv.name || conv.user_id}
+            className={`w-10 h-10 rounded-full object-cover bg-gray-700 ${
+              typeof conv.last_message_from_me === 'boolean'
+                ? (conv.last_message_from_me ? 'ring-2 ring-green-500' : 'ring-2 ring-blue-500')
+                : ''
+            }`}
+            onError={(e) => { e.currentTarget.src = '/broken-image.png'; }}
+            loading="lazy"
+          />
+        ) : (
+          (() => {
+            const initial = String(conv.name || conv.user_id || '?').trim().charAt(0).toUpperCase() || '?';
+            const colorClass = typeof conv.last_message_from_me === 'boolean'
+              ? (conv.last_message_from_me ? 'bg-green-600' : 'bg-blue-600')
+              : 'bg-gray-600';
+            return (
+              <div
+                className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold ${colorClass}`}
+                aria-label={conv.name || conv.user_id}
+              >
+                {initial}
+              </div>
+            );
+          })()
+        )}
         {isOnline(conv.user_id) && (
           <span
             className="absolute -right-0.5 -bottom-0.5 w-3 h-3 bg-green-500 border-2 border-gray-900 rounded-full"
@@ -511,19 +528,25 @@ const ConversationRow = memo(function Row({
 
         {/* Bottom line */}
         <div className="flex items-center justify-between">
-          <span className={`truncate text-xs flex-1 flex items-center gap-1 ${
-            typeof conv.last_message_from_me === 'boolean'
-              ? (conv.last_message_from_me ? 'text-green-300' : 'text-blue-300')
-              : 'text-gray-300'
-          }`}>
+          <span className="truncate text-xs text-gray-300 flex-1 flex items-center gap-1">
             {conv.last_message_from_me && renderTickIcon(conv.last_message_status)}
             {(() => {
               const t = (conv.last_message_type || '').toLowerCase();
-              if (t === 'order') return <><span aria-hidden>🧾</span><span>Order</span></>;
+              const msg = typeof conv.last_message === 'string' ? conv.last_message : '';
+              const AUDIO_EXT_RE = /\.(ogg|opus|mp3|m4a|wav|webm)(\?.*)?$/i;
+              const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i;
+              const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv)(\?.*)?$/i;
+              if (t === 'image') return <><span aria-hidden>🖼️</span><span>Image</span></>;
+              if (t === 'audio') return <><span aria-hidden>🎵</span><span>Audio</span></>;
+              if (t === 'video') return <><span aria-hidden>🎬</span><span>Video</span></>;
               if (t === 'catalog_item' || t === 'interactive_product') return <><span aria-hidden>🏷️</span><span>Product</span></>;
               if (t === 'catalog_set') return <><span aria-hidden>📦</span><span>Catalog</span></>;
-              // For media (image/audio/video) show the actual URL/text instead of a generic label
-              return (typeof conv.last_message === 'string' && conv.last_message.trim()) ? conv.last_message : "No messages yet";
+              if (t === 'order') return <><span aria-hidden>🧾</span><span>Order</span></>;
+              // Fallback: detect media by URL extension in text
+              if (AUDIO_EXT_RE.test(msg)) return <><span aria-hidden>🎵</span><span>Audio</span></>;
+              if (IMAGE_EXT_RE.test(msg)) return <><span aria-hidden>🖼️</span><span>Image</span></>;
+              if (VIDEO_EXT_RE.test(msg)) return <><span aria-hidden>🎬</span><span>Video</span></>;
+              return conv.last_message || "No messages yet";
             })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">
