@@ -164,6 +164,18 @@ try:
 except Exception:
     AUTO_REPLY_MIN_SCORE = 0.6
 
+# Optional: restrict auto-replies to a whitelist of phone numbers (WhatsApp IDs)
+def _digits_only(value: str) -> str:
+    try:
+        return "".join([ch for ch in str(value) if ch.isdigit()])
+    except Exception:
+        return str(value or "")
+
+_TEST_NUMBERS_RAW = os.getenv("AUTO_REPLY_TEST_NUMBERS", "")
+AUTO_REPLY_TEST_NUMBERS: Set[str] = set(
+    _digits_only(n.strip()) for n in _TEST_NUMBERS_RAW.split(",") if n.strip()
+)
+
 _vlog(f"🔧 Configuration loaded:")
 _vlog(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
 _vlog(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
@@ -2168,6 +2180,15 @@ class MessageProcessor:
 
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
+            return
+        # If a whitelist is configured, only auto-reply for those numbers
+        try:
+            if AUTO_REPLY_TEST_NUMBERS:
+                uid_norm = _digits_only(user_id)
+                if uid_norm not in AUTO_REPLY_TEST_NUMBERS:
+                    return
+        except Exception:
+            # On any error, be safe and skip auto-reply
             return
         # 0) If the message has no URL and contains no digits, offer quick-reply buttons
         try:
