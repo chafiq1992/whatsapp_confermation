@@ -1,10 +1,9 @@
-const CACHE_VERSION = 'v4';
+const CACHE_VERSION = 'v5';
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
+  // Intentionally avoid caching the HTML shell to prevent stale index referencing old asset hashes
 ];
 
 self.addEventListener('install', (event) => {
@@ -53,6 +52,21 @@ self.addEventListener('fetch', (event) => {
           return res;
         });
       })
+    );
+    return;
+  }
+
+  // Always fetch a fresh HTML shell to avoid stale hashed asset references
+  if (path === '/' || path.endsWith('/index.html')) {
+    event.respondWith(
+      fetch(req, { cache: 'no-store' })
+        .then((res) => {
+          // Keep an offline fallback copy without serving stale by default
+          const copy = res.clone();
+          caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
+          return res;
+        })
+        .catch(() => caches.match(req))
     );
     return;
   }

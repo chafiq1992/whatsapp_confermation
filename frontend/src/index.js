@@ -21,7 +21,17 @@ root.render(
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     try {
-      navigator.serviceWorker.register('/sw.js');
+      const reloader = { fired: false };
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloader.fired) return;
+        reloader.fired = true;
+        try { window.location.reload(); } catch {}
+      });
+      navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
+        .then((registration) => {
+          try { registration.update(); } catch {}
+        })
+        .catch(() => {});
     } catch {}
   });
 }

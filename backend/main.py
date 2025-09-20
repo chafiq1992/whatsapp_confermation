@@ -3117,6 +3117,11 @@ if allowed_hosts and allowed_hosts != ["*"]:
 async def no_cache_html(request: StarletteRequest, call_next):
     response: StarletteResponse = await call_next(request)
     path = request.url.path or "/"
+    # Service worker script must never be long-cached, otherwise clients get stuck on old SW
+    if path == "/sw.js" or path.endswith("/sw.js"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
     if path == "/" or path.endswith(".html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
