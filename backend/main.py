@@ -438,6 +438,28 @@ class RedisManager:
         except Exception as exc:
             print(f"Redis publish error: {exc}")
 
+    # -------- simple feature helpers --------
+    async def was_auto_reply_recent(self, user_id: str, window_sec: int = 24 * 60 * 60) -> bool:
+        """Return True if an auto-reply marker exists for the user (within TTL)."""
+        if not self.redis_client:
+            return False
+        try:
+            key = f"auto_reply_sent:{user_id}"
+            exists = await self.redis_client.exists(key)
+            return bool(exists)
+        except Exception:
+            return False
+
+    async def mark_auto_reply_sent(self, user_id: str, window_sec: int = 24 * 60 * 60) -> None:
+        """Set a marker that suppresses further auto replies for window_sec seconds."""
+        if not self.redis_client:
+            return
+        try:
+            key = f"auto_reply_sent:{user_id}"
+            await self.redis_client.setex(key, window_sec, "1")
+        except Exception:
+            return
+
     async def subscribe_ws_events(self, connection_manager: "ConnectionManager"):
         """Subscribe to WS events and forward them to local connections only."""
         if not self.redis_client:
@@ -1681,10 +1703,14 @@ class MessageProcessor:
                     body_text = message.get("message") or ""
                     buttons = message.get("buttons") or []
                     if not isinstance(buttons, list) or not buttons:
-                        raise Exception("Missing buttons payload for interactive buttons")
-                    wa_response = await self.whatsapp_messenger.send_reply_buttons(
-                        user_id, body_text, buttons
-                    )
+                        # Fallback to text to avoid hard failure
+                        wa_response = await self.whatsapp_messenger.send_text_message(
+                            user_id, body_text or ""
+                        )
+                    else:
+                        wa_response = await self.whatsapp_messenger.send_reply_buttons(
+                            user_id, body_text, buttons
+                        )
                 elif message["type"] == "order":
                     # For now send order payload as text to ensure delivery speed
                     payload = message.get("message")
@@ -2190,6 +2216,12 @@ class MessageProcessor:
         except Exception:
             # On any error, be safe and skip auto-reply
             return
+        # 24h cooldown per user
+        try:
+            if await self.redis_manager.was_auto_reply_recent(user_id):
+                return
+        except Exception:
+            pass
         # 0) If the message has no URL and contains no digits, offer quick-reply buttons
         try:
             has_url = bool(re.search(r"https?://", text or ""))
@@ -2212,6 +2244,10 @@ class MessageProcessor:
                 ],
                 "timestamp": datetime.utcnow().isoformat(),
             })
+            try:
+                await self.redis_manager.mark_auto_reply_sent(user_id)
+            except Exception:
+                pass
             return
         # 1) Try explicit retailer_id extraction from text
         retailer_id = self._extract_product_retailer_id(text)
@@ -2243,6 +2279,10 @@ class MessageProcessor:
                     "message": "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج.",
                     "timestamp": datetime.utcnow().isoformat(),
                 })
+                try:
+                    await self.redis_manager.mark_auto_reply_sent(user_id)
+                except Exception:
+                    pass
                 return
 
         # 2) Fallback to name-based best match using score threshold
@@ -2268,6 +2308,10 @@ class MessageProcessor:
             "timestamp": datetime.utcnow().isoformat(),
         }
         await self.process_outgoing_message(message_data)
+        try:
+            await self.redis_manager.mark_auto_reply_sent(user_id)
+        except Exception:
+            pass
 
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
         """Download media from WhatsApp and upload it to Google Cloud Storage.

@@ -386,8 +386,22 @@ async def shopify_orders(customer_id: str, limit: int = 50):
         "limit": max(1, min(int(limit), 250)),
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{admin_api_base()}/orders.json", params=params, timeout=15, **_client_args())
-        resp.raise_for_status()
+        try:
+            resp = await client.get(f"{admin_api_base()}/orders.json", params=params, timeout=15, **_client_args())
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                detail = {"error": "rate_limited", "message": "Shopify rate limit reached", "retry_after": retry_after}
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=429, content=detail)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                detail = {"error": "rate_limited", "message": "Shopify rate limit reached", "retry_after": retry_after}
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=429, content=detail)
+            raise
+
         orders = resp.json().get("orders", [])
         domain = admin_api_base().replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
         simplified = []
