@@ -120,6 +120,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [isInitialLoading, setIsInitialLoading] = useState(false);
   const conversationIdRef = useRef(null);
   const [forwardOpen, setForwardOpen] = useState(false);
+  const [highlightedIds, setHighlightedIds] = useState(new Set());
+  const highlightTimeoutsRef = useRef(new Map());
   const forwardPayloadRef = useRef(null);
   const messagesRef = useRef([]);
 
@@ -263,6 +265,41 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   useEffect(() => { groupedLenRef.current = groupedMessages.length; }, [groupedMessages.length]);
   const groupedMessagesRef = useRef([]);
   useEffect(() => { groupedMessagesRef.current = groupedMessages; }, [groupedMessages]);
+
+  // Scroll to a referenced message and flash-highlight it briefly
+  useEffect(() => {
+    const handler = (ev) => {
+      try {
+        const targetId = String(ev?.detail?.id || '');
+        if (!targetId) return;
+        const idx = groupedMessagesRef.current.findIndex((m) => m && !m.__separator && (
+          String(m.wa_message_id || '') === targetId || String(m.id || '') === targetId || String(m.temp_id || '') === targetId
+        ));
+        if (idx >= 0) {
+          try { listRef.current?.scrollToIndex(idx); } catch {}
+        }
+        // Add highlight and schedule removal
+        setHighlightedIds((prev) => {
+          const next = new Set(prev);
+          next.add(targetId);
+          return next;
+        });
+        const old = highlightTimeoutsRef.current.get(targetId);
+        if (old) { try { clearTimeout(old); } catch {} }
+        const t = setTimeout(() => {
+          setHighlightedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(targetId);
+            return next;
+          });
+          highlightTimeoutsRef.current.delete(targetId);
+        }, 2000);
+        highlightTimeoutsRef.current.set(targetId, t);
+      } catch {}
+    };
+    window.addEventListener('scroll-to-message', handler);
+    return () => window.removeEventListener('scroll-to-message', handler);
+  }, []);
 
   const getItemKeyAtIndex = useCallback((index) => {
     const msg = groupedMessages[index];
@@ -1270,6 +1307,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                     onReact={handleReact}
                     onForward={handleForward}
                     rowKey={getItemKeyAtIndex(index)}
+                    highlighted={(() => { try { const id = msg.wa_message_id || msg.id || msg.temp_id; return id ? highlightedIds.has(String(id)) : false; } catch { return false; } })()}
                   />
                 </div>
               );

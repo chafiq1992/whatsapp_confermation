@@ -43,7 +43,7 @@ function formatTime(ts) {
   }
 }
 
-export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact, rowKey = null }) {
+export default function MessageBubble({ msg, self, catalogProducts = {}, highlightQuery = "", onForward, quotedMessage = null, onReply, onReact, rowKey = null, highlighted = false }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
   const containerRef = useRef(null);
   const [isVisible, setIsVisible] = useState(true);
@@ -686,29 +686,62 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
       <div
         className={`group relative max-w-[80%] px-4 py-2 rounded-2xl shadow-sm transition-colors ${
           self 
-            ? "bg-[#e6f0ff] text-black rounded-br-none hover:bg-[#d8e8ff]" 
-            : "bg-white text-black rounded-bl-none hover:bg-gray-50 border border-gray-200"
+            ? `${highlighted ? 'bg-[#d4e4ff]' : 'bg-[#e6f0ff]'} text-black rounded-br-none hover:bg-[#d8e8ff]`
+            : `${highlighted ? 'bg-[#fff5d7]' : 'bg-white'} text-black rounded-bl-none hover:bg-gray-50 border border-gray-200`
         } text-[13px] leading-relaxed`}
       >
         
         {/* React button moved to footer to avoid overlaying media */}
         {/* Quoted preview */}
         {quotedMessage && (
-          <div className={`mb-2 px-2 py-1 rounded border ${self ? 'border-white/30 bg-white/10' : 'border-gray-500 bg-black/10'}`}>
+          <button
+            type="button"
+            className={`mb-2 px-2 py-1 rounded border text-left w-full ${self ? 'border-white/30 bg-white/10' : 'border-gray-500 bg-black/10'} hover:opacity-95`}
+            onClick={() => {
+              try {
+                const targetId = quotedMessage.wa_message_id || quotedMessage.id || quotedMessage.temp_id;
+                if (targetId) window.dispatchEvent(new CustomEvent('scroll-to-message', { detail: { id: String(targetId) } }));
+              } catch {}
+            }}
+            title="Show referenced message"
+          >
             <div className="text-[10px] opacity-70 mb-0.5">Replying to</div>
-            <div className="text-xs truncate max-w-[280px]">
+            <div className="flex items-center gap-2">
               {(() => {
                 try {
                   const t = quotedMessage;
-                  if (t.type === 'text') return String(t.message || '').slice(0, 120);
-                  if (t.type === 'image') return '🖼️ Image';
-                  if (t.type === 'audio') return '🎙️ Audio';
-                  if (t.type === 'video') return '🎞️ Video';
-                  return String(t.type || 'message');
-                } catch { return 'message'; }
+                  if (t.type === 'image') {
+                    const raw = getSafeMediaUrl(t.url || t.message);
+                    const thumb = raw && /^https?:\/\//i.test(raw) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(raw)}&w=64` : raw;
+                    if (thumb) {
+                      return (
+                        <img
+                          src={thumb}
+                          alt="quoted"
+                          className="w-10 h-10 object-cover rounded border border-gray-400/40 bg-gray-100"
+                          onError={(e) => handleImageError(e)}
+                          loading="lazy"
+                        />
+                      );
+                    }
+                  }
+                } catch {}
+                return null;
               })()}
+              <div className="text-xs truncate max-w-[240px]">
+                {(() => {
+                  try {
+                    const t = quotedMessage;
+                    if (t.type === 'text') return String(t.message || '').slice(0, 120);
+                    if (t.type === 'image') return '🖼️ Image';
+                    if (t.type === 'audio') return '🎙️ Audio';
+                    if (t.type === 'video') return '🎞️ Video';
+                    return String(t.type || 'message');
+                  } catch { return 'message'; }
+                })()}
+              </div>
             </div>
-          </div>
+          </button>
         )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :

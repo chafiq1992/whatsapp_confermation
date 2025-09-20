@@ -277,6 +277,11 @@ function ChatList({
   useEffect(() => {
     const handleKeys = (e) => {
       if (!["ArrowUp", "ArrowDown", "Enter"].includes(e.key)) return;
+      // Do not navigate with arrows when the user is typing in an input/textarea/contenteditable
+      const ae = document.activeElement;
+      if (ae && (ae.isContentEditable || ["input","textarea","select"].includes(String(ae.tagName || '').toLowerCase()))) {
+        return;
+      }
       e.preventDefault();
       const els = listRef.current?.querySelectorAll("[data-row]");
       if (!els?.length) return;
