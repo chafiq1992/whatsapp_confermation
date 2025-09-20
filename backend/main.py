@@ -2235,12 +2235,12 @@ class MessageProcessor:
                 "type": "buttons",
                 "from_me": True,
                 "message": (
-                    "I want to buy an item / Je veux acheter un article\n"
-                    "I want to check my order / Je veux vérifier ma commande"
+                    "Veuillez choisir une option :\nJe veux acheter un article\nJe veux vérifier le statut de ma commande\n\n"
+                    "اختر خيارًا:\nأريد شراء منتج\nأريد التحقق من حالة طلبي"
                 ),
                 "buttons": [
-                    {"id": "buy_item", "title": "Buy | Acheter"},
-                    {"id": "check_order", "title": "Order | Commande"},
+                    {"id": "buy_item", "title": "Acheter | شراء"},
+                    {"id": "order_status", "title": "Statut | حالة"},
                 ],
                 "timestamp": datetime.utcnow().isoformat(),
             })
@@ -2271,12 +2271,40 @@ class MessageProcessor:
                     "caption": matched.get("name") or "",
                     "timestamp": datetime.utcnow().isoformat(),
                 })
-                # Then follow-up Arabic confirmation below the catalog item
+                # Follow-up bilingual confirmation (FR + AR)
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "text",
                     "from_me": True,
-                    "message": "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج.",
+                    "message": (
+                        "Bienvenue ! Veuillez confirmer la taille et la couleur souhaitées.\n"
+                        "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج."
+                    ),
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                try:
+                    await self.redis_manager.mark_auto_reply_sent(user_id)
+                except Exception:
+                    pass
+                return
+            else:
+                # No local catalog match, still try to send interactive product by retailer_id
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "catalog_item",
+                    "from_me": True,
+                    "product_retailer_id": str(retailer_id),
+                    "caption": "",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "text",
+                    "from_me": True,
+                    "message": (
+                        "Bienvenue ! Veuillez confirmer la taille et la couleur souhaitées.\n"
+                        "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج."
+                    ),
                     "timestamp": datetime.utcnow().isoformat(),
                 })
                 try:
