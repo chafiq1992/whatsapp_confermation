@@ -14,6 +14,7 @@ import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body, Depends
 from starlette.requests import Request as _LimiterRequest
 from starlette.responses import Response as _LimiterResponse
@@ -572,6 +573,28 @@ class WhatsAppMessenger:
                     "product_retailer_id": product_retailer_id
                 }
             }
+        }
+        return await self._make_request("messages", data)
+
+    async def send_reply_buttons(self, user_id: str, body_text: str, buttons: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Send WhatsApp interactive reply buttons.
+
+        buttons: list of {"id": str, "title": str}
+        """
+        data = {
+            "messaging_product": "whatsapp",
+            "to": user_id,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": str(b.get("id")), "title": str(b.get("title"))[:20]}}  # WA title max 20 chars
+                        for b in (buttons or []) if b.get("id") and b.get("title")
+                    ]
+                },
+            },
         }
         return await self._make_request("messages", data)
 
@@ -1642,6 +1665,14 @@ class MessageProcessor:
                     wa_response = await self.whatsapp_messenger.send_single_catalog_item(
                         user_id, str(retailer_id), caption
                     )
+                elif message["type"] in ("buttons", "interactive_buttons"):
+                    body_text = message.get("message") or ""
+                    buttons = message.get("buttons") or []
+                    if not isinstance(buttons, list) or not buttons:
+                        raise Exception("Missing buttons payload for interactive buttons")
+                    wa_response = await self.whatsapp_messenger.send_reply_buttons(
+                        user_id, body_text, buttons
+                    )
                 elif message["type"] == "order":
                     # For now send order payload as text to ensure delivery speed
                     payload = message.get("message")
@@ -1952,6 +1983,17 @@ class MessageProcessor:
         # Extract message content and generate proper URLs
         if msg_type == "text":
             message_obj["message"] = message["text"]["body"]
+        elif msg_type == "interactive":
+            try:
+                inter = message.get("interactive", {}) or {}
+                btn = inter.get("button_reply") or {}
+                lst = inter.get("list_reply") or {}
+                title = (btn.get("title") or lst.get("title") or "").strip()
+                message_obj["type"] = "text"
+                message_obj["message"] = title or "[interactive_reply]"
+            except Exception:
+                message_obj["type"] = "text"
+                message_obj["message"] = "[interactive_reply]"
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
@@ -2008,10 +2050,19 @@ class MessageProcessor:
         await self.redis_manager.cache_message(sender, db_data)
         await self.db_manager.upsert_message(db_data)
         
-        # Auto-reply with catalog match for text messages
+        # Auto-responses
         try:
             if msg_type == "text":
                 await self._maybe_auto_reply_with_catalog(sender, message_obj.get("message", ""))
+            elif msg_type == "interactive":
+                # Acknowledge button/list replies with bilingual confirmation
+                await self.process_outgoing_message({
+                    "user_id": sender,
+                    "type": "text",
+                    "from_me": True,
+                    "message": "Notre agent sera avec vous dans un instant.\nوكيلنا سيكون معك في لحظة",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
         except Exception as _exc:
             # Never break incoming flow due to auto-reply errors
             print(f"Auto-reply failed: {_exc}")
@@ -2022,6 +2073,7 @@ class MessageProcessor:
 
         Priority:
         - Explicit pattern like "ID: 123456789"
+        - From URLs: variant query or /variants/{id} in path
         - Otherwise, last long digit sequence (>= 6 digits)
         """
         try:
@@ -2031,6 +2083,31 @@ class MessageProcessor:
             m = re.search(r"\bID\s*[:：]\s*(\d{6,})\b", text, re.IGNORECASE)
             if m:
                 return m.group(1)
+            # 1.5) Extract from any URL in the text
+            try:
+                urls = re.findall(r"https?://\S+", text)
+            except Exception:
+                urls = []
+            for u in urls:
+                try:
+                    parsed = urlparse(u)
+                    qs = parse_qs(parsed.query or "")
+                    # Shopify-style variant param
+                    if "variant" in qs and qs["variant"]:
+                        v = qs["variant"][-1]
+                        if re.fullmatch(r"\d{6,}", v or ""):
+                            return v
+                    # Generic id param
+                    if "id" in qs and qs["id"]:
+                        v = qs["id"][-1]
+                        if re.fullmatch(r"\d{6,}", v or ""):
+                            return v
+                    # Path pattern /variants/{id}
+                    m2 = re.search(r"/variants/(\d{6,})(?:/|\b)", parsed.path or "")
+                    if m2:
+                        return m2.group(1)
+                except Exception:
+                    continue
             # 2) Any long digit sequences; pick the last one
             candidates = re.findall(r"(\d{6,})", text)
             if candidates:
@@ -2091,6 +2168,29 @@ class MessageProcessor:
 
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
+            return
+        # 0) If the message has no URL and contains no digits, offer quick-reply buttons
+        try:
+            has_url = bool(re.search(r"https?://", text or ""))
+            has_digit = bool(re.search(r"\d", text or ""))
+        except Exception:
+            has_url = False
+            has_digit = False
+        if (not has_url) and (not has_digit):
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "buttons",
+                "from_me": True,
+                "message": (
+                    "I want to buy an item / Je veux acheter un article\n"
+                    "I want to check my order / Je veux vérifier ma commande"
+                ),
+                "buttons": [
+                    {"id": "buy_item", "title": "Buy | Acheter"},
+                    {"id": "check_order", "title": "Order | Commande"},
+                ],
+                "timestamp": datetime.utcnow().isoformat(),
+            })
             return
         # 1) Try explicit retailer_id extraction from text
         retailer_id = self._extract_product_retailer_id(text)
