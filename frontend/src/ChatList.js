@@ -9,6 +9,7 @@ import React, {
 import api from './api';
 import { FixedSizeList as List } from "react-window";
 import { FiSearch, FiMail, FiMessageSquare, FiUserCheck, FiUser } from 'react-icons/fi';
+import { Clock3, Check, CheckCheck, XCircle } from 'lucide-react';
 
 // Consistent timezone and date helpers shared with ChatWindow
 const CHAT_TZ = 'Africa/Casablanca';
@@ -32,6 +33,20 @@ const toMsNormalized = (t) => {
   }
   const ms = Date.parse(s);
   return Number.isNaN(ms) ? 0 : ms;
+};
+
+// WhatsApp-like ticks for status in chat list
+const TICK_ICONS = {
+  sending:   <Clock3     size={14} className="text-gray-400" />,
+  sent:      <Check      size={14} className="text-gray-400" />,
+  delivered: <CheckCheck size={14} className="text-gray-400" />,
+  read:      <CheckCheck size={14} className="text-blue-500" />,
+  failed:    <XCircle    size={14} className="text-red-500" />,
+};
+
+const renderTickIcon = (status) => {
+  if (!status) return null;
+  return TICK_ICONS[String(status)] || null;
 };
 const getDayKey = (dateLike) => CHAT_DAY_FMT.format(new Date(toMsNormalized(dateLike)));
 
@@ -107,6 +122,8 @@ function ChatList({
             last_message: d.last_message || '',
             last_message_type: d.last_message_type || 'text',
             last_message_time: d.last_message_time || nowIso,
+            last_message_from_me: typeof d.last_message_from_me === 'boolean' ? d.last_message_from_me : undefined,
+            last_message_status: d.last_message_status,
             unread_count: 0,
           };
           return [created, ...list];
@@ -114,6 +131,8 @@ function ChatList({
         const updated = { ...list[idx] };
         if (d.last_message_type) updated.last_message_type = d.last_message_type;
         if (typeof d.last_message === 'string') updated.last_message = d.last_message;
+        if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
+        if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
         // Monotonic update: avoid time flicker from late-arriving server/client timestamps
         const prevMs = toMsNormalized(updated.last_message_time || 0);
         const incomingMs = toMsNormalized(d.last_message_time || nowIso);
@@ -455,6 +474,10 @@ const ConversationRow = memo(function Row({
       onClick={() => onSelect(conv)}
       className={`group flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
         selected ? "bg-[#004AAD] text-white" : ""
+      } ${
+        typeof conv.last_message_from_me === 'boolean'
+          ? (conv.last_message_from_me ? 'border-l-4 border-green-500' : 'border-l-4 border-blue-500')
+          : ''
       }`}
     >
       {/* Avatar */}
@@ -488,16 +511,19 @@ const ConversationRow = memo(function Row({
 
         {/* Bottom line */}
         <div className="flex items-center justify-between">
-          <span className="truncate text-xs text-gray-300 flex-1 flex items-center gap-1">
+          <span className={`truncate text-xs flex-1 flex items-center gap-1 ${
+            typeof conv.last_message_from_me === 'boolean'
+              ? (conv.last_message_from_me ? 'text-green-300' : 'text-blue-300')
+              : 'text-gray-300'
+          }`}>
+            {conv.last_message_from_me && renderTickIcon(conv.last_message_status)}
             {(() => {
               const t = (conv.last_message_type || '').toLowerCase();
-              if (t === 'image') return <><span aria-hidden>🖼️</span><span>Image</span></>;
-              if (t === 'audio') return <><span aria-hidden>🎵</span><span>Audio</span></>;
-              if (t === 'video') return <><span aria-hidden>🎬</span><span>Video</span></>;
+              if (t === 'order') return <><span aria-hidden>🧾</span><span>Order</span></>;
               if (t === 'catalog_item' || t === 'interactive_product') return <><span aria-hidden>🏷️</span><span>Product</span></>;
               if (t === 'catalog_set') return <><span aria-hidden>📦</span><span>Catalog</span></>;
-              if (t === 'order') return <><span aria-hidden>🧾</span><span>Order</span></>;
-              return conv.last_message || "No messages yet";
+              // For media (image/audio/video) show the actual URL/text instead of a generic label
+              return (typeof conv.last_message === 'string' && conv.last_message.trim()) ? conv.last_message : "No messages yet";
             })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">

@@ -429,10 +429,12 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const preview = typeof last.message === 'string' ? last.message : (last.caption || '');
       const t = last.type || 'text';
       const time = last.server_ts || last.timestamp || new Date().toISOString();
+      const fromMe = Boolean(last.from_me);
+      const status = last.status || undefined;
       const prev = lastPreviewRef.current || {};
-      if (prev.user_id === uid && prev.time === time && prev.message === preview && prev.type === t) return;
-      lastPreviewRef.current = { user_id: uid, time, message: preview, type: t };
-      window.dispatchEvent(new CustomEvent('conversation-preview', { detail: { user_id: uid, last_message: preview, last_message_type: t, last_message_time: time } }));
+      if (prev.user_id === uid && prev.time === time && prev.message === preview && prev.type === t && prev.from_me === fromMe && prev.status === status) return;
+      lastPreviewRef.current = { user_id: uid, time, message: preview, type: t, from_me: fromMe, status };
+      window.dispatchEvent(new CustomEvent('conversation-preview', { detail: { user_id: uid, last_message: preview, last_message_type: t, last_message_time: time, last_message_from_me: fromMe, last_message_status: status } }));
     } catch {}
   }, [messages, activeUser?.user_id]);
 

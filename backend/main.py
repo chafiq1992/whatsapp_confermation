@@ -1517,20 +1517,23 @@ class DatabaseManager:
                 if self.use_postgres:
                     last = await db.fetchrow(
                         self._convert(
-                            "SELECT message, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
+                            "SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
                         ),
                         uid,
                     )
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT message, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
+                            "SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
                         ),
                         (uid,)
                     )
                     last = await cur.fetchone()
                 last_msg = last["message"] if last else None
                 last_time = last["ts"] if last else None
+                last_type = last["type"] if last else None
+                last_from_me = bool(last["from_me"]) if last and ("from_me" in last) else None
+                last_status = last["status"] if last else None
 
                 if self.use_postgres:
                     unread_row = await db.fetchrow(
@@ -1587,6 +1590,9 @@ class DatabaseManager:
                     "phone": user["phone"] if user else None,
                     "last_message": last_msg,
                     "last_message_time": last_time,
+                    "last_message_type": last_type,
+                    "last_message_from_me": last_from_me,
+                    "last_message_status": last_status,
                     "unread_count": unread,
                     "unresponded_count": unresponded,
                     "avatar": meta.get("avatar_url"),

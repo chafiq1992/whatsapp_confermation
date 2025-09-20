@@ -207,6 +207,8 @@ export default function App() {
                   ...current,
                   last_message: text,
                   last_message_type: msg.type || current.last_message_type,
+                  last_message_from_me: Boolean(msg.from_me),
+                  last_message_status: msg.status || current.last_message_status,
                   // Always treat an incoming message as latest activity for ordering purposes
                   last_message_time: nowIso,
                   unread_count:
@@ -226,6 +228,8 @@ export default function App() {
                 name: msg.name || userId,
                 last_message: text,
                 last_message_type: msg.type || 'text',
+                last_message_from_me: Boolean(msg.from_me),
+                last_message_status: msg.status || undefined,
                 last_message_time: nowIso,
                 unread_count:
                   activeUserRef.current?.user_id === userId ? 0 : 1,
