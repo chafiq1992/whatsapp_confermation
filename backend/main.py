@@ -4,7 +4,7 @@ import uuid
 import hashlib
 import secrets
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import struct
 from typing import Any, Dict, List, Optional, Set
 from collections import defaultdict
@@ -480,6 +480,63 @@ class RedisManager:
         except Exception as exc:
             print(f"Redis subscribe error: {exc}")
 
+    # -------- survey helpers --------
+    async def get_json(self, key: str) -> Optional[dict]:
+        if not self.redis_client:
+            return None
+        try:
+            raw = await self.redis_client.get(key)
+            if not raw:
+                return None
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    async def set_json(self, key: str, value: dict, ttl: int | None = None) -> None:
+        if not self.redis_client:
+            return
+        try:
+            data = json.dumps(value, ensure_ascii=False)
+            if ttl and ttl > 0:
+                await self.redis_client.setex(key, ttl, data)
+            else:
+                await self.redis_client.set(key, data)
+        except Exception:
+            return
+
+    async def was_survey_invited_recent(self, user_id: str) -> bool:
+        if not self.redis_client:
+            return False
+        try:
+            key = f"survey_invited:{user_id}"
+            exists = await self.redis_client.exists(key)
+            return bool(exists)
+        except Exception:
+            return False
+
+    async def mark_survey_invited(self, user_id: str, window_sec: int = 30 * 24 * 60 * 60) -> None:
+        if not self.redis_client:
+            return
+        try:
+            key = f"survey_invited:{user_id}"
+            await self.redis_client.setex(key, window_sec, "1")
+        except Exception:
+            return
+
+    async def get_survey_state(self, user_id: str) -> Optional[dict]:
+        return await self.get_json(f"survey_state:{user_id}")
+
+    async def set_survey_state(self, user_id: str, state: dict, ttl_sec: int = 3 * 24 * 60 * 60) -> None:
+        await self.set_json(f"survey_state:{user_id}", state, ttl=ttl_sec)
+
+    async def clear_survey_state(self, user_id: str) -> None:
+        if not self.redis_client:
+            return
+        try:
+            await self.redis_client.delete(f"survey_state:{user_id}")
+        except Exception:
+            return
+
 # WhatsApp API Client
 class WhatsAppMessenger:
     def __init__(self):
@@ -629,6 +686,62 @@ class WhatsAppMessenger:
                     ]
                 },
             },
+        }
+        return await self._make_request("messages", data)
+
+    async def send_list_message(
+        self,
+        user_id: str,
+        body_text: str,
+        button_text: str,
+        sections: List[Dict[str, Any]],
+        header_text: Optional[str] = None,
+        footer_text: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Send WhatsApp interactive list message.
+
+        sections: [ { title: str, rows: [ { id: str, title: str, description?: str } ] } ]
+        """
+        interactive: Dict[str, Any] = {
+            "type": "list",
+            "body": {"text": body_text},
+            "action": {
+                "button": button_text[:20] if button_text else "Choose",
+                "sections": [],
+            },
+        }
+        if header_text:
+            interactive["header"] = {"type": "text", "text": header_text}
+        if footer_text:
+            interactive["footer"] = {"text": footer_text}
+
+        cleaned_sections: List[Dict[str, Any]] = []
+        for sec in sections or []:
+            title = str(sec.get("title") or "")
+            rows_in = sec.get("rows") or []
+            rows: List[Dict[str, str]] = []
+            for r in rows_in:
+                rid = str(r.get("id") or "").strip()
+                rtitle = str(r.get("title") or "").strip()
+                if not rid or not rtitle:
+                    continue
+                row: Dict[str, str] = {"id": rid, "title": rtitle[:24]}
+                desc = str(r.get("description") or "").strip()
+                if desc:
+                    row["description"] = desc[:72]
+                rows.append(row)
+            if rows:
+                cleaned_sections.append({
+                    **({"title": title[:24]} if title else {}),
+                    "rows": rows,
+                })
+        interactive["action"]["sections"] = cleaned_sections
+
+        data = {
+            "messaging_product": "whatsapp",
+            "to": user_id,
+            "type": "interactive",
+            "interactive": interactive,
         }
         return await self._make_request("messages", data)
 
@@ -1237,6 +1350,40 @@ class DatabaseManager:
                 row = await cur.fetchone()
             return row["user_id"] if row else None
 
+    async def get_last_agent_message_time(self, user_id: str) -> Optional[str]:
+        """Return ISO timestamp of the last outbound (from_me=1) message for a user."""
+        async with self._conn() as db:
+            query = self._convert(
+                "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
+            )
+            params = [user_id]
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+            else:
+                cur = await db.execute(query, tuple(params))
+                row = await cur.fetchone()
+            return (row and (row["t"] or None)) if row else None
+
+    async def has_invoice_message(self, user_id: str) -> bool:
+        """Detect whether an automated invoice image was sent in this chat.
+
+        Heuristic: any outbound image message with an Arabic caption containing 'فاتورتك'.
+        """
+        async with self._conn() as db:
+            # Use LIKE on caption; fall back to 0 when caption is NULL
+            query = self._convert(
+                "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 1 AND type = 'image' AND COALESCE(caption, '') LIKE ?"
+            )
+            params = [user_id, "%فاتورتك%"]
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+                count = int(row[0]) if row else 0
+            else:
+                cur = await db.execute(query, tuple(params))
+                row = await cur.fetchone()
+                count = int(row[0]) if row else 0
+            return count > 0
+
     async def upsert_user(self, user_id: str, name=None, phone=None, is_admin: int | None = None):
         async with self._conn() as db:
             if is_admin is None:
@@ -1804,6 +1951,25 @@ class MessageProcessor:
                         wa_response = await self.whatsapp_messenger.send_reply_buttons(
                             user_id, body_text, buttons
                         )
+                elif message["type"] in ("list", "interactive_list"):
+                    body_text = message.get("message") or ""
+                    sections = message.get("sections") or []
+                    button_text = message.get("button_text") or "Choose"
+                    header_text = message.get("header_text") or None
+                    footer_text = message.get("footer_text") or None
+                    if not isinstance(sections, list) or not sections:
+                        wa_response = await self.whatsapp_messenger.send_text_message(
+                            user_id, body_text or ""
+                        )
+                    else:
+                        wa_response = await self.whatsapp_messenger.send_list_message(
+                            user_id,
+                            body_text,
+                            button_text,
+                            sections,
+                            header_text=header_text,
+                            footer_text=footer_text,
+                        )
                 elif message["type"] == "order":
                     # For now send order payload as text to ensure delivery speed
                     payload = message.get("message")
@@ -2120,8 +2286,29 @@ class MessageProcessor:
                 btn = inter.get("button_reply") or {}
                 lst = inter.get("list_reply") or {}
                 title = (btn.get("title") or lst.get("title") or "").strip()
+                # Capture id for workflow routing
+                reply_id = (btn.get("id") or lst.get("id") or "").strip()
                 message_obj["type"] = "text"
                 message_obj["message"] = title or "[interactive_reply]"
+                # Route survey interactions before generic acknowledgment
+                if reply_id.startswith("survey_"):
+                    # Persist the textual reply bubble first
+                    await self.connection_manager.send_to_user(sender, {
+                        "type": "message_received",
+                        "data": message_obj
+                    })
+                    await self.connection_manager.broadcast_to_admins(
+                        {"type": "message_received", "data": message_obj}, exclude_user=sender
+                    )
+                    db_data = {k: v for k, v in message_obj.items() if k != "id"}
+                    await self.redis_manager.cache_message(sender, db_data)
+                    await self.db_manager.upsert_message(db_data)
+                    # Handle the survey reply and return (skip default ack)
+                    try:
+                        await self._handle_survey_interaction(sender, reply_id, title)
+                    except Exception as _exc:
+                        print(f"Survey interaction error: {_exc}")
+                    return
             except Exception:
                 message_obj["type"] = "text"
                 message_obj["message"] = "[interactive_reply]"
@@ -2191,12 +2378,157 @@ class MessageProcessor:
                     "user_id": sender,
                     "type": "text",
                     "from_me": True,
-                    "message": "Notre agent sera avec vous dans un instant.\nوكيلنا سيكون معك في لحظة",
+                    "message": "Message reçu. Merci !\nتم استلام ردك، شكرًا لك!",
                     "timestamp": datetime.utcnow().isoformat(),
                 })
         except Exception as _exc:
             # Never break incoming flow due to auto-reply errors
             print(f"Auto-reply failed: {_exc}")
+
+    # -------- survey flow --------
+    async def send_survey_invite(self, user_id: str) -> None:
+        body = (
+            "Aidez-nous à nous améliorer et obtenez 15% de réduction sur votre commande.\n"
+            "ساعدنا على التحسن واحصل على خصم 15% على طلبك."
+        )
+        await self.process_outgoing_message({
+            "user_id": user_id,
+            "type": "buttons",
+            "from_me": True,
+            "message": body,
+            "buttons": [
+                {"id": "survey_start_ok", "title": "موافق | OK"},
+                {"id": "survey_decline", "title": "غير مهتم | Pas int."},
+            ],
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+    async def _handle_survey_interaction(self, user_id: str, reply_id: str, title: str) -> None:
+        state = await self.redis_manager.get_survey_state(user_id) or {}
+        stage = state.get("stage") or "start"
+
+        # Start → ask rating
+        if reply_id == "survey_start_ok":
+            state = {"stage": "rating", "started_at": datetime.utcnow().isoformat()}
+            await self.redis_manager.set_survey_state(user_id, state)
+            body = (
+                "Comment évaluez-vous la performance de notre agent ?\n"
+                "كيف تقيم أداء وكيل المحادثة؟"
+            )
+            sections = [{
+                "title": "Rating | التقييم",
+                "rows": [
+                    {"id": "survey_rate_1", "title": "⭐ 1"},
+                    {"id": "survey_rate_2", "title": "⭐⭐ 2"},
+                    {"id": "survey_rate_3", "title": "⭐⭐⭐ 3"},
+                    {"id": "survey_rate_4", "title": "⭐⭐⭐⭐ 4"},
+                    {"id": "survey_rate_5", "title": "⭐⭐⭐⭐⭐ 5"},
+                ],
+            }]
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "list",
+                "from_me": True,
+                "message": body,
+                "button_text": "Choisir | اختر",
+                "sections": sections,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            return
+
+        # Decline → thank you
+        if reply_id == "survey_decline":
+            await self.redis_manager.clear_survey_state(user_id)
+            await self.redis_manager.mark_survey_invited(user_id)
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "text",
+                "from_me": True,
+                "message": (
+                    "Merci pour votre temps. Si vous changez d'avis, écrivez-nous.\n"
+                    "شكرًا لوقتك. إذا غيرت رأيك، راسلنا في أي وقت."
+                ),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            return
+
+        # Rating selected → store and ask improvement
+        if reply_id.startswith("survey_rate_"):
+            try:
+                rating = int(reply_id.split("_")[-1])
+            except Exception:
+                rating = None
+            if not rating:
+                return
+            state["rating"] = max(1, min(5, rating))
+            state["stage"] = "improvement"
+            await self.redis_manager.set_survey_state(user_id, state)
+
+            body = (
+                "Quel aspect souhaitez-vous que nous améliorions le plus ?\n"
+                "ما هو أكثر شيء تريد منا تحسينه؟"
+            )
+            sections = [{
+                "title": "Improve | تحسين",
+                "rows": [
+                    {"id": "survey_improve_products", "title": "المزيد من المنتجات", "description": "Plus de produits"},
+                    {"id": "survey_improve_service", "title": "تحسينات الخدمة", "description": "Améliorations du service"},
+                    {"id": "survey_improve_prices", "title": "أسعار ملائمة", "description": "Des prix plus abordables"},
+                    {"id": "survey_improve_quality", "title": "جودة أعلى", "description": "Produits de meilleure qualité"},
+                ],
+            }]
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "list",
+                "from_me": True,
+                "message": body,
+                "button_text": "Choisir | اختر",
+                "sections": sections,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            return
+
+        # Improvement selected → thank and summarize
+        if reply_id.startswith("survey_improve_"):
+            map_ar = {
+                "survey_improve_products": "المزيد من المنتجات",
+                "survey_improve_service": "تحسينات الخدمة",
+                "survey_improve_prices": "أسعار أكثر ملاءمة",
+                "survey_improve_quality": "منتجات ذات جودة أعلى",
+            }
+            map_fr = {
+                "survey_improve_products": "Plus de produits",
+                "survey_improve_service": "Améliorations du service",
+                "survey_improve_prices": "Des prix plus abordables",
+                "survey_improve_quality": "Produits de meilleure qualité",
+            }
+            improvement_ar = map_ar.get(reply_id, title or "")
+            improvement_fr = map_fr.get(reply_id, title or "")
+            rating = int(state.get("rating") or 0)
+            stars = "⭐" * max(1, min(5, rating)) if rating else "—"
+            state["improvement"] = reply_id
+            state["stage"] = "done"
+            await self.redis_manager.set_survey_state(user_id, state, ttl_sec=7 * 24 * 60 * 60)
+            await self.redis_manager.mark_survey_invited(user_id)
+
+            summary = (
+                f"Merci pour votre aide ! Cela nous aidera à nous améliorer.\n"
+                f"Évaluation: {stars} ({rating}/5)\n"
+                f"Amélioration prioritaire: {improvement_fr}\n\n"
+                f"شكرًا لمساعدتك! هذا سيساعدنا على التحسن.\n"
+                f"التقييم: {stars} ({rating}/5)\n"
+                f"الأولوية في التحسين: {improvement_ar}\n\n"
+                f"لقد حصلت على خصم 15% — يرجى إرسال صور المنتجات التي تريدها في طلبك.\n"
+                f"Vous bénéficiez de 15% de réduction — envoyez-nous les images des articles souhaités."
+            )
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "text",
+                "from_me": True,
+                "message": summary,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            return
 
     # ------------------------- auto-reply helpers -------------------------
     def _extract_product_retailer_id(self, text: str) -> Optional[str]:
@@ -2626,6 +2958,90 @@ async def startup():
             asyncio.create_task(_refresh_cache_bg())
     except Exception as exc:
         print(f"Catalog cache init error: {exc}")
+
+    # Start survey scheduler background loop (requires Redis)
+    try:
+        if redis_manager.redis_client:
+            asyncio.create_task(run_survey_scheduler())
+    except Exception as exc:
+        print(f"Failed to start survey scheduler: {exc}")
+
+def _parse_iso_ts(ts: str) -> Optional[datetime]:
+    try:
+        s = str(ts or "").strip()
+        if not s:
+            return None
+        if s.isdigit():
+            # seconds epoch
+            sec = int(s)
+            if len(s) > 10:
+                # already ms
+                return datetime.fromtimestamp(sec / 1000, tz=timezone.utc)
+            return datetime.fromtimestamp(sec, tz=timezone.utc)
+        # Normalize Z
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+async def _survey_sweep_once() -> None:
+    try:
+        conversations = await db_manager.get_conversations_with_stats()
+    except Exception as exc:
+        print(f"survey sweep: failed to list conversations: {exc}")
+        return
+    now = datetime.utcnow().replace(tzinfo=None)
+    for conv in conversations:
+        try:
+            user_id = conv.get("user_id")
+            if not user_id or not isinstance(user_id, str):
+                continue
+            # Skip internal channels
+            if user_id.startswith("team:") or user_id.startswith("agent:") or user_id.startswith("dm:"):
+                continue
+            # Only if customer hasn't replied since last agent msg
+            unresponded = int(conv.get("unresponded_count") or 0)
+            if unresponded != 0:
+                continue
+            last_agent_ts = await db_manager.get_last_agent_message_time(user_id)
+            if not last_agent_ts:
+                continue
+            dt = _parse_iso_ts(last_agent_ts)
+            if not dt:
+                continue
+            # Make naive for comparison with now
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            if (now - dt) < timedelta(hours=4):
+                continue
+            # Do not re-invite within cooldown window
+            if await redis_manager.was_survey_invited_recent(user_id):
+                continue
+            # Skip if an invoice was sent in this chat (order exists for this number)
+            try:
+                if await db_manager.has_invoice_message(user_id):
+                    continue
+            except Exception:
+                # On error, be safe and skip
+                continue
+            # Send invite and mark
+            try:
+                await message_processor.send_survey_invite(user_id)
+                await redis_manager.mark_survey_invited(user_id)
+            except Exception as exc:
+                print(f"survey invite failed for {user_id}: {exc}")
+        except Exception:
+            continue
+
+async def run_survey_scheduler() -> None:
+    # Sweep every 5 minutes
+    while True:
+        try:
+            await _survey_sweep_once()
+        except Exception as exc:
+            print(f"survey scheduler loop error: {exc}")
+        await asyncio.sleep(300)
 
 # Optional rate limit dependencies that no-op when limiter is not initialized
 async def _optional_rate_limit_text(request: _LimiterRequest, response: _LimiterResponse):
