@@ -1653,6 +1653,50 @@ class MessageProcessor:
         
         return optimistic_message
 
+    # -------------------- Shopify helpers --------------------
+    async def _fetch_shopify_variant(self, variant_id: str) -> Optional[dict]:
+        try:
+            import httpx  # type: ignore
+            from .shopify_integration import admin_api_base, _client_args  # type: ignore
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.get(f"{admin_api_base()}/variants/{variant_id}.json", **_client_args())
+                if resp.status_code == 200:
+                    return (resp.json() or {}).get("variant") or None
+        except Exception:
+            return None
+        return None
+
+    async def _resolve_shopify_variant(self, numeric_id: str) -> tuple[Optional[str], Optional[dict]]:
+        """Return a valid Shopify variant id and variant dict.
+
+        If the provided id is a product id, attempt to fetch its first variant.
+        """
+        # 1) Try as variant id directly
+        v = await self._fetch_shopify_variant(numeric_id)
+        if v and v.get("id"):
+            return str(v.get("id")), v
+        # 2) Try as product id -> first variant
+        try:
+            import httpx  # type: ignore
+            from .shopify_integration import admin_api_base, _client_args  # type: ignore
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                resp = await client.get(f"{admin_api_base()}/products/{numeric_id}.json", **_client_args())
+                if resp.status_code == 200:
+                    prod = (resp.json() or {}).get("product") or {}
+                    variants = prod.get("variants") or []
+                    if variants:
+                        v0 = variants[0]
+                        # Enrich minimal fields similar to /shopify-variant
+                        v0["product_title"] = prod.get("title")
+                        images = prod.get("images") or []
+                        image_src = (prod.get("image") or {}).get("src") or (images[0].get("src") if images else None)
+                        if image_src:
+                            v0["image_src"] = image_src
+                        return str(v0.get("id")), v0
+        except Exception:
+            pass
+        return None, None
+
     async def _send_to_whatsapp_bg(self, message: dict):
         """Background task to send message to WhatsApp and update status"""
         temp_id = message["temp_id"]
@@ -1691,8 +1735,8 @@ class MessageProcessor:
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
                     retailer_id = (
-                        message.get("product_retailer_id")
-                        or message.get("retailer_id")
+                        message.get("retailer_id")
+                        or message.get("product_retailer_id")
                         or message.get("product_id")
                     )
                     caption = message.get("caption") or message.get("message") or ""
@@ -1720,10 +1764,28 @@ class MessageProcessor:
                                     price = p.get("price") or ""
                             except Exception:
                                 pass
+                        # If not found in Meta catalog, try Shopify variant image using the UI variant id
+                        if not img_url:
+                            try:
+                                ui_variant_id = (
+                                    message.get("product_retailer_id")
+                                    or message.get("product_id")
+                                    or ""
+                                )
+                                if ui_variant_id:
+                                    v = await self._fetch_shopify_variant(str(ui_variant_id))
+                                    if v and v.get("image_src"):
+                                        img_url = v.get("image_src")
+                                        price = v.get("price") or price
+                                        # If caption is empty, use variant title
+                                        if not caption:
+                                            caption = v.get("title") or ""
+                            except Exception:
+                                pass
                         if img_url:
                             # Send as image with caption if interactive fails
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, "image", img_url, caption
+                                user_id, "image", img_url, caption or (price and f"{price} MAD" or "")
                             )
                         else:
                             # Final fallback to text
@@ -2281,14 +2343,21 @@ class MessageProcessor:
                 pass
             return
         # 1) Try explicit retailer_id extraction from text
-        retailer_id = self._extract_product_retailer_id(text)
-        if retailer_id:
+        retailer_id_raw = self._extract_product_retailer_id(text)
+        if retailer_id_raw:
+            # Resolve to a valid Shopify variant id if needed
+            resolved_variant_id: Optional[str] = None
+            resolved_variant: Optional[dict] = None
+            try:
+                resolved_variant_id, resolved_variant = await self._resolve_shopify_variant(str(retailer_id_raw))
+            except Exception:
+                resolved_variant_id, resolved_variant = None, None
             try:
                 products = catalog_manager.get_cached_products()
             except Exception:
                 products = []
             if products:
-                matched = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id)), None)
+                matched = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id_raw)), None)
             else:
                 matched = None
 
@@ -2298,8 +2367,11 @@ class MessageProcessor:
                     "user_id": user_id,
                     "type": "catalog_item",
                     "from_me": True,
-                    "product_retailer_id": str(retailer_id),
-                    "caption": matched.get("name") or "",
+                    # UI should carry Shopify variant id for Add to Order if we resolved it
+                    "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
+                    # Use meta retailer_id for WA interactive send
+                    "retailer_id": str(matched.get("retailer_id")),
+                    "caption": (resolved_variant or {}).get("title") or matched.get("name") or "",
                     "timestamp": datetime.utcnow().isoformat(),
                 })
                 # Follow-up bilingual confirmation (FR + AR)
@@ -2320,12 +2392,19 @@ class MessageProcessor:
                 return
             else:
                 # No local catalog match, still try to send interactive product by retailer_id
+                # Build caption from Shopify variant if available
+                cap = ""
+                if resolved_variant:
+                    t = resolved_variant.get("title") or ""
+                    pr = resolved_variant.get("price") or ""
+                    cap = (f"{t} - {pr} MAD").strip(" -")
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "catalog_item",
                     "from_me": True,
-                    "product_retailer_id": str(retailer_id),
-                    "caption": "",
+                    # UI variant id for Add to Order
+                    "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
+                    "caption": cap,
                     "timestamp": datetime.utcnow().isoformat(),
                 })
                 await self.process_outgoing_message({
