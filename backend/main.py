@@ -1844,6 +1844,153 @@ class MessageProcessor:
             pass
         return None, None
 
+    async def _handle_order_status_request(self, user_id: str) -> None:
+        """Fetch recent orders (last 4 days) for this phone and send details."""
+        try:
+            import httpx  # type: ignore
+            from .shopify_integration import fetch_customer_by_phone, admin_api_base, _client_args  # type: ignore
+            cust = await fetch_customer_by_phone(user_id)
+            if not cust or not isinstance(cust, dict) or not cust.get("customer_id"):
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "text",
+                    "from_me": True,
+                    "message": (
+                        "Aucune commande trouvée pour votre numéro.\n"
+                        "لم يتم العثور على أي طلب مرتبط برقم هاتفك."
+                    ),
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                return
+            customer_id = cust["customer_id"]
+            now = datetime.utcnow()
+            since = (now - timedelta(days=4)).isoformat() + "Z"
+            params = {
+                "customer_id": str(customer_id),
+                "status": "any",
+                "order": "created_at desc",
+                "limit": 10,
+                "created_at_min": since,
+            }
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(f"{admin_api_base()}/orders.json", params=params, **_client_args())
+                if resp.status_code >= 400:
+                    raise Exception(f"Shopify orders error {resp.status_code}")
+                orders = (resp.json() or {}).get("orders", [])
+            if not orders:
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "text",
+                    "from_me": True,
+                    "message": (
+                        "Aucune commande des 4 derniers jours.\n"
+                        "لا توجد طلبات خلال آخر 4 أيام."
+                    ),
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                return
+            # Compose bilingual summary
+            lines_fr: list[str] = ["Voici vos commandes (4 derniers jours):"]
+            lines_ar: list[str] = ["هذه طلباتك خلال آخر 4 أيام:"]
+            # Also collect up to 2 images to send
+            images: list[tuple[str, str]] = []  # (url, caption)
+            for o in orders[:3]:
+                name = o.get("name") or f"#{o.get('id')}"
+                created_at = o.get("created_at", "")
+                status = o.get("fulfillment_status") or "unfulfilled"
+                status_fr = "expédiée" if status == "fulfilled" else "non expédiée"
+                status_ar = "مكتملة" if status == "fulfilled" else "غير مكتملة"
+                lines_fr.append(f"- {name} — {created_at[:10]} — Statut: {status_fr}")
+                lines_ar.append(f"- {name} — {created_at[:10]} — الحالة: {status_ar}")
+                for li in (o.get("line_items") or [])[:2]:
+                    t = li.get("title") or ""
+                    vt = li.get("variant_title") or ""
+                    q = li.get("quantity") or 1
+                    lines_fr.append(f"  • {t} — {vt} ×{q}")
+                    lines_ar.append(f"  • {t} — {vt} ×{q}")
+                    # Try to resolve variant image
+                    try:
+                        vid = li.get("variant_id")
+                        if vid and len(images) < 2:
+                            v_id_str, v_obj = await self._resolve_shopify_variant(str(vid))
+                            img = (v_obj or {}).get("image_src")
+                            if img:
+                                cap = f"{t} — {vt}"
+                                images.append((img, cap))
+                    except Exception:
+                        pass
+            summary = "\n".join(lines_fr + [""] + lines_ar)
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "text",
+                "from_me": True,
+                "message": summary,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+            for url, cap in images:
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "image",
+                    "from_me": True,
+                    "message": url,
+                    "url": url,
+                    "caption": cap,
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+        except Exception as exc:
+            print(f"order status fetch error: {exc}")
+            await self.process_outgoing_message({
+                "user_id": user_id,
+                "type": "text",
+                "from_me": True,
+                "message": (
+                    "Une erreur est survenue lors de la récupération de vos commandes.\n"
+                    "حدث خطأ أثناء جلب طلباتك."
+                ),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+
+    async def _send_buy_gender_list(self, user_id: str) -> None:
+        body = (
+            "Veuillez choisir: Fille ou Garçon\n"
+            "يرجى الاختيار: بنت أم ولد"
+        )
+        sections = [{
+            "title": "Genre | النوع",
+            "rows": [
+                {"id": "gender_girls", "title": "Fille | بنت"},
+                {"id": "gender_boys", "title": "Garçon | ولد"},
+            ],
+        }]
+        await self.process_outgoing_message({
+            "user_id": user_id,
+            "type": "list",
+            "from_me": True,
+            "message": body,
+            "button_text": "Choisir | اختر",
+            "sections": sections,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+    async def _send_gender_prompt(self, user_id: str, reply_id: str) -> None:
+        if reply_id == "gender_girls":
+            msg = (
+                "Filles: indiquez l'âge (0 mois à 7 ans) et la pointure (16 à 38).\n"
+                "البنات: يرجى تزويدنا بالعمر (من 0 شهر إلى 7 سنوات) ومقاس الحذاء (من 16 إلى 38)."
+            )
+        else:
+            msg = (
+                "Garçons: indiquez l'âge (0 mois à 10 ans) et la pointure (16 à 38).\n"
+                "الأولاد: يرجى تزويدنا بالعمر (من 0 شهر إلى 10 سنوات) ومقاس الحذاء (من 16 إلى 38)."
+            )
+        await self.process_outgoing_message({
+            "user_id": user_id,
+            "type": "text",
+            "from_me": True,
+            "message": msg,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
     async def _send_to_whatsapp_bg(self, message: dict):
         """Background task to send message to WhatsApp and update status"""
         temp_id = message["temp_id"]
@@ -2309,6 +2456,58 @@ class MessageProcessor:
                     except Exception as _exc:
                         print(f"Survey interaction error: {_exc}")
                     return
+                # Order status flow
+                if reply_id == "order_status":
+                    # Persist UI bubble then handle
+                    await self.connection_manager.send_to_user(sender, {
+                        "type": "message_received",
+                        "data": message_obj
+                    })
+                    await self.connection_manager.broadcast_to_admins(
+                        {"type": "message_received", "data": message_obj}, exclude_user=sender
+                    )
+                    db_data = {k: v for k, v in message_obj.items() if k != "id"}
+                    await self.redis_manager.cache_message(sender, db_data)
+                    await self.db_manager.upsert_message(db_data)
+                    try:
+                        await self._handle_order_status_request(sender)
+                    except Exception as _exc:
+                        print(f"order_status flow error: {_exc}")
+                    return
+                # Buy flow start → show gender list
+                if reply_id == "buy_item":
+                    await self.connection_manager.send_to_user(sender, {
+                        "type": "message_received",
+                        "data": message_obj
+                    })
+                    await self.connection_manager.broadcast_to_admins(
+                        {"type": "message_received", "data": message_obj}, exclude_user=sender
+                    )
+                    db_data = {k: v for k, v in message_obj.items() if k != "id"}
+                    await self.redis_manager.cache_message(sender, db_data)
+                    await self.db_manager.upsert_message(db_data)
+                    try:
+                        await self._send_buy_gender_list(sender)
+                    except Exception as _exc:
+                        print(f"buy flow start error: {_exc}")
+                    return
+                # Gender selection → send size/age prompt
+                if reply_id in ("gender_girls", "gender_boys"):
+                    await self.connection_manager.send_to_user(sender, {
+                        "type": "message_received",
+                        "data": message_obj
+                    })
+                    await self.connection_manager.broadcast_to_admins(
+                        {"type": "message_received", "data": message_obj}, exclude_user=sender
+                    )
+                    db_data = {k: v for k, v in message_obj.items() if k != "id"}
+                    await self.redis_manager.cache_message(sender, db_data)
+                    await self.db_manager.upsert_message(db_data)
+                    try:
+                        await self._send_gender_prompt(sender, reply_id)
+                    except Exception as _exc:
+                        print(f"gender prompt error: {_exc}")
+                    return
             except Exception:
                 message_obj["type"] = "text"
                 message_obj["message"] = "[interactive_reply]"
@@ -2373,7 +2572,7 @@ class MessageProcessor:
             if msg_type == "text":
                 await self._maybe_auto_reply_with_catalog(sender, message_obj.get("message", ""))
             elif msg_type == "interactive":
-                # Acknowledge button/list replies with bilingual confirmation
+                # Default acknowledgement when no special handler above
                 await self.process_outgoing_message({
                     "user_id": sender,
                     "type": "text",
