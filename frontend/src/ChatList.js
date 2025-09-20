@@ -10,6 +10,31 @@ import api from './api';
 import { FixedSizeList as List } from "react-window";
 import { FiSearch, FiMail, FiMessageSquare, FiUserCheck, FiUser } from 'react-icons/fi';
 
+// Consistent timezone and date helpers shared with ChatWindow
+const CHAT_TZ = 'Africa/Casablanca';
+const CHAT_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
+  hour: '2-digit', minute: '2-digit', hour12: false, timeZone: CHAT_TZ,
+});
+const CHAT_DAY_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: CHAT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+});
+const CHAT_LONG_DAY_FMT = new Intl.DateTimeFormat(undefined, { timeZone: CHAT_TZ, weekday: 'long' });
+
+const toMsNormalized = (t) => {
+  if (!t) return 0;
+  if (t instanceof Date) return t.getTime();
+  if (typeof t === 'number') return t;
+  const s = String(t);
+  if (/^\d+$/.test(s)) return Number(s) * (s.length <= 10 ? 1000 : 1);
+  if (s.includes('T') && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+    const ms = Date.parse(s + 'Z');
+    if (!Number.isNaN(ms)) return ms;
+  }
+  const ms = Date.parse(s);
+  return Number.isNaN(ms) ? 0 : ms;
+};
+const getDayKey = (dateLike) => CHAT_DAY_FMT.format(new Date(toMsNormalized(dateLike)));
+
 /* ───────────── Helpers ───────────── */
 const getInitials = (name = "") => {
   const [first = "", second = ""] = name.split(" ");
@@ -18,21 +43,13 @@ const getInitials = (name = "") => {
 
 const formatTime = (iso) => {
   if (!iso) return "";
-  const date = new Date(iso);
-  const now = new Date();
-
-  const isSameDay =
-    date.toDateString() === now.toDateString() ? "today" : null;
-  const isYesterday =
-    date.toDateString() ===
-    new Date(now.setDate(now.getDate() - 1)).toDateString()
-      ? "yesterday"
-      : null;
-
-  const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Casablanca' }).format(date);
-  if (isSameDay) return time;
-  if (isYesterday) return "Yesterday";
-  return date.toLocaleDateString();
+  const ms = toMsNormalized(iso);
+  const dayKey = getDayKey(ms);
+  const todayKey = getDayKey(Date.now());
+  const yesterdayKey = getDayKey(Date.now() - 864e5);
+  if (dayKey === todayKey) return CHAT_TIME_FMT.format(new Date(ms));
+  if (dayKey === yesterdayKey) return "Yesterday";
+  return CHAT_LONG_DAY_FMT.format(new Date(ms));
 };
 
 const WS_BASE =
@@ -97,7 +114,11 @@ function ChatList({
         const updated = { ...list[idx] };
         if (d.last_message_type) updated.last_message_type = d.last_message_type;
         if (typeof d.last_message === 'string') updated.last_message = d.last_message;
-        updated.last_message_time = d.last_message_time || updated.last_message_time || nowIso;
+        // Monotonic update: avoid time flicker from late-arriving server/client timestamps
+        const prevMs = toMsNormalized(updated.last_message_time || 0);
+        const incomingMs = toMsNormalized(d.last_message_time || nowIso);
+        const chosenMs = Math.max(prevMs, incomingMs);
+        updated.last_message_time = new Date(chosenMs).toISOString();
         // Move to top like WhatsApp
         const without = list.filter((_, i) => i !== idx);
         return [updated, ...without];
@@ -210,14 +231,8 @@ function ChatList({
       const archiveOK = showArchive ? isDone : !isDone;
       return matches && unreadOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
     });
-    // Sort by most recent activity (desc), like WhatsApp
-    const toMs = (t) => {
-      if (!t) return 0;
-      const s = String(t);
-      const ms = Date.parse(s);
-      return Number.isNaN(ms) ? 0 : ms;
-    };
-    return filtered.sort((a, b) => toMs(b.last_message_time) - toMs(a.last_message_time));
+    // Sort by most recent activity (desc), using normalized parsing
+    return filtered.sort((a, b) => toMsNormalized(b.last_message_time) - toMsNormalized(a.last_message_time));
   }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
   /* ─── Helpers ─── */

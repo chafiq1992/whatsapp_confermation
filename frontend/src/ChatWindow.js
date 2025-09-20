@@ -195,25 +195,60 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   // Throttle list height updates to avoid frequent re-mounts (prevents audio flicker while typing)
   const layoutLastHeightRef = useRef(0);
   const layoutLastUpdateTsRef = useRef(0);
+  const lastPreviewRef = useRef({ user_id: null, time: null, message: null, type: null });
 
   // Insert date separators like WhatsApp Business
-  const formatDayLabel = (date) => {
-    const d = new Date(date);
-    const today = new Date();
-    const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
-    const isSame = (a,b)=> a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
-    if (isSame(d, today)) return 'Today';
-    if (isSame(d, yesterday)) return 'Yesterday';
-    return d.toLocaleDateString(undefined, { weekday: 'long' });
-  };
+  // Normalize timestamps and group by day in a single, consistent timezone to avoid flicker
+  const CHAT_TZ = 'Africa/Casablanca';
+  const dayFormatter = useMemo(() => new Intl.DateTimeFormat('en-CA', {
+    timeZone: CHAT_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }), []);
+  const weekdayFormatter = useMemo(() => new Intl.DateTimeFormat(undefined, {
+    timeZone: CHAT_TZ,
+    weekday: 'long',
+  }), []);
+
+  const toMsNormalized = useCallback((t) => {
+    if (!t) return 0;
+    if (t instanceof Date) return t.getTime();
+    if (typeof t === 'number') return t;
+    const s = String(t);
+    if (/^\d+$/.test(s)) return Number(s) * (s.length <= 10 ? 1000 : 1);
+    if (s.includes('T') && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      const ms = Date.parse(s + 'Z');
+      if (!Number.isNaN(ms)) return ms;
+    }
+    const ms = Date.parse(s);
+    return Number.isNaN(ms) ? 0 : ms;
+  }, []);
+
+  const getDayKey = useCallback((dateLike) => {
+    const ms = toMsNormalized(dateLike);
+    return dayFormatter.format(new Date(ms)); // YYYY-MM-DD in CHAT_TZ
+  }, [dayFormatter, toMsNormalized]);
+
+  const formatDayLabel = useCallback((dateLike) => {
+    const dayKey = getDayKey(dateLike);
+    const todayKey = getDayKey(Date.now());
+    const yesterdayKey = getDayKey(Date.now() - 864e5);
+    if (dayKey === todayKey) return 'Today';
+    if (dayKey === yesterdayKey) return 'Yesterday';
+    return weekdayFormatter.format(new Date(toMsNormalized(dateLike)));
+  }, [getDayKey, weekdayFormatter, toMsNormalized]);
 
   const withDateSeparators = (list = []) => {
     const result = [];
     let lastDay = '';
-    for (const m of list) {
-      const dayKey = new Date(m.timestamp).toDateString();
+    for (let i = 0; i < list.length; i++) {
+      const m = list[i];
+      const baseTs = m.server_ts || m.timestamp;
+      const dayKey = getDayKey(baseTs);
       if (dayKey !== lastDay) {
-        result.push({ __separator: true, label: formatDayLabel(m.timestamp), key: `sep_${dayKey}` });
+        const unique = String(m.wa_message_id || m.id || m.temp_id || m.client_ts || baseTs || i);
+        result.push({ __separator: true, label: formatDayLabel(baseTs), key: `sep_${dayKey}_${unique}` });
         lastDay = dayKey;
       }
       result.push(m);
@@ -394,6 +429,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const preview = typeof last.message === 'string' ? last.message : (last.caption || '');
       const t = last.type || 'text';
       const time = last.server_ts || last.timestamp || new Date().toISOString();
+      const prev = lastPreviewRef.current || {};
+      if (prev.user_id === uid && prev.time === time && prev.message === preview && prev.type === t) return;
+      lastPreviewRef.current = { user_id: uid, time, message: preview, type: t };
       window.dispatchEvent(new CustomEvent('conversation-preview', { detail: { user_id: uid, last_message: preview, last_message_type: t, last_message_time: time } }));
     } catch {}
   }, [messages, activeUser?.user_id]);
