@@ -1584,7 +1584,7 @@ class MessageProcessor:
         """Process outgoing message with instant UI update"""
         user_id = message_data["user_id"]
         await self.db_manager.upsert_user(user_id)
-        message_text = message_data["message"]
+        message_text = str(message_data.get("message", ""))
         message_type = message_data.get("type", "text")
         
         # Generate temporary message ID for instant UI
@@ -1622,6 +1622,8 @@ class MessageProcessor:
             "product_id": message_data.get("product_id"),
             # reply/reactions passthrough
             "reply_to": message_data.get("reply_to"),
+            # buttons passthrough for interactive messages
+            "buttons": message_data.get("buttons"),
         }
         
         # For media messages, add URL field
@@ -1696,9 +1698,38 @@ class MessageProcessor:
                     caption = message.get("caption") or message.get("message") or ""
                     if not retailer_id:
                         raise Exception("Missing product_retailer_id for catalog_item")
-                    wa_response = await self.whatsapp_messenger.send_single_catalog_item(
-                        user_id, str(retailer_id), caption
-                    )
+                    try:
+                        wa_response = await self.whatsapp_messenger.send_single_catalog_item(
+                            user_id, str(retailer_id), caption
+                        )
+                    except Exception as _exc:
+                        # Fallback: try to send first image from cached catalog for visibility
+                        try:
+                            products = catalog_manager.get_cached_products()
+                        except Exception:
+                            products = []
+                        img_url = None
+                        price = ""
+                        if products:
+                            try:
+                                p = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id)), None)
+                                if p:
+                                    images = p.get("images") or []
+                                    if images:
+                                        img_url = images[0].get("url")
+                                    price = p.get("price") or ""
+                            except Exception:
+                                pass
+                        if img_url:
+                            # Send as image with caption if interactive fails
+                            wa_response = await self.whatsapp_messenger.send_media_message(
+                                user_id, "image", img_url, caption
+                            )
+                        else:
+                            # Final fallback to text
+                            wa_response = await self.whatsapp_messenger.send_text_message(
+                                user_id, caption or str(retailer_id)
+                            )
                 elif message["type"] in ("buttons", "interactive_buttons"):
                     body_text = message.get("message") or ""
                     buttons = message.get("buttons") or []
