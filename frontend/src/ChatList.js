@@ -272,8 +272,7 @@ function ChatList({
           node.style.willChange = 'transform';
           node.style.transform = `translateY(${dy}px)`;
           // Force reflow, then animate to identity
-          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
-          node.offsetHeight;
+          void node.offsetHeight;
           node.style.transition = 'transform 280ms cubic-bezier(0.22, 1, 0.36, 1)';
           node.style.transform = 'translateY(0)';
           const clear = () => {
