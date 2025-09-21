@@ -4,6 +4,7 @@ import React, {
   useCallback,
   useEffect,
   useRef,
+  useLayoutEffect,
   memo,
 } from "react";
 import api from './api';
@@ -102,6 +103,9 @@ function ChatList({
   const containerRef = useRef(null);
   const [listHeight, setListHeight] = useState(0);
   const searchDebounceRef = useRef(null);
+  // FLIP animation refs for visible rows
+  const rowNodesRef = useRef(new Map());
+  const prevPositionsRef = useRef(new Map());
 
   useEffect(() => {
     setConversations(initialConversations);
@@ -221,6 +225,71 @@ function ChatList({
     (id) => onlineUsers.includes(id),
     [onlineUsers]
   );
+
+  // Register DOM node for a conversation row (for FLIP animations)
+  const registerRowNode = useCallback((userId, node) => {
+    try {
+      if (!rowNodesRef.current) rowNodesRef.current = new Map();
+      if (node) {
+        rowNodesRef.current.set(userId, node);
+      } else {
+        rowNodesRef.current.delete(userId);
+      }
+    } catch {}
+  }, []);
+
+  // Smoothly animate reorder like WhatsApp (FLIP)
+  useLayoutEffect(() => {
+    try {
+      // Respect reduced motion
+      const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const nodes = rowNodesRef.current;
+      if (!nodes || nodes.size === 0) return;
+
+      // Measure current positions (LAST)
+      const lastPositions = new Map();
+      nodes.forEach((node, key) => {
+        if (!node || !node.getBoundingClientRect) return;
+        // Clear any transient transforms before measuring
+        node.style.willChange = '';
+        node.style.transform = '';
+        node.style.transition = '';
+        const rect = node.getBoundingClientRect();
+        lastPositions.set(key, rect.top);
+      });
+
+      // Compare with previous (FIRST) and animate
+      const firstPositions = prevPositionsRef.current || new Map();
+      lastPositions.forEach((lastTop, key) => {
+        const firstTop = firstPositions.get(key);
+        if (typeof firstTop !== 'number') return;
+        const dy = firstTop - lastTop;
+        if (!dy) return;
+        const node = nodes.get(key);
+        if (!node) return;
+        if (prefersReduced) return;
+        try {
+          node.style.willChange = 'transform';
+          node.style.transform = `translateY(${dy}px)`;
+          // Force reflow, then animate to identity
+          // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+          node.offsetHeight;
+          node.style.transition = 'transform 280ms cubic-bezier(0.22, 1, 0.36, 1)';
+          node.style.transform = 'translateY(0)';
+          const clear = () => {
+            node.style.willChange = '';
+            node.style.transition = '';
+            node.removeEventListener('transitionend', clear);
+          };
+          node.addEventListener('transitionend', clear);
+        } catch {}
+      });
+
+      // Update previous positions for next cycle
+      prevPositionsRef.current = lastPositions;
+    } catch {}
+    // Trigger when order changes or container resizes height
+  }, [filteredConversations.map(c => c.user_id).join(','), listHeight]);
 
   const handleSelect = useCallback(
     (conv) =>
@@ -438,6 +507,7 @@ function ChatList({
                 agents={agents}
                 tagOptions={tagOptions}
                 onUpdateConversationTags={onUpdateConversationTags}
+                registerRowNode={registerRowNode}
               />
             )}
           </List>
@@ -458,6 +528,7 @@ const ConversationRow = memo(function Row({
   agents = [],
   tagOptions = [],
   onUpdateConversationTags,
+  registerRowNode,
 }) {
   const selected = active === conv.user_id;
   const [assignOpen, setAssignOpen] = useState(false);
@@ -465,14 +536,20 @@ const ConversationRow = memo(function Row({
   const [tagsEditOpen, setTagsEditOpen] = useState(false);
   const [tagsInput, setTagsInput] = useState("");
   const [tags, setTags] = useState(conv.tags || []);
+  const rowRef = useCallback((el) => {
+    try { registerRowNode && registerRowNode(conv.user_id, el); } catch {}
+  }, [registerRowNode, conv?.user_id]);
   return (
     <div
+      ref={rowRef}
       style={style}
       data-row
       data-id={conv.user_id}
       onClick={() => onSelect(conv)}
-      className={`group flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
-        selected ? "bg-[#004AAD] text-white" : (conv.unread_count > 0 ? "bg-blue-900/20" : "")
+      className={`group flex gap-3 p-4 cursor-pointer transition-colors ${
+        selected
+          ? "bg-gray-800 text-white -mr-px rounded-l-xl rounded-r-none"
+          : "bg-gray-800/60 hover:bg-gray-800 text-white/90 rounded-xl"
       }`}
     >
       {/* Avatar */}
@@ -524,14 +601,14 @@ const ConversationRow = memo(function Row({
           <span className="truncate font-medium">
             {conv.name || conv.user_id}
           </span>
-          <span className="text-xs text-gray-400">
+          <span className="text-xs opacity-80">
             {formatTime(conv.last_message_time)}
           </span>
         </div>
 
         {/* Bottom line */}
         <div className="flex items-center justify-between">
-          <span className="truncate text-xs text-gray-300 flex-1 flex items-center gap-1">
+          <span className={`truncate text-xs flex-1 flex items-center gap-1 ${selected ? 'text-white/90' : 'text-gray-300'}`}>
             {conv.last_message_from_me && renderTickIcon(conv.last_message_status)}
             {(() => {
               const t = (conv.last_message_type || '').toLowerCase();
