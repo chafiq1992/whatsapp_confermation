@@ -797,7 +797,8 @@ class WhatsAppMessenger:
         else:
             media_payload = {"id": media_id_or_url}  # Use media_id
         
-        if caption:
+        # Only attach caption for media types that support it
+        if caption and media_type in ("image", "video", "document"):
             media_payload["caption"] = caption
         
         payload = {
@@ -2201,14 +2202,77 @@ class MessageProcessor:
                                 user_id, message["type"], media_id, message.get("caption", "")
                             )
                     elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
-                        if message.get("reply_to"):
-                            wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
-                            )
-                        else:
-                            wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, message["type"], media_url, message.get("caption", "")
-                            )
+                        # Prefer reliability: fetch the remote URL, upload to WhatsApp, then send by media_id
+                        local_tmp_path: Optional[Path] = None
+                        try:
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.get(media_url)
+                                if resp.status_code >= 400 or not resp.content:
+                                    raise Exception(f"download status {resp.status_code}")
+                                # Determine extension from content-type or URL
+                                ctype = resp.headers.get("Content-Type", "")
+                                ext = None
+                                if "audio/ogg" in ctype or "opus" in ctype:
+                                    ext = ".ogg"
+                                elif message["type"] == "audio" and ("webm" in ctype or media_url.lower().endswith((".webm", ".weba"))):
+                                    ext = ".webm"
+                                elif message["type"] == "image" and ("jpeg" in ctype or media_url.lower().endswith((".jpg", ".jpeg"))):
+                                    ext = ".jpg"
+                                elif message["type"] == "image" and ("png" in ctype or media_url.lower().endswith(".png")):
+                                    ext = ".png"
+                                elif message["type"] == "video" and ("mp4" in ctype or media_url.lower().endswith(".mp4")):
+                                    ext = ".mp4"
+                                elif message["type"] == "document":
+                                    # try to preserve original extension if any
+                                    parsed = urlparse(media_url)
+                                    name = os.path.basename(parsed.path or "")
+                                    ext = os.path.splitext(name)[1] or ".bin"
+                                else:
+                                    ext = ".bin"
+
+                                ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                                local_tmp_path = self.media_dir / f"{message['type']}_{ts}_{uuid.uuid4().hex[:8]}{ext}"
+                                async with aiofiles.open(local_tmp_path, "wb") as f:
+                                    await f.write(resp.content)
+
+                            # Normalize audio → OGG if needed
+                            if message["type"] == "audio" and not str(local_tmp_path).lower().endswith(".ogg"):
+                                try:
+                                    ogg_path = await convert_webm_to_ogg(local_tmp_path)
+                                    try:
+                                        local_tmp_path.unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
+                                    local_tmp_path = ogg_path
+                                except Exception as _exc:
+                                    print(f"Audio normalization from URL skipped: {_exc}")
+
+                            media_id = await self._upload_media_to_whatsapp(str(local_tmp_path), message["type"])
+                            if message.get("reply_to"):
+                                wa_response = await self.whatsapp_messenger.send_media_message(
+                                    user_id, message["type"], media_id, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                )
+                            else:
+                                wa_response = await self.whatsapp_messenger.send_media_message(
+                                    user_id, message["type"], media_id, message.get("caption", "")
+                                )
+
+                            # Store media_path for cleanup in finally and to align with DB/UI state
+                            try:
+                                message["media_path"] = str(local_tmp_path)
+                            except Exception:
+                                pass
+                        except Exception as _exc:
+                            # As a last resort, fall back to sending the public link
+                            print(f"URL fetch→upload fallback failed, sending link: {_exc}")
+                            if message.get("reply_to"):
+                                wa_response = await self.whatsapp_messenger.send_media_message(
+                                    user_id, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                )
+                            else:
+                                wa_response = await self.whatsapp_messenger.send_media_message(
+                                    user_id, message["type"], media_url, message.get("caption", "")
+                                )
                     else:
                         raise Exception("No media found: require url http(s) or valid media_path")
             
