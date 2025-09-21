@@ -1568,7 +1568,7 @@ class DatabaseManager:
                 if self.use_postgres:
                     unr_row = await db.fetchrow(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND COALESCE(server_ts, timestamp) > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status = 'read' AND COALESCE(server_ts, timestamp) > ?"
                         ),
                         uid,
                         last_agent,
@@ -1576,7 +1576,7 @@ class DatabaseManager:
                 else:
                     cur = await db.execute(
                         self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND COALESCE(server_ts, timestamp) > ?"
+                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status = 'read' AND COALESCE(server_ts, timestamp) > ?"
                         ),
                         (uid, last_agent),
                     )

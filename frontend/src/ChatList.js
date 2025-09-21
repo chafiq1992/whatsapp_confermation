@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import api from './api';
 import { FixedSizeList as List } from "react-window";
-import { FiSearch, FiMail, FiMessageSquare, FiUserCheck, FiUser } from 'react-icons/fi';
+import { FiSearch, FiMail, FiMessageSquare, FiUserCheck, FiUser, FiTag } from 'react-icons/fi';
 import { Clock3, Check, CheckCheck, XCircle } from 'lucide-react';
 
 // Consistent timezone and date helpers shared with ChatWindow
@@ -94,6 +94,8 @@ function ChatList({
   const [tagOptions, setTagOptions] = useState([]);
   const [selectedTagFilter, setSelectedTagFilter] = useState("");
   const [tagFilters, setTagFilters] = useState([]);
+  const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
+  const [tagMenuOpen, setTagMenuOpen] = useState(false);
   // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
   const activeUserRef = useRef(activeUser);
@@ -306,38 +308,70 @@ function ChatList({
             <FiUserCheck />
           </button>
           <div className="h-4 w-px bg-gray-700 mx-1" />
-          <select
-            className="bg-transparent text-sm text-gray-200 rounded-md px-2 py-1 focus:outline-none hover:bg-gray-700"
-            value={assignedFilter}
-            onChange={(e) => setAssignedFilter(e.target.value)}
-            title="Filter by assignee"
-          >
-            <option value="all">All</option>
-            <option value="unassigned">Unassigned</option>
-            {agents.map(a => (
-              <option key={a.username} value={a.username}>{a.name || a.username}</option>
-            ))}
-          </select>
-          <select
-            className="bg-transparent text-sm text-gray-200 rounded-md px-2 py-1 focus:outline-none hover:bg-gray-700"
-            value={selectedTagFilter}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedTagFilter(val);
-              if (val && !tagFilters.includes(val)) {
-                setTagFilters([...tagFilters, val]);
-                setTimeout(() => setSelectedTagFilter(''), 0);
-              }
-            }}
-            title="Filter by tag"
-          >
-            <option value="">Tags…</option>
-            {tagOptions.map(opt => (
-              <option key={opt.label} value={opt.label}>
-                {`${opt.icon ? opt.icon + ' ' : ''}${opt.label}`}
-              </option>
-            ))}
-          </select>
+          <div className="relative">
+            <button
+              type="button"
+              className={`p-2 rounded-lg text-sm ${assigneeMenuOpen || (assignedFilter && assignedFilter !== 'all') ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+              title="Assignee filter"
+              onClick={() => setAssigneeMenuOpen(v => !v)}
+            >
+              <FiUser />
+            </button>
+            {assigneeMenuOpen && (
+              <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-700 rounded shadow-lg z-20 p-2">
+                <button className={`w-full text-left px-2 py-1 rounded ${assignedFilter==='all'?'bg-gray-700 text-white':'text-gray-200 hover:bg-gray-800'}`} onClick={()=>{ setAssignedFilter('all'); setAssigneeMenuOpen(false); }}>All</button>
+                <button className={`w-full text-left px-2 py-1 rounded ${assignedFilter==='unassigned'?'bg-gray-700 text-white':'text-gray-200 hover:bg-gray-800'}`} onClick={()=>{ setAssignedFilter('unassigned'); setAssigneeMenuOpen(false); }}>Unassigned</button>
+                <div className="h-px bg-gray-700 my-1" />
+                <div className="max-h-48 overflow-auto">
+                  {agents.map(a => (
+                    <button key={a.username} className={`w-full text-left px-2 py-1 rounded ${assignedFilter===a.username?'bg-gray-700 text-white':'text-gray-200 hover:bg-gray-800'}`} onClick={()=>{ setAssignedFilter(a.username); setAssigneeMenuOpen(false); }}>{a.name || a.username}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              className={`p-2 rounded-lg text-sm ${tagMenuOpen || tagFilters.length>0 ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+              title="Tag filters"
+              onClick={() => setTagMenuOpen(v => !v)}
+            >
+              <FiTag />
+            </button>
+            {tagMenuOpen && (
+              <div className="absolute right-0 mt-2 w-56 bg-gray-900 border border-gray-700 rounded shadow-lg z-20 p-2">
+                <div className="text-xs text-gray-400 px-2 pb-1">Select tags</div>
+                <div className="max-h-56 overflow-auto">
+                  {tagOptions.map(opt => {
+                    const active = tagFilters.includes(opt.label);
+                    return (
+                      <button
+                        key={opt.label}
+                        className={`w-full text-left px-2 py-1 rounded flex items-center gap-2 ${active ? 'bg-gray-700 text-white' : 'text-gray-200 hover:bg-gray-800'}`}
+                        onClick={()=>{
+                          if (active) {
+                            setTagFilters(tagFilters.filter(x => x !== opt.label));
+                          } else {
+                            setTagFilters([...tagFilters, opt.label]);
+                          }
+                        }}
+                      >
+                        <span className="w-5 h-5 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-[10px]">{opt.icon || (opt.label || '').charAt(0).toUpperCase()}</span>
+                        <span className="truncate">{opt.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {tagFilters.length>0 && (
+                  <div className="mt-2 flex justify-between gap-2">
+                    <button className="flex-1 px-2 py-1 rounded bg-gray-700 text-white" onClick={()=> setTagFilters([])}>Clear</button>
+                    <button className="flex-1 px-2 py-1 rounded bg-blue-600 text-white" onClick={()=> setTagMenuOpen(false)}>Apply</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         {tagFilters.length > 0 && (
           <div className="mt-2 flex gap-2 flex-wrap">
@@ -438,7 +472,7 @@ const ConversationRow = memo(function Row({
       data-id={conv.user_id}
       onClick={() => onSelect(conv)}
       className={`group flex gap-3 p-4 cursor-pointer hover:bg-gray-800 ${
-        selected ? "bg-[#004AAD] text-white" : ""
+        selected ? "bg-[#004AAD] text-white" : (conv.unread_count > 0 ? "bg-blue-900/20" : "")
       }`}
     >
       {/* Avatar */}

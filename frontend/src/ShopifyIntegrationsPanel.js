@@ -136,6 +136,8 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
   const [products, setProducts] = useState([]);
   const [variantIdInput, setVariantIdInput] = useState("");
   const [variantPreview, setVariantPreview] = useState(null);
+  const [variantSuggestions, setVariantSuggestions] = useState([]);
+  const variantSuggestOpenRef = useRef(false);
   const [selectedItems, setSelectedItems] = useState([]);
   const [shippingOptions, setShippingOptions] = useState([]);
   const [deliveryOption, setDeliveryOption] = useState("");
@@ -323,19 +325,55 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
     }
   };
 
-  // Live preview for Variant ID input (debounced)
+  // Live preview for Variant ID input + suggestions (debounced)
   useEffect(() => {
     const raw = String(variantIdInput || "").trim();
-    if (!raw) { setVariantPreview(null); return; }
-    // Only attempt for plausible numeric IDs
-    if (!/^\d{4,}$/.test(raw)) { setVariantPreview(null); return; }
+    if (!raw) { setVariantPreview(null); setVariantSuggestions([]); return; }
+    if (!/^\d{3,}$/.test(raw)) { setVariantPreview(null); setVariantSuggestions([]); return; }
     const t = setTimeout(async () => {
       try {
         const res = await api.get(`${API_BASE}/shopify-variant/${raw}`);
         setVariantPreview(res?.data || null);
-      } catch {
-        setVariantPreview(null);
-      }
+      } catch { setVariantPreview(null); }
+      // Suggestions via products query
+      try {
+        const pr = await api.get(`${API_BASE}/shopify-products?q=${encodeURIComponent(raw)}`);
+        const prods = Array.isArray(pr.data) ? pr.data : [];
+        const items = [];
+        const score = (qstr, v, p) => {
+          try {
+            const s = String(qstr).toLowerCase();
+            const id = String(v.id || "");
+            const sku = String(v.sku || "").toLowerCase();
+            const vt = String(v.title || "").toLowerCase();
+            const pt = String(p.title || v.product_title || "").toLowerCase();
+            let sc = 0;
+            if (id.startsWith(raw)) sc += 1000 - Math.min(999, Math.max(0, id.length - raw.length));
+            if (id.includes(raw)) sc += 400;
+            if (sku.startsWith(s)) sc += 350;
+            if (vt.startsWith(s)) sc += 300;
+            if (vt.includes(s)) sc += 120;
+            if (pt.startsWith(s)) sc += 80;
+            if (pt.includes(s)) sc += 40;
+            return sc;
+          } catch { return 0; }
+        };
+        prods.forEach(p => {
+          (p.variants || []).forEach(v => {
+            items.push({
+              id: v.id,
+              title: v.title,
+              product_title: v.product_title || p.title,
+              price: v.price,
+              image_src: (p.image && p.image.src) || (p.images && p.images[0] && p.images[0].src) || v.image_src || "",
+              __score: score(raw, v, p),
+              __variant: v,
+            });
+          });
+        });
+        items.sort((a,b)=> b.__score - a.__score);
+        setVariantSuggestions(items.slice(0, 10));
+      } catch { setVariantSuggestions([]); }
     }, 450);
     return () => clearTimeout(t);
   }, [variantIdInput, API_BASE]);
@@ -1200,6 +1238,65 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
                 className="p-1 rounded bg-gray-800 text-white w-full"
                 autoComplete="off"
               />
+              {(() => {
+                const q = String(productSearch || '').trim().toLowerCase();
+                if (!q || products.length === 0) return null;
+                const items = [];
+                const score = (qstr, v, p) => {
+                  try {
+                    const s = String(qstr).toLowerCase();
+                    const sku = String(v.sku || '').toLowerCase();
+                    const vt = String(v.title || '').toLowerCase();
+                    const pt = String(p.title || v.product_title || '').toLowerCase();
+                    let sc = 0;
+                    if (sku.startsWith(s)) sc += 400;
+                    if (vt.startsWith(s)) sc += 350;
+                    if (pt.startsWith(s)) sc += 300;
+                    if (vt.includes(s)) sc += 120;
+                    if (pt.includes(s)) sc += 80;
+                    return sc;
+                  } catch { return 0; }
+                };
+                products.forEach(p => {
+                  (p.variants || []).forEach(v => {
+                    items.push({
+                      id: v.id,
+                      title: v.title,
+                      product_title: v.product_title || p.title,
+                      price: v.price,
+                      image_src: (p.image && p.image.src) || (p.images && p.images[0] && p.images[0].src) || v.image_src || '',
+                      __score: score(q, v, p),
+                      __variant: v,
+                    });
+                  });
+                });
+                const top = items.filter(i => i.__score > 0).sort((a,b)=> b.__score - a.__score).slice(0, 10);
+                if (!top.length) return null;
+                return (
+                  <div className="absolute z-30 left-0 right-0 mt-1 max-h-64 overflow-auto bg-gray-900 border border-gray-600 rounded shadow-lg">
+                    <ul className="divide-y divide-gray-800">
+                      {top.map(s => (
+                        <li key={s.id} className="p-2 flex items-center gap-2">
+                          {s.image_src ? (
+                            <img src={s.image_src} alt={s.title || 'Variant'} className="w-8 h-8 rounded object-cover" />
+                          ) : (
+                            <div className="w-8 h-8 rounded bg-gray-700 text-white grid place-items-center">🛒</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-white truncate" title={s.product_title || s.title}>{s.product_title || s.title}</div>
+                            <div className="text-xs text-gray-300 truncate">{s.title} • {Number(s.price||0).toFixed(2)} MAD</div>
+                          </div>
+                          <button
+                            type="button"
+                            className="text-xs bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded"
+                            onMouseDown={(e)=>{ e.preventDefault(); handleAddVariant(s.__variant); setProductSearch(''); setProducts([]); }}
+                          >Add</button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
               {!!productSearch && products.length > 0 && (
                 <div className="absolute z-20 left-0 right-0 mt-1 max-h-64 overflow-auto bg-gray-900 border border-gray-600 rounded shadow-lg">
                   <ul className="divide-y divide-gray-700">
@@ -1241,6 +1338,32 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
               >
                 Add Variant
               </button>
+              {variantSuggestions.length > 0 && (
+                <div className="relative">
+                  <div className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-auto bg-gray-900 border border-gray-700 rounded shadow-lg">
+                    <ul className="divide-y divide-gray-800">
+                      {variantSuggestions.map(s => (
+                        <li key={s.id} className="p-2 flex items-center gap-2">
+                          {s.image_src ? (
+                            <img src={s.image_src} alt={s.title || 'Variant'} className="w-8 h-8 rounded object-cover" />
+                          ) : (
+                            <div className="w-8 h-8 rounded bg-gray-700 text-white grid place-items-center">🛒</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-white truncate" title={s.product_title || s.title}>{s.product_title || s.title}</div>
+                            <div className="text-xs text-gray-300 truncate">{s.title} • ID {String(s.id).slice(-8)} • {Number(s.price||0).toFixed(2)} MAD</div>
+                          </div>
+                          <button
+                            type="button"
+                            className="text-xs bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded"
+                            onMouseDown={(e)=>{ e.preventDefault(); handleAddVariant(s.__variant); setVariantIdInput(''); setVariantPreview(null); setVariantSuggestions([]); }}
+                          >Add</button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
               {variantPreview && (
                 <div className="mt-2 p-2 bg-gray-800 border border-gray-700 rounded flex items-center gap-2">
                   {variantPreview.image_src ? (
