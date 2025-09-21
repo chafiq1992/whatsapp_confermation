@@ -1229,7 +1229,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         </div>
       )}
       
-      <div className="flex-1 overflow-hidden p-3 bg-gray-900 relative" ref={messagesEndRef}>
+      <div className="flex-1 overflow-hidden p-3 pb-8 bg-gray-900 relative" ref={messagesEndRef}>
         {loadingOlder && (
           <div className="absolute top-2 left-0 right-0 flex justify-center" aria-live="polite">
             <span className="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-200 border border-gray-600">Loading…</span>

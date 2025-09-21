@@ -265,8 +265,8 @@ function ChatList({
   return (
     <div className="w-full h-full flex flex-col min-w-72">
       <div className="p-2 sticky top-0 z-10 bg-gray-900">
-        <div className="w-full bg-gray-800/70 border border-gray-700 rounded-xl px-3 py-2 flex items-center gap-2">
-          <div className="flex items-center gap-2 flex-1">
+        <div className="w-full bg-gray-800/70 border border-gray-700 rounded-xl px-3 py-2 flex items-center gap-1">
+          <div className="flex items-center gap-1 flex-1">
             <FiSearch className="text-gray-400" />
             <input
               className="flex-1 bg-transparent placeholder-gray-400 text-white focus:outline-none text-sm"
@@ -276,10 +276,10 @@ function ChatList({
             />
           </div>
           <div className={`w-2.5 h-2.5 rounded-full ${wsConnected ? 'bg-green-500' : 'bg-red-500'}`} title={`WebSocket ${wsConnected ? 'connected' : 'disconnected'}`} />
-          <div className="h-4 w-px bg-gray-700 mx-1" />
+          <div className="h-4 w-px bg-gray-700 mx-0.5" />
           <button
             type="button"
-            className={`p-2 rounded-lg text-sm ${showUnreadOnly ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+            className={`p-1.5 rounded-lg text-sm ${showUnreadOnly ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
             title="Unread only"
             onClick={() => setShowUnreadOnly(p => !p)}
           >
@@ -287,7 +287,7 @@ function ChatList({
           </button>
           <button
             type="button"
-            className={`p-2 rounded-lg text-sm ${needsReplyOnly ? 'bg-yellow-500 text-black' : 'text-gray-300 hover:bg-gray-700'}`}
+            className={`p-1.5 rounded-lg text-sm ${needsReplyOnly ? 'bg-yellow-500 text-black' : 'text-gray-300 hover:bg-gray-700'}`}
             title="Needs reply"
             onClick={() => setNeedsReplyOnly(p => !p)}
           >
@@ -295,7 +295,7 @@ function ChatList({
           </button>
           <button
             type="button"
-            className={`p-2 rounded-lg text-sm ${(assignedFilter && currentAgent && assignedFilter === currentAgent) ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+            className={`p-1.5 rounded-lg text-sm ${(assignedFilter && currentAgent && assignedFilter === currentAgent) ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
             title="My assigned only"
             onClick={() => {
               if (assignedFilter === currentAgent) {
@@ -307,11 +307,11 @@ function ChatList({
           >
             <FiUserCheck />
           </button>
-          <div className="h-4 w-px bg-gray-700 mx-1" />
+          <div className="h-4 w-px bg-gray-700 mx-0.5" />
           <div className="relative">
             <button
               type="button"
-              className={`p-2 rounded-lg text-sm ${assigneeMenuOpen || (assignedFilter && assignedFilter !== 'all') ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+              className={`p-1.5 rounded-lg text-sm ${assigneeMenuOpen || (assignedFilter && assignedFilter !== 'all') ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
               title="Assignee filter"
               onClick={() => setAssigneeMenuOpen(v => !v)}
             >
@@ -333,7 +333,7 @@ function ChatList({
           <div className="relative">
             <button
               type="button"
-              className={`p-2 rounded-lg text-sm ${tagMenuOpen || tagFilters.length>0 ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+              className={`p-1.5 rounded-lg text-sm ${tagMenuOpen || tagFilters.length>0 ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
               title="Tag filters"
               onClick={() => setTagMenuOpen(v => !v)}
             >
