@@ -693,6 +693,19 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     // Optimistically add to UI
     setMessages(prev => sortByTime([...prev, messageObj]));
 
+    // Immediately reflect in chat list
+    try {
+      const previewText = typeof message === 'string' ? message : (caption || type || '');
+      window.dispatchEvent(new CustomEvent('conversation-preview', { detail: {
+        user_id: activeUser.user_id,
+        last_message: previewText,
+        last_message_type: type || 'text',
+        last_message_time: messageObj.timestamp,
+        last_message_from_me: true,
+        last_message_status: messageObj.status,
+      }}));
+    } catch {}
+
     // Send through WebSocket
     ws.send(
       JSON.stringify({
@@ -1515,9 +1528,34 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                 messageObj.url = payload.url;
               }
               ws.send(JSON.stringify({ type: 'send_message', data: messageObj }));
+              // Reflect immediately in chat list for the target conversation
+              try {
+                const previewText = typeof payload.message === 'string' ? payload.message : (payload.caption || messageObj.type || '');
+                window.dispatchEvent(new CustomEvent('conversation-preview', { detail: {
+                  user_id: target,
+                  last_message: previewText,
+                  last_message_type: messageObj.type,
+                  last_message_time: messageObj.timestamp,
+                  last_message_from_me: true,
+                  last_message_status: 'sending',
+                }}));
+              } catch {}
             } else {
               // HTTP fallback: pass the best available message value (URL for media)
               api.post(`${API_BASE}/send-message`, { user_id: target, message: payload.message, type: payload.type || 'text' });
+              // Fallback preview
+              try {
+                const ts = new Date().toISOString();
+                const previewText = typeof payload.message === 'string' ? payload.message : (payload.caption || (payload.type || ''));
+                window.dispatchEvent(new CustomEvent('conversation-preview', { detail: {
+                  user_id: target,
+                  last_message: previewText,
+                  last_message_type: payload.type || 'text',
+                  last_message_time: ts,
+                  last_message_from_me: true,
+                  last_message_status: 'sent',
+                }}));
+              } catch {}
             }
           } catch {}
           setForwardOpen(false);

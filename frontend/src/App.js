@@ -84,6 +84,7 @@ export default function App() {
         const idx = list.findIndex((c) => c.user_id === d.user_id);
         const nowIso = new Date().toISOString();
         const incomingIso = d.last_message_time || nowIso;
+        const incomingMs = toMsNormalized(incomingIso);
         if (idx === -1) {
           const created = {
             user_id: d.user_id,
@@ -102,14 +103,18 @@ export default function App() {
         if (d.last_message_type) updated.last_message_type = d.last_message_type;
         if (typeof d.last_message === 'string') updated.last_message = d.last_message;
         if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
+        const prevMs = toMsNormalized(updated.last_message_time || 0);
         if (typeof d.last_message_status === 'string') {
           const curr = updated.last_message_status;
           const next = d.last_message_status;
           const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
-          if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
+          // If the preview refers to a newer message, accept status as-is (even if lower)
+          if (incomingMs > prevMs) {
+            updated.last_message_status = next;
+          } else {
+            if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
+          }
         }
-        const prevMs = toMsNormalized(updated.last_message_time || 0);
-        const incomingMs = toMsNormalized(incomingIso);
         const chosenMs = Math.max(prevMs, incomingMs);
         updated.last_message_time = new Date(chosenMs).toISOString();
         if (activeUserRef.current?.user_id === d.user_id) updated.unread_count = 0;
@@ -271,6 +276,8 @@ export default function App() {
                   last_message_type: msg.type || current.last_message_type,
                   last_message_from_me: Boolean(msg.from_me),
                   last_message_status: (() => {
+                    // Only consider status when the last message is from me
+                    if (!msg.from_me) return current.last_message_status;
                     const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
                     const cur = current.last_message_status;
                     const nxt = msg.status;
@@ -298,7 +305,7 @@ export default function App() {
                 last_message: text,
                 last_message_type: msg.type || 'text',
                 last_message_from_me: Boolean(msg.from_me),
-                last_message_status: msg.status || undefined,
+                last_message_status: msg.from_me ? (msg.status || undefined) : undefined,
                 last_message_time: nowIso,
                 unread_count:
                   activeUserRef.current?.user_id === userId ? 0 : 1,
