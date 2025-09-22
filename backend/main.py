@@ -1898,6 +1898,8 @@ class MessageProcessor:
             # Preserve raw fields as well for debugging/DB if present
             "retailer_id": message_data.get("retailer_id"),
             "product_id": message_data.get("product_id"),
+            # carry flags
+            "needs_bilingual_prompt": bool(message_data.get("needs_bilingual_prompt")),
             # reply/reactions passthrough
             "reply_to": message_data.get("reply_to"),
             # buttons passthrough for interactive messages
@@ -2185,7 +2187,6 @@ class MessageProcessor:
                                 "• Âge de l’enfant 🎂\n"
                                 "• Garçon ou fille 👦👧\n"
                                 "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
-                                "\n"
                                 "*مرحبًا بك في IRRAKIDS* 👋\n"
                                 "*يرجى تزويدنا بـ:*\n"
                                 "• المقاس المطلوب 📏\n"
@@ -2255,7 +2256,6 @@ class MessageProcessor:
                                     "• Âge de l’enfant 🎂\n"
                                     "• Garçon ou fille 👦👧\n"
                                     "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
-                                    "\n"
                                     "*مرحبًا بك في IRRAKIDS* 👋\n"
                                     "*يرجى تزويدنا بـ:*\n"
                                     "• المقاس المطلوب 📏\n"
@@ -2289,7 +2289,6 @@ class MessageProcessor:
                                     "• Âge de l’enfant 🎂\n"
                                     "• Garçon ou fille 👦👧\n"
                                     "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
-                                    "\n"
                                     "*مرحبًا بك في IRRAKIDS* 👋\n"
                                     "*يرجى تزويدنا بـ:*\n"
                                     "• المقاس المطلوب 📏\n"
