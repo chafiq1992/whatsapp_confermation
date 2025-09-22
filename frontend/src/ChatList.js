@@ -182,7 +182,47 @@ function ChatList({
       (async () => {
         try {
           const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
-          if (Array.isArray(res.data)) setConversations(res.data);
+          if (Array.isArray(res.data)) {
+            // Merge server results with App's latest previews to avoid stale downgrades
+            const baseById = new Map((Array.isArray(initialConversations) ? initialConversations : []).map(c => [c.user_id, c]));
+            const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
+            const merged = res.data.map(s => {
+              const b = baseById.get(s.user_id);
+              if (!b) return s;
+              const sMs = toMsNormalized(s.last_message_time);
+              const bMs = toMsNormalized(b.last_message_time);
+              if (bMs > sMs) {
+                return {
+                  ...s,
+                  last_message: b.last_message,
+                  last_message_type: b.last_message_type,
+                  last_message_time: b.last_message_time,
+                  last_message_from_me: b.last_message_from_me,
+                  last_message_status: b.last_message_status,
+                };
+              } else if (bMs === sMs) {
+                return {
+                  ...s,
+                  last_message_from_me: (typeof s.last_message_from_me === 'boolean') ? s.last_message_from_me : b.last_message_from_me,
+                  last_message_status: (() => {
+                    const curr = s.last_message_status;
+                    const other = b.last_message_status;
+                    if (!curr) return other;
+                    if (!other) return curr;
+                    return rank(curr) >= rank(other) ? curr : other;
+                  })(),
+                };
+              }
+              return s;
+            }).map(item => {
+              // Ensure unread is zero for currently open conversation
+              if (activeUserRef.current?.user_id && item.user_id === activeUserRef.current.user_id) {
+                return { ...item, unread_count: 0 };
+              }
+              return item;
+            });
+            setConversations(merged);
+          }
         } catch (e) {
           // network errors fall back to client filtering of existing list
         }

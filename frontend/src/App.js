@@ -143,23 +143,28 @@ export default function App() {
           return [created, ...list];
         }
         const updated = { ...list[idx] };
-        if (d.last_message_type) updated.last_message_type = d.last_message_type;
-        if (typeof d.last_message === 'string') updated.last_message = d.last_message;
-        if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
         const prevMs = toMsNormalized(updated.last_message_time || 0);
-        if (typeof d.last_message_status === 'string') {
-          const curr = updated.last_message_status;
-          const next = d.last_message_status;
-          const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
-          // If the preview refers to a newer message, accept status as-is (even if lower)
-          if (incomingMs > prevMs) {
-            updated.last_message_status = next;
-          } else {
+        const isNewer = incomingMs > prevMs;
+        const isSame = incomingMs === prevMs;
+
+        // Only update preview content/from_me when the incoming event is newer
+        if (isNewer) {
+          if (d.last_message_type) updated.last_message_type = d.last_message_type;
+          if (typeof d.last_message === 'string') updated.last_message = d.last_message;
+          if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
+          if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
+          updated.last_message_time = incomingIso;
+        } else {
+          // For same-timestamp updates, only lift delivery status if it improves
+          if (isSame && typeof d.last_message_status === 'string' && updated.last_message_from_me) {
+            const curr = updated.last_message_status;
+            const next = d.last_message_status;
+            const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
             if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
           }
+          // Keep the newer timestamp to maintain ordering; do not downgrade preview fields
+          updated.last_message_time = new Date(Math.max(prevMs, incomingMs)).toISOString();
         }
-        const chosenMs = Math.max(prevMs, incomingMs);
-        updated.last_message_time = new Date(chosenMs).toISOString();
         if (activeUserRef.current?.user_id === d.user_id) updated.unread_count = 0;
         const without = list.filter((_, i) => i !== idx);
         return [updated, ...without];
