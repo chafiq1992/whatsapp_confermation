@@ -210,11 +210,18 @@ async def convert_webm_to_ogg(src_path: Path) -> Path:
     """
     dst_path = src_path.with_suffix(".ogg")
     cmd = [
-        "ffmpeg", "-y",                      # overwrite if exists
-        "-i", str(src_path),                 # input
-        # Voice-friendly Opus: mono, 16 kHz, voip application, modest bitrate
-        "-ac", "1", "-ar", "16000",
-        "-c:a", "libopus", "-b:a", "48k", "-application", "voip",
+        "ffmpeg", "-y",
+        "-i", str(src_path),
+        # Hardened Opus settings per WA Cloud guidance
+        "-vn",
+        "-ac", "1",
+        "-ar", "48000",
+        "-c:a", "libopus",
+        "-b:a", "32k",
+        "-vbr", "on",
+        "-compression_level", "10",
+        "-application", "voip",
+        "-frame_duration", "20",
         str(dst_path),
     ]
 
@@ -294,6 +301,50 @@ async def compute_audio_waveform(src_path: Path, buckets: int = 56) -> list[int]
         return norm
     except Exception:
         return [30] * max(1, int(buckets))
+
+async def convert_any_to_m4a(src_path: Path) -> Path:
+    """Convert any input audio to M4A/AAC 44.1 kHz mono.
+
+    Used as a last-resort fallback if Graph rejects Opus/OGG upload.
+    """
+    dst_path = src_path.with_suffix(".m4a")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(src_path),
+        "-vn",
+        "-ac", "1",
+        "-ar", "44100",
+        "-c:a", "aac",
+        "-b:a", "48k",
+        str(dst_path),
+    ]
+    loop = asyncio.get_event_loop()
+    proc = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode())
+    return dst_path
+
+async def probe_audio_channels(src_path: Path) -> int:
+    """Return number of channels for the first audio stream, or 0 if unknown."""
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=channels",
+            "-of", "csv=p=0",
+            str(src_path),
+        ]
+        loop = asyncio.get_event_loop()
+        proc = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
+        if proc.returncode == 0:
+            out = (proc.stdout or b"").decode().strip()
+            try:
+                return int(out)
+            except Exception:
+                return 0
+        return 0
+    except Exception:
+        return 0
 
 # Enhanced WebSocket Connection Manager
 class ConnectionManager:
@@ -787,12 +838,22 @@ class WhatsAppMessenger:
 
         return await self.send_catalog_products(user_id, product_ids)
     
-    async def send_media_message(self, to: str, media_type: str, media_id_or_url: str, caption: str = "", context_message_id: str | None = None) -> dict:
+    async def send_media_message(
+        self,
+        to: str,
+        media_type: str,
+        media_id_or_url: str,
+        caption: str = "",
+        context_message_id: str | None = None,
+        audio_mime_type: str | None = None,
+        audio_voice: bool | None = None,
+    ) -> dict:
         """Send media message - handles both media_id and URL"""
         url = f"{self.base_url}/messages"
         
         # Check if it's a media_id (no http/https) or URL
-        if media_id_or_url.startswith(('http://', 'https://')):
+        is_link = media_id_or_url.startswith(('http://', 'https://'))
+        if is_link:
             media_payload = {"link": media_id_or_url}
         else:
             media_payload = {"id": media_id_or_url}  # Use media_id
@@ -801,6 +862,17 @@ class WhatsAppMessenger:
         if caption and media_type in ("image", "video", "document"):
             media_payload["caption"] = caption
         
+        # Apply audio-specific flags for PTT/voice notes when using media_id
+        if media_type == "audio" and not is_link:
+            # WA Cloud voice note hints improve cross-client reliability
+            if audio_voice is None or audio_voice is True:
+                media_payload["voice"] = True
+            if audio_mime_type:
+                media_payload["mime_type"] = audio_mime_type
+            else:
+                # Default to Opus-in-Ogg explicit MIME
+                media_payload["mime_type"] = "audio/ogg; codecs=opus"
+
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -2222,14 +2294,25 @@ class MessageProcessor:
                             print(f"GCS upload failed (non-fatal): {_exc}")
 
                         print(f"📤 Uploading media to WhatsApp: {media_path}")
-                        media_id = await self._upload_media_to_whatsapp(media_path, message["type"])
+                        media_info = await self._upload_media_to_whatsapp(media_path, message["type"])
                         if message.get("reply_to"):
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, message["type"], media_id, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                user_id,
+                                message["type"],
+                                media_info["id"],
+                                message.get("caption", ""),
+                                context_message_id=message.get("reply_to"),
+                                audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
+                                audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                             )
                         else:
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, message["type"], media_id, message.get("caption", "")
+                                user_id,
+                                message["type"],
+                                media_info["id"],
+                                message.get("caption", ""),
+                                audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
+                                audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                             )
                     elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
                         # Prefer reliability: fetch the remote URL, upload to WhatsApp, then send by media_id
@@ -2277,14 +2360,25 @@ class MessageProcessor:
                                 except Exception as _exc:
                                     print(f"Audio normalization from URL skipped: {_exc}")
 
-                            media_id = await self._upload_media_to_whatsapp(str(local_tmp_path), message["type"])
+                            media_info = await self._upload_media_to_whatsapp(str(local_tmp_path), message["type"])
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_id, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                    user_id,
+                                    message["type"],
+                                    media_info["id"],
+                                    message.get("caption", ""),
+                                    context_message_id=message.get("reply_to"),
+                                    audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
+                                    audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                                 )
                             else:
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_id, message.get("caption", "")
+                                    user_id,
+                                    message["type"],
+                                    media_info["id"],
+                                    message.get("caption", ""),
+                                    audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
+                                    audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                                 )
 
                             # Store media_path for cleanup in finally and to align with DB/UI state
@@ -2293,7 +2387,11 @@ class MessageProcessor:
                             except Exception:
                                 pass
                         except Exception as _exc:
-                            # As a last resort, fall back to sending the public link
+                            # For audio, never fall back to sending by link – raise to surface failure
+                            if message.get("type") == "audio":
+                                print(f"URL fetch→upload failed for audio, not sending by link: {_exc}")
+                                raise
+                            # For other media, last resort: send public link
                             print(f"URL fetch→upload fallback failed, sending link: {_exc}")
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
@@ -2352,60 +2450,114 @@ class MessageProcessor:
                 except Exception as e:
                     print(f"⚠️ Cleanup failed for {media_path}: {e}")
 
-    async def _upload_media_to_whatsapp(self, file_path: str, media_type: str) -> str:
-        """Upload media file to WhatsApp and return media_id"""
-        if not Path(file_path).exists():
+    async def _verify_graph_media(self, media_id: str) -> dict:
+        """Fetch media metadata from Graph and return JSON."""
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{media_id}"
+        headers = {"Authorization": f"Bearer {self.whatsapp_messenger.access_token}"}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                raise Exception(f"Media verify failed: {resp.status_code} {resp.text}")
+            return resp.json()
+
+    async def _upload_media_to_whatsapp(self, file_path: str, media_type: str) -> dict:
+        """Upload media file to WhatsApp and return {id, mime_type, filename}.
+
+        Implements backoff and, for audio, verifies Graph media and may fallback to AAC/M4A.
+        """
+        src = Path(file_path)
+        if not src.exists():
             raise Exception(f"Media file not found: {file_path}")
-        
+
         upload_url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{self.whatsapp_messenger.phone_number_id}/media"
-        
-        try:
+
+        async def choose_mime(path: Path, mtype: str) -> str:
+            suffix = path.suffix.lower()
+            if mtype == "audio":
+                if suffix == ".ogg":
+                    return "audio/ogg"
+                if suffix in (".m4a", ".mp4", ".aac"):
+                    return "audio/mp4"
+            if mtype == "image":
+                if suffix in (".jpg", ".jpeg"):
+                    return "image/jpeg"
+                if suffix == ".png":
+                    return "image/png"
+            if mtype == "video":
+                return "video/mp4"
+            if mtype == "document":
+                if suffix == ".pdf":
+                    return "application/pdf"
+            return f"{mtype}/*"
+
+        async def attempt_upload(path: Path, mtype: str) -> dict:
             # Read file content
-            async with aiofiles.open(file_path, 'rb') as f:
+            async with aiofiles.open(path, 'rb') as f:
                 file_content = await f.read()
-            
-            # Determine proper MIME type
-            mime_types = {
-                "image": "image/jpeg",
-                "audio": "audio/ogg", 
-                "video": "video/mp4",
-                "document": "application/pdf"
-            }
-            mime_type = mime_types.get(media_type, f'{media_type}/*')
-            
-            # Prepare multipart form data
+
+            mime_type = await choose_mime(path, mtype)
             files = {
-                'file': (Path(file_path).name, file_content, mime_type),
+                'file': (path.name, file_content, mime_type),
                 'messaging_product': (None, 'whatsapp'),
-                'type': (None, media_type)
+                'type': (None, mtype),
             }
-            
             headers = {"Authorization": f"Bearer {self.whatsapp_messenger.access_token}"}
-            
-            # Upload to WhatsApp
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(upload_url, files=files, headers=headers)
-                
                 _vlog(f"📤 WhatsApp upload response: {response.status_code}")
                 _vlog(f"📤 Response body: {response.text}")
-                
                 if response.status_code != 200:
                     raise Exception(f"WhatsApp media upload failed: {response.text}")
-                
                 result = response.json()
                 media_id = result.get("id")
-                
                 if not media_id:
                     raise Exception(f"No media_id in WhatsApp response: {result}")
-                
-                _vlog(f"✅ Media uploaded successfully. ID: {media_id}")
-                return media_id
-                
-        except httpx.TimeoutException:
-            raise Exception("WhatsApp upload timeout - file may be too large")
-        except Exception as e:
-            print(f"❌ Media upload error: {e}")
-            raise Exception(f"Failed to upload media to WhatsApp: {str(e)}")
+                return {"id": media_id, "upload_mime": mime_type, "filename": path.name}
+
+        # Backoff attempts
+        delays = [0.25, 0.5, 1.0, 2.0, 4.0]
+        last_err: Optional[Exception] = None
+        for i, delay in enumerate(delays, start=1):
+            try:
+                info = await attempt_upload(src, media_type)
+                # Verify for audio
+                if media_type == "audio":
+                    meta = await self._verify_graph_media(info["id"])
+                    # Expect strict fields
+                    mime = (meta.get("mime_type") or "").lower()
+                    sha256 = meta.get("sha256")
+                    size = meta.get("file_size")
+                    if not sha256 or not size:
+                        raise Exception("Graph media missing sha256/file_size")
+                    # Prefer explicit Opus-in-Ogg when source was .ogg
+                    if src.suffix.lower() == ".ogg" and "audio/ogg" not in mime:
+                        raise Exception(f"Unexpected audio MIME from Graph: {mime}")
+                    info["mime_type"] = mime
+                else:
+                    meta = await self._verify_graph_media(info["id"])  # sanity
+                    info["mime_type"] = (meta.get("mime_type") or info.get("upload_mime") or "").lower()
+                _vlog(f"✅ Media uploaded & verified. ID: {info['id']} MIME: {info.get('mime_type')}")
+                return info
+            except Exception as e:
+                last_err = e
+                _vlog(f"⏳ Upload attempt {i} failed: {e}")
+                await asyncio.sleep(delay)
+
+        # Final fallback for audio: convert to M4A and re-upload (still by media_id, never link)
+        if media_type == "audio":
+            try:
+                m4a_path = await convert_any_to_m4a(src)
+                info = await attempt_upload(m4a_path, media_type)
+                meta = await self._verify_graph_media(info["id"])
+                info["mime_type"] = (meta.get("mime_type") or info.get("upload_mime") or "").lower()
+                _vlog(f"✅ Fallback M4A uploaded & verified. ID: {info['id']} MIME: {info.get('mime_type')}")
+                return info
+            except Exception as e:
+                raise Exception(f"Failed after retries and m4a fallback: {e}")
+
+        # Non-audio: give up
+        raise Exception(f"Failed to upload media to WhatsApp after retries: {last_err}")
     
     async def process_incoming_message(self, webhook_data: dict):
         _vlog("🚨 process_incoming_message CALLED")
@@ -3919,6 +4071,18 @@ async def send_media(
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
 
+            # ---------- AUDIO-ONLY: reject non-mono at edge ----------
+            if media_type == "audio":
+                try:
+                    ch = await probe_audio_channels(file_path)
+                    if ch and ch != 1:
+                        raise HTTPException(status_code=400, detail="Only mono audio is supported for WhatsApp voice notes. Please record in mono and try again.")
+                except HTTPException:
+                    raise
+                except Exception:
+                    # If probing fails, continue – conversion will enforce mono
+                    pass
+
             # ---------- AUDIO-ONLY: convert WebM → OGG ----------
             if media_type == "audio" and file_extension.lower() != ".ogg":
                 try:
@@ -4010,6 +4174,17 @@ async def send_media_async(
             content = await file.read()
             async with aiofiles.open(file_path, "wb") as f:
                 await f.write(content)
+
+            # ---------- AUDIO-ONLY: reject non-mono at edge ----------
+            if media_type == "audio":
+                try:
+                    ch = await probe_audio_channels(file_path)
+                    if ch and ch != 1:
+                        raise HTTPException(status_code=400, detail="Only mono audio is supported for WhatsApp voice notes. Please record in mono and try again.")
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
 
             optimistic_payload = {
                 "user_id": user_id,
