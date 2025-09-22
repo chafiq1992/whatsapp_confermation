@@ -845,7 +845,6 @@ class WhatsAppMessenger:
         media_id_or_url: str,
         caption: str = "",
         context_message_id: str | None = None,
-        audio_mime_type: str | None = None,
         audio_voice: bool | None = None,
     ) -> dict:
         """Send media message - handles both media_id and URL"""
@@ -867,11 +866,6 @@ class WhatsAppMessenger:
             # WA Cloud voice note hints improve cross-client reliability
             if audio_voice is None or audio_voice is True:
                 media_payload["voice"] = True
-            if audio_mime_type:
-                media_payload["mime_type"] = audio_mime_type
-            else:
-                # Default to Opus-in-Ogg explicit MIME
-                media_payload["mime_type"] = "audio/ogg; codecs=opus"
 
         payload = {
             "messaging_product": "whatsapp",
@@ -2302,7 +2296,6 @@ class MessageProcessor:
                                 media_info["id"],
                                 message.get("caption", ""),
                                 context_message_id=message.get("reply_to"),
-                                audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
                                 audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                             )
                         else:
@@ -2311,7 +2304,6 @@ class MessageProcessor:
                                 message["type"],
                                 media_info["id"],
                                 message.get("caption", ""),
-                                audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
                                 audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                             )
                     elif media_url and isinstance(media_url, str) and media_url.startswith(("http://", "https://")):
@@ -2368,7 +2360,6 @@ class MessageProcessor:
                                     media_info["id"],
                                     message.get("caption", ""),
                                     context_message_id=message.get("reply_to"),
-                                    audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
                                     audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                                 )
                             else:
@@ -2377,7 +2368,6 @@ class MessageProcessor:
                                     message["type"],
                                     media_info["id"],
                                     message.get("caption", ""),
-                                    audio_mime_type=(media_info.get("mime_type") if message["type"] == "audio" else None),
                                     audio_voice=("audio/ogg" in (media_info.get("mime_type") or "")) if message["type"] == "audio" else None,
                                 )
 
