@@ -146,6 +146,11 @@ export default function App() {
         const prevMs = toMsNormalized(updated.last_message_time || 0);
         const isNewer = incomingMs > prevMs;
         const isSame = incomingMs === prevMs;
+        const sameContent = (
+          (typeof d.last_message === 'string' ? d.last_message : '') === (typeof updated.last_message === 'string' ? updated.last_message : '') &&
+          (d.last_message_type || '') === (updated.last_message_type || '') &&
+          (typeof updated.last_message_from_me === 'boolean' ? updated.last_message_from_me : false)
+        );
 
         // Only update preview content/from_me when the incoming event is newer
         if (isNewer) {
@@ -155,11 +160,17 @@ export default function App() {
           if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
           updated.last_message_time = incomingIso;
         } else {
+          const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
           // For same-timestamp updates, only lift delivery status if it improves
           if (isSame && typeof d.last_message_status === 'string' && updated.last_message_from_me) {
             const curr = updated.last_message_status;
             const next = d.last_message_status;
-            const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
+            if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
+          }
+          // If incoming appears older but refers to the same message from me, still allow status upgrades
+          if (!isNewer && !isSame && sameContent && typeof d.last_message_status === 'string') {
+            const curr = updated.last_message_status;
+            const next = d.last_message_status;
             if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
           }
           // Keep the newer timestamp to maintain ordering; do not downgrade preview fields
