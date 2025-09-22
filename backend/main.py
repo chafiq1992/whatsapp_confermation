@@ -2171,6 +2171,36 @@ class MessageProcessor:
                         wa_response = await self.whatsapp_messenger.send_single_catalog_item(
                             user_id, str(retailer_id), caption
                         )
+                        # After interactive is delivered, optionally send bilingual prompt as a reply
+                        if message.get("needs_bilingual_prompt"):
+                            wa_msg_id = None
+                            try:
+                                wa_msg_id = (((wa_response or {}).get("messages") or [{}])[0] or {}).get("id")
+                            except Exception:
+                                wa_msg_id = None
+                            prompt = (
+                                "*Bienvenue chez IRRAKIDS* 👋\n"
+                                "*Merci de nous indiquer :*\n"
+                                "• Taille souhaitée 📏\n"
+                                "• Âge de l’enfant 🎂\n"
+                                "• Garçon ou fille 👦👧\n"
+                                "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                "\n"
+                                "*مرحبًا بك في IRRAKIDS* 👋\n"
+                                "*يرجى تزويدنا بـ:*\n"
+                                "• المقاس المطلوب 📏\n"
+                                "• عمر الطفل 🎂\n"
+                                "• هل هو ولد أم بنت 👦👧\n"
+                                "*سنتاكد من تواجد القياس ونرسل لك المنتجات المناسبة لقياس طفلك*"
+                            )
+                            await self.process_outgoing_message({
+                                "user_id": user_id,
+                                "type": "text",
+                                "from_me": True,
+                                "message": prompt,
+                                **({"reply_to": wa_msg_id} if wa_msg_id else {}),
+                                "timestamp": datetime.utcnow().isoformat(),
+                            })
                     except Exception as _exc:
                         # Fallback: try to send first image from cached catalog for visibility
                         try:
@@ -2212,11 +2242,69 @@ class MessageProcessor:
                             wa_response = await self.whatsapp_messenger.send_media_message(
                                 user_id, "image", img_url, caption or (price and f"{price} MAD" or "")
                             )
+                            if message.get("needs_bilingual_prompt"):
+                                wa_msg_id = None
+                                try:
+                                    wa_msg_id = (((wa_response or {}).get("messages") or [{}])[0] or {}).get("id")
+                                except Exception:
+                                    wa_msg_id = None
+                                prompt = (
+                                    "*Bienvenue chez IRRAKIDS* 👋\n"
+                                    "*Merci de nous indiquer :*\n"
+                                    "• Taille souhaitée 📏\n"
+                                    "• Âge de l’enfant 🎂\n"
+                                    "• Garçon ou fille 👦👧\n"
+                                    "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                    "\n"
+                                    "*مرحبًا بك في IRRAKIDS* 👋\n"
+                                    "*يرجى تزويدنا بـ:*\n"
+                                    "• المقاس المطلوب 📏\n"
+                                    "• عمر الطفل 🎂\n"
+                                    "• هل هو ولد أم بنت 👦👧\n"
+                                    "*سنتاكد من تواجد القياس ونرسل لك المنتجات المناسبة لقياس طفلك*"
+                                )
+                                await self.process_outgoing_message({
+                                    "user_id": user_id,
+                                    "type": "text",
+                                    "from_me": True,
+                                    "message": prompt,
+                                    **({"reply_to": wa_msg_id} if wa_msg_id else {}),
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                })
                         else:
                             # Final fallback to text
                             wa_response = await self.whatsapp_messenger.send_text_message(
                                 user_id, caption or str(retailer_id)
                             )
+                            if message.get("needs_bilingual_prompt"):
+                                wa_msg_id = None
+                                try:
+                                    wa_msg_id = (((wa_response or {}).get("messages") or [{}])[0] or {}).get("id")
+                                except Exception:
+                                    wa_msg_id = None
+                                prompt = (
+                                    "*Bienvenue chez IRRAKIDS* 👋\n"
+                                    "*Merci de nous indiquer :*\n"
+                                    "• Taille souhaitée 📏\n"
+                                    "• Âge de l’enfant 🎂\n"
+                                    "• Garçon ou fille 👦👧\n"
+                                    "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                    "\n"
+                                    "*مرحبًا بك في IRRAKIDS* 👋\n"
+                                    "*يرجى تزويدنا بـ:*\n"
+                                    "• المقاس المطلوب 📏\n"
+                                    "• عمر الطفل 🎂\n"
+                                    "• هل هو ولد أم بنت 👦👧\n"
+                                    "*سنتاكد من تواجد القياس ونرسل لك المنتجات المناسبة لقياس طفلك*"
+                                )
+                                await self.process_outgoing_message({
+                                    "user_id": user_id,
+                                    "type": "text",
+                                    "from_me": True,
+                                    "message": prompt,
+                                    **({"reply_to": wa_msg_id} if wa_msg_id else {}),
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                })
                 elif message["type"] in ("buttons", "interactive_buttons"):
                     body_text = message.get("message") or ""
                     buttons = message.get("buttons") or []
@@ -3181,7 +3269,7 @@ class MessageProcessor:
                 matched = None
 
             if matched:
-                # Send interactive catalog item
+                # Send interactive catalog item; mark to append bilingual prompt after delivery
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "catalog_item",
@@ -3192,27 +3280,7 @@ class MessageProcessor:
                     "retailer_id": str(matched.get("retailer_id")),
                     "caption": (resolved_variant or {}).get("title") or matched.get("name") or "",
                     "timestamp": datetime.utcnow().isoformat(),
-                })
-                # Follow-up bilingual prompt (FR + AR) with sizing/age info
-                await self.process_outgoing_message({
-                    "user_id": user_id,
-                    "type": "text",
-                    "from_me": True,
-                    "message": (
-                        "Bienvenue chez IRRAKIDS 👋\n\n"
-                        "Merci de nous indiquer :\n"
-                        "- Taille souhaitée 📏\n"
-                        "- Âge de l’enfant 🎂\n"
-                        "- Garçon ou fille 👦👧\n\n"
-                        "Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant. 😊\n\n"
-                        "مرحبًا بك في IRRAKIDS 👋\n\n"
-                        "يرجى تزويدنا بـ:\n"
-                        "- المقاس المطلوب 📏\n"
-                        "- عمر الطفل 🎂\n"
-                        "- هل هو ولد أم بنت 👦👧\n\n"
-                        "سنؤكد التوفر ونقترح عليك منتجات مناسبة لطفلك. 😊"
-                    ),
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "needs_bilingual_prompt": True,
                 })
                 try:
                     await self.redis_manager.mark_auto_reply_sent(user_id)
@@ -3235,26 +3303,7 @@ class MessageProcessor:
                     "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
                     "caption": cap,
                     "timestamp": datetime.utcnow().isoformat(),
-                })
-                await self.process_outgoing_message({
-                    "user_id": user_id,
-                    "type": "text",
-                    "from_me": True,
-                    "message": (
-                        "Bienvenue chez IRRAKIDS 👋\n\n"
-                        "Merci de nous indiquer :\n"
-                        "- Taille souhaitée 📏\n"
-                        "- Âge de l’enfant 🎂\n"
-                        "- Garçon ou fille 👦👧\n\n"
-                        "Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant. 😊\n\n"
-                        "مرحبًا بك في IRRAKIDS 👋\n\n"
-                        "يرجى تزويدنا بـ:\n"
-                        "- المقاس المطلوب 📏\n"
-                        "- عمر الطفل 🎂\n"
-                        "- هل هو ولد أم بنت 👦👧\n\n"
-                        "سنؤكد التوفر ونقترح عليك منتجات مناسبة لطفلك. 😊"
-                    ),
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "needs_bilingual_prompt": True,
                 })
                 try:
                     await self.redis_manager.mark_auto_reply_sent(user_id)
