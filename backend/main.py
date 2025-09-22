@@ -158,7 +158,8 @@ except Exception:
     pass
 
 # Feature flags: auto-reply with catalog match
-AUTO_REPLY_CATALOG_MATCH = os.getenv("AUTO_REPLY_CATALOG_MATCH", "0") == "1"
+# Default ON so catalog links/IDs auto-respond for all customers
+AUTO_REPLY_CATALOG_MATCH = os.getenv("AUTO_REPLY_CATALOG_MATCH", "1") == "1"
 try:
     AUTO_REPLY_MIN_SCORE = float(os.getenv("AUTO_REPLY_MIN_SCORE", "0.6"))
 except Exception:
@@ -3120,19 +3121,17 @@ class MessageProcessor:
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
             return
-        # If a whitelist is configured, only auto-reply for those numbers
-        try:
-            if AUTO_REPLY_TEST_NUMBERS:
-                uid_norm = _digits_only(user_id)
-                if uid_norm not in AUTO_REPLY_TEST_NUMBERS:
-                    return
-        except Exception:
-            # On any error, be safe and skip auto-reply
-            return
-        # 24h cooldown per user
+        # Enable for all customers; ignore any old test-number whitelist
+        # (kept variables for backwards compatibility but no gating here)
+        # 24h cooldown per user (bypass when an explicit product ID/URL is present)
         try:
             if await self.redis_manager.was_auto_reply_recent(user_id):
-                return
+                try:
+                    has_explicit_id = bool(self._extract_product_retailer_id(text))
+                except Exception:
+                    has_explicit_id = False
+                if not has_explicit_id:
+                    return
         except Exception:
             pass
         # 0) If the message has no URL and contains no digits, offer quick-reply buttons
@@ -3194,14 +3193,24 @@ class MessageProcessor:
                     "caption": (resolved_variant or {}).get("title") or matched.get("name") or "",
                     "timestamp": datetime.utcnow().isoformat(),
                 })
-                # Follow-up bilingual confirmation (FR + AR)
+                # Follow-up bilingual prompt (FR + AR) with sizing/age info
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "text",
                     "from_me": True,
                     "message": (
-                        "Bienvenue ! Veuillez confirmer la taille et la couleur souhaitées.\n"
-                        "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج."
+                        "Bienvenue chez IRRAKIDS 👋\n\n"
+                        "Merci de nous indiquer :\n"
+                        "- Taille souhaitée 📏\n"
+                        "- Âge de l’enfant 🎂\n"
+                        "- Garçon ou fille 👦👧\n\n"
+                        "Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant. 😊\n\n"
+                        "مرحبًا بك في IRRAKIDS 👋\n\n"
+                        "يرجى تزويدنا بـ:\n"
+                        "- المقاس المطلوب 📏\n"
+                        "- عمر الطفل 🎂\n"
+                        "- هل هو ولد أم بنت 👦👧\n\n"
+                        "سنؤكد التوفر ونقترح عليك منتجات مناسبة لطفلك. 😊"
                     ),
                     "timestamp": datetime.utcnow().isoformat(),
                 })
@@ -3232,8 +3241,18 @@ class MessageProcessor:
                     "type": "text",
                     "from_me": True,
                     "message": (
-                        "Bienvenue ! Veuillez confirmer la taille et la couleur souhaitées.\n"
-                        "أهلًا بك! يرجى تأكيد المقاس واللون المطلوبين لهذا المنتج."
+                        "Bienvenue chez IRRAKIDS 👋\n\n"
+                        "Merci de nous indiquer :\n"
+                        "- Taille souhaitée 📏\n"
+                        "- Âge de l’enfant 🎂\n"
+                        "- Garçon ou fille 👦👧\n\n"
+                        "Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant. 😊\n\n"
+                        "مرحبًا بك في IRRAKIDS 👋\n\n"
+                        "يرجى تزويدنا بـ:\n"
+                        "- المقاس المطلوب 📏\n"
+                        "- عمر الطفل 🎂\n"
+                        "- هل هو ولد أم بنت 👦👧\n\n"
+                        "سنؤكد التوفر ونقترح عليك منتجات مناسبة لطفلك. 😊"
                     ),
                     "timestamp": datetime.utcnow().isoformat(),
                 })
