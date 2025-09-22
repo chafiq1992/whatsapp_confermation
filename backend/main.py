@@ -200,6 +200,10 @@ _vlog(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
 # Feature flags / tunables
 AUDIO_VOICE_ENABLED = (os.getenv("WA_AUDIO_VOICE", "1") or "1").strip() not in ("0", "false", "False")
 
+# Build/version identifiers for frontend refresh banner
+APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
+APP_STARTED_AT = datetime.utcnow().isoformat()
+
 def chunk_list(items: List[str], size: int):
     """Yield successive chunks from a list."""
     for i in range(0, len(items), size):
@@ -4028,6 +4032,18 @@ async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, 
     except Exception as e:
         print(f"Error fetching messages: {e}")
         return []
+
+@app.get("/version")
+async def get_version():
+    try:
+        commit = os.getenv("GIT_COMMIT", "")
+    except Exception:
+        commit = ""
+    return {
+        "build_id": APP_BUILD_ID,
+        "started_at": APP_STARTED_AT,
+        **({"commit": commit} if commit else {}),
+    }
 
 @app.post("/send-media")
 async def send_media(

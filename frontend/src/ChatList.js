@@ -547,7 +547,7 @@ const ConversationRow = memo(function Row({
       onClick={() => onSelect(conv)}
       className={`group flex gap-3 p-4 cursor-pointer transition-colors ${
         selected
-          ? "bg-gray-800 text-white -mr-px rounded-l-xl rounded-r-none"
+          ? "bg-gray-900 text-white -mr-px rounded-l-xl rounded-r-none"
           : "bg-gray-800/60 hover:bg-gray-800 text-white/90 rounded-xl"
       }`}
     >
