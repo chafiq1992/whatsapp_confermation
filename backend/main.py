@@ -197,6 +197,9 @@ _vlog(f"   VERIFY_TOKEN: {VERIFY_TOKEN}")
 _vlog(f"   ACCESS_TOKEN: {ACCESS_TOKEN[:20]}..." if len(ACCESS_TOKEN) > 20 else f"   ACCESS_TOKEN: {ACCESS_TOKEN}")
 _vlog(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
 
+# Feature flags / tunables
+AUDIO_VOICE_ENABLED = (os.getenv("WA_AUDIO_VOICE", "1") or "1").strip() not in ("0", "false", "False")
+
 def chunk_list(items: List[str], size: int):
     """Yield successive chunks from a list."""
     for i in range(0, len(items), size):
@@ -864,7 +867,8 @@ class WhatsAppMessenger:
         # Apply audio-specific flags for PTT/voice notes when using media_id
         if media_type == "audio" and not is_link:
             # WA Cloud voice note hints improve cross-client reliability
-            if audio_voice is None or audio_voice is True:
+            enable_voice = (audio_voice is None or audio_voice is True) and AUDIO_VOICE_ENABLED
+            if enable_voice:
                 media_payload["voice"] = True
 
         payload = {
@@ -2289,6 +2293,9 @@ class MessageProcessor:
 
                         print(f"📤 Uploading media to WhatsApp: {media_path}")
                         media_info = await self._upload_media_to_whatsapp(media_path, message["type"])
+                        if message["type"] == "audio":
+                            # Small settle delay after upload to avoid iOS fetching race
+                            await asyncio.sleep(0.5)
                         if message.get("reply_to"):
                             wa_response = await self.whatsapp_messenger.send_media_message(
                                 user_id,
@@ -2353,6 +2360,8 @@ class MessageProcessor:
                                     print(f"Audio normalization from URL skipped: {_exc}")
 
                             media_info = await self._upload_media_to_whatsapp(str(local_tmp_path), message["type"])
+                            if message["type"] == "audio":
+                                await asyncio.sleep(0.5)
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
                                     user_id,
