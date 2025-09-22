@@ -1354,7 +1354,37 @@ class DatabaseManager:
             return [dict(r) for r in rows][::-1]
 
     async def update_message_status(self, wa_message_id: str, status: str):
-        await self.upsert_message({"wa_message_id": wa_message_id, "status": status})
+        """Persist a status update for a message identified by wa_message_id.
+
+        Returns the temp_id if available so the UI can reconcile optimistic bubbles.
+        """
+        # Look up the owning user and temp_id so we can perform a precise upsert
+        user_id: Optional[str] = None
+        temp_id: Optional[str] = None
+        async with self._conn() as db:
+            try:
+                query = self._convert("SELECT user_id, temp_id, status FROM messages WHERE wa_message_id = ?")
+                params = [wa_message_id]
+                if self.use_postgres:
+                    row = await db.fetchrow(query, *params)
+                else:
+                    cur = await db.execute(query, tuple(params))
+                    row = await cur.fetchone()
+                if row:
+                    user_id = row["user_id"]
+                    temp_id = row["temp_id"]
+                    # Guard against downgrades at DB boundary as well (belt and braces)
+                    current_status = row["status"]
+                    if _STATUS_RANK.get(status, 0) < _STATUS_RANK.get(current_status, 0):
+                        return temp_id
+            except Exception:
+                # If lookup fails, fall back to best-effort upsert without temp_id
+                pass
+
+        if user_id:
+            await self.upsert_message({"user_id": user_id, "wa_message_id": wa_message_id, "status": status})
+        # If we couldn't resolve user_id, do nothing to avoid inserting orphan rows
+        return temp_id
 
     async def get_user_for_message(self, wa_message_id: str) -> str | None:
         async with self._conn() as db:
