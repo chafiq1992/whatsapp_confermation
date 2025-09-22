@@ -693,24 +693,7 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      // Follow-up Arabic warning message about checking the order before payment
-      try {
-        const supportPhone = (process.env.REACT_APP_SUPPORT_PHONE || "").trim();
-        const phoneLine = supportPhone ? `\nللتواصل معنا: ${supportPhone} \uD83D\uDCDE` : "";
-        const warningMsg = [
-          "تنبيه مهم \u26A0\uFE0F",
-          "عند استلام طلبك، يرجى فحص المنتج وتجربته قبل دفع المبلغ للموزع. \uD83D\uDCE6\u2705",
-          "إذا كان المقاس غير مناسب أو وُجدت أي مشكلة في المنتج، يُرجى إرجاع الطلب فورًا مع الموزع، وسنتكفل بإرسال بديل دون أي رسوم إضافية. \uD83D\uDE4F\u2B50",
-          phoneLine,
-          "رضاكم أولويتنا دائمًا مع IRRAKIDS. شكرًا لثقتكم بنا \u2764\uFE0F"
-        ].filter(Boolean).join("\n");
-        await api.post(`${API_BASE}/send-message`, {
-          user_id: activeUser.user_id,
-          message: warningMsg,
-          type: "text",
-          from_me: true,
-        });
-      } catch {}
+      // Follow-up warning will be sent by backend as a reply after delivery
 
       document.body.removeChild(container);
     } catch {

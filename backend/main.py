@@ -2526,6 +2526,28 @@ class MessageProcessor:
             # Save to database with real WhatsApp ID
             await self.db_manager.save_message(message, wa_message_id, "sent")
             
+            # If this is an invoice image (Arabic caption contains 'فاتورتك'), send the warning message as a reply
+            try:
+                if (message.get("type") == "image"):
+                    cap = str(message.get("caption") or "")
+                    if "فاتورتك" in cap:
+                        warning_msg = (
+                            "تنبيه مهم ⚠️\n"
+                            "عند استلام طلبك، يرجى فحص المنتج وتجربته قبل دفع المبلغ للموزع. 📦✅\n"
+                            "إذا كان المقاس غير مناسب أو وُجدت أي مشكلة في المنتج، يُرجى إرجاع الطلب فورًا مع الموزع، وسنتكفل بإرسال بديل دون أي رسوم إضافية. 🙏⭐\n"
+                            "رضاكم أولويتنا دائمًا مع IRRAKIDS. شكرًا لثقتكم بنا ❤️"
+                        )
+                        await self.process_outgoing_message({
+                            "user_id": user_id,
+                            "type": "text",
+                            "from_me": True,
+                            "message": warning_msg,
+                            "reply_to": wa_message_id,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        })
+            except Exception as _exc:
+                print(f"invoice warning follow-up failed: {_exc}")
+            
             _vlog(f"✅ Message sent successfully: {wa_message_id}")
             
         except Exception as e:
