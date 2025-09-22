@@ -102,7 +102,12 @@ export default function App() {
         if (d.last_message_type) updated.last_message_type = d.last_message_type;
         if (typeof d.last_message === 'string') updated.last_message = d.last_message;
         if (typeof d.last_message_from_me === 'boolean') updated.last_message_from_me = d.last_message_from_me;
-        if (typeof d.last_message_status === 'string') updated.last_message_status = d.last_message_status;
+        if (typeof d.last_message_status === 'string') {
+          const curr = updated.last_message_status;
+          const next = d.last_message_status;
+          const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
+          if (!curr || rank(next) >= rank(curr)) updated.last_message_status = next;
+        }
         const prevMs = toMsNormalized(updated.last_message_time || 0);
         const incomingMs = toMsNormalized(incomingIso);
         const chosenMs = Math.max(prevMs, incomingMs);
@@ -265,7 +270,14 @@ export default function App() {
                   last_message: text,
                   last_message_type: msg.type || current.last_message_type,
                   last_message_from_me: Boolean(msg.from_me),
-                  last_message_status: msg.status || current.last_message_status,
+                  last_message_status: (() => {
+                    const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
+                    const cur = current.last_message_status;
+                    const nxt = msg.status;
+                    if (typeof nxt !== 'string') return cur;
+                    if (!cur) return nxt;
+                    return rank(nxt) >= rank(cur) ? nxt : cur;
+                  })(),
                   // Always treat an incoming message as latest activity for ordering purposes
                   last_message_time: nowIso,
                   unread_count:

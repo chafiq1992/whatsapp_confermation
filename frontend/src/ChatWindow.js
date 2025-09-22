@@ -15,6 +15,9 @@ const WS_BASE =
   process.env.REACT_APP_WS_URL ||
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
+// Ensure UI never downgrades delivery state if events arrive out of order
+const STATUS_RANK = { sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 };
+
 // Small debounce helper to limit rapid calls (e.g., typing indicator)
 function debounce(fn, wait) {
   let t = null;
@@ -351,7 +354,18 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             const idx = prev.findIndex(m => (m.temp_id && m.temp_id === data.data.temp_id) || (m.id && m.id === data.data.id));
             if (idx !== -1) {
               const updated = [...prev];
-              updated[idx] = { ...prev[idx], ...data.data };
+              const incoming = data.data || {};
+              const prevStatus = prev[idx]?.status;
+              const nextStatus = incoming.status;
+              let merged = { ...prev[idx], ...incoming };
+              if (
+                prevStatus &&
+                nextStatus &&
+                (STATUS_RANK[nextStatus] ?? -1) < (STATUS_RANK[prevStatus] ?? -1)
+              ) {
+                merged.status = prevStatus;
+              }
+              updated[idx] = merged;
               return sortByTime(updated);
             }
             return mergeAndDedupe(prev, [data.data]);
@@ -364,7 +378,17 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               const idx = prev.findIndex(m => m.from_me && !m.wa_message_id && (m.status === 'sending' || m.status === 'sent') && m.type === incoming.type);
               if (idx !== -1) {
                 const updated = [...prev];
-                updated[idx] = sortByTime([{ ...updated[idx], ...incoming }])[0];
+                let mergedCandidate = { ...updated[idx], ...incoming };
+                const prevStatus = updated[idx]?.status;
+                const nextStatus = incoming.status;
+                if (
+                  prevStatus &&
+                  nextStatus &&
+                  (STATUS_RANK[nextStatus] ?? -1) < (STATUS_RANK[prevStatus] ?? -1)
+                ) {
+                  mergedCandidate.status = prevStatus;
+                }
+                updated[idx] = sortByTime([mergedCandidate])[0];
                 return sortByTime(updated);
               }
             }
@@ -375,9 +399,23 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             const matchesTemp = data.data.temp_id && msg.temp_id === data.data.temp_id;
             const matchesWa = data.data.wa_message_id && msg.wa_message_id === data.data.wa_message_id;
             if (matchesTemp || matchesWa) {
-              // Merge status and fields, but keep existing id to preserve stable React keys
-              const merged = { ...msg, ...data.data, id: msg.id };
-              return merged;
+              const incoming = data.data || {};
+              const incomingStatus = incoming.status;
+              const currentStatus = msg.status;
+              // Keep existing id to preserve stable React keys
+              let next = { ...msg, id: msg.id };
+              // If incoming is a downgrade, merge all but status
+              if (
+                incomingStatus &&
+                currentStatus &&
+                (STATUS_RANK[incomingStatus] ?? -1) < (STATUS_RANK[currentStatus] ?? -1)
+              ) {
+                const { status, ...rest } = incoming;
+                next = { ...next, ...rest };
+              } else {
+                next = { ...next, ...incoming };
+              }
+              return next;
             }
             return msg;
           })));
@@ -705,7 +743,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const first = Array.isArray(res?.data?.messages) ? res.data.messages[0] : null;
       const serverUrl = (first && (first.media_url || first.result?.url)) || res?.data?.url || res?.data?.file_path;
       const waId = first?.result?.wa_message_id || res?.data?.wa_message_id;
-      setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(waId ? { id: waId } : {}), ...(serverUrl ? { url: serverUrl } : {}) } : m));
+      setMessages(prev => prev.map(m => m.temp_id === temp_id ? (() => {
+        const isDowngrade = m.status && (STATUS_RANK[m.status] ?? -1) > (STATUS_RANK['sent'] ?? -1);
+        const base = { ...m, ...(waId ? { id: waId } : {}), ...(serverUrl ? { url: serverUrl } : {}) };
+        return isDowngrade ? base : { ...base, status: 'sent' };
+      })() : m));
       try { if (optimistic.url && optimistic.url.startsWith('blob:')) URL.revokeObjectURL(optimistic.url); } catch {}
     };
     try {
@@ -1027,7 +1069,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           const first = Array.isArray(response?.data?.messages) ? response.data.messages[0] : null;
           const finalUrl = (first && (first.media_url || first.result?.url)) || response.data?.url || response.data?.file_path || '';
           const oldLocalUrl = imgObj.url;
-          setMessages(prev => prev.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(finalUrl ? { url: finalUrl } : {}) } : m));
+          setMessages(prev => prev.map(m => m.temp_id === temp_id ? (() => {
+            const isDowngrade = m.status && (STATUS_RANK[m.status] ?? -1) > (STATUS_RANK['sent'] ?? -1);
+            const base = { ...m, ...(finalUrl ? { url: finalUrl } : {}) };
+            return isDowngrade ? base : { ...base, status: 'sent' };
+          })() : m));
           // Only revoke the blob URL once we have a durable URL; otherwise keep it alive until WS update arrives
           if (finalUrl) {
             try { if (oldLocalUrl && oldLocalUrl.startsWith('blob:')) URL.revokeObjectURL(oldLocalUrl); } catch {}
@@ -1401,7 +1447,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                       from_me: true,
                       ...(optimistic.reply_to ? { reply_to: optimistic.reply_to } : {})
                     });
-                    setMessages(p => p.map(m => m.temp_id === temp_id ? { ...m, status: 'sent', ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) } : m));
+                    setMessages(p => p.map(m => m.temp_id === temp_id ? (() => {
+                      const isDowngrade = m.status && (STATUS_RANK[m.status] ?? -1) > (STATUS_RANK['sent'] ?? -1);
+                      const base = { ...m, ...(res?.data?.wa_message_id ? { id: res.data.wa_message_id } : {}) };
+                      return isDowngrade ? base : { ...base, status: 'sent' };
+                    })() : m));
                   } catch (err) {
                     setMessages(p => p.map(m => m.temp_id === temp_id ? { ...m, status: 'failed' } : m));
                   }
