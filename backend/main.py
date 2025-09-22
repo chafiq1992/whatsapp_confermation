@@ -211,7 +211,10 @@ async def convert_webm_to_ogg(src_path: Path) -> Path:
     Returns the new path (same stem, .ogg extension).
     Requires ffmpeg to be installed on the server / Docker image.
     """
-    dst_path = src_path.with_suffix(".ogg")
+    # Always write to a new .ogg file to avoid in-place overwrite
+    # Keep human-friendly stem when possible and add a short suffix
+    safe_stem = src_path.stem or "audio"
+    dst_path = src_path.with_name(f"{safe_stem}_opus48_{uuid.uuid4().hex[:6]}.ogg")
     cmd = [
         "ffmpeg", "-y",
         "-i", str(src_path),
@@ -2255,13 +2258,17 @@ class MessageProcessor:
                         # Background upload to GCS to produce public URL for UI; don't block WA send
                         gcs_url: Optional[str] = None
                         try:
-                            # Normalize audio to OGG if needed
-                            if message["type"] == "audio" and not str(media_path).lower().endswith(".ogg"):
+                            # Always normalize audio to OGG/Opus 48k mono
+                            if message["type"] == "audio":
                                 try:
                                     ogg_path = await convert_webm_to_ogg(Path(media_path))
+                                    try:
+                                        Path(media_path).unlink(missing_ok=True)
+                                    except Exception:
+                                        pass
                                     media_path = str(ogg_path)
                                 except Exception as _exc:
-                                    print(f"Audio normalization skipped: {_exc}")
+                                    print(f"Audio normalization failed/skipped: {_exc}")
                             gcs_url = await upload_file_to_gcs(str(media_path))
                             if gcs_url:
                                 # Mutate in-memory message so final DB save includes correct URL
@@ -2347,8 +2354,8 @@ class MessageProcessor:
                                 async with aiofiles.open(local_tmp_path, "wb") as f:
                                     await f.write(resp.content)
 
-                            # Normalize audio → OGG if needed
-                            if message["type"] == "audio" and not str(local_tmp_path).lower().endswith(".ogg"):
+                            # Always normalize audio → OGG/Opus 48k mono
+                            if message["type"] == "audio":
                                 try:
                                     ogg_path = await convert_webm_to_ogg(local_tmp_path)
                                     try:
@@ -2357,7 +2364,7 @@ class MessageProcessor:
                                         pass
                                     local_tmp_path = ogg_path
                                 except Exception as _exc:
-                                    print(f"Audio normalization from URL skipped: {_exc}")
+                                    print(f"Audio normalization from URL failed/skipped: {_exc}")
 
                             media_info = await self._upload_media_to_whatsapp(str(local_tmp_path), message["type"])
                             if message["type"] == "audio":
@@ -2498,7 +2505,8 @@ class MessageProcessor:
             files = {
                 'file': (path.name, file_content, mime_type),
                 'messaging_product': (None, 'whatsapp'),
-                'type': (None, mtype),
+                # Graph expects concrete MIME here (e.g., audio/ogg), not generic 'audio'
+                'type': (None, mime_type),
             }
             headers = {"Authorization": f"Bearer {self.whatsapp_messenger.access_token}"}
 
@@ -4082,11 +4090,14 @@ async def send_media(
                     # If probing fails, continue – conversion will enforce mono
                     pass
 
-            # ---------- AUDIO-ONLY: convert WebM → OGG ----------
-            if media_type == "audio" and file_extension.lower() != ".ogg":
+            # ---------- AUDIO: always re-encode to OGG/Opus 48k mono ----------
+            if media_type == "audio":
                 try:
                     ogg_path = await convert_webm_to_ogg(file_path)
-                    file_path.unlink(missing_ok=True)  # delete original WebM
+                    try:
+                        file_path.unlink(missing_ok=True)  # delete original
+                    except Exception:
+                        pass
                     file_path = ogg_path
                     filename = ogg_path.name
                 except Exception as exc:
@@ -4184,6 +4195,18 @@ async def send_media_async(
                     raise
                 except Exception:
                     pass
+
+            # ---------- AUDIO: always re-encode to OGG/Opus 48k mono ----------
+            if media_type == "audio":
+                try:
+                    ogg_path = await convert_webm_to_ogg(file_path)
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    file_path = ogg_path
+                except Exception as exc:
+                    raise HTTPException(status_code=500, detail=f"Audio conversion failed: {exc}")
 
             optimistic_payload = {
                 "user_id": user_id,
