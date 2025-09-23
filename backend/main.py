@@ -56,7 +56,7 @@ MEDIA_DIR.mkdir(exist_ok=True)
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_URL = os.getenv("REDIS_URL", "")
 DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 # Anything that **must not** be baked in the image (tokens, IDs …) is
@@ -1033,14 +1033,18 @@ class DatabaseManager:
     # ── basic connection helper ──
     @asynccontextmanager
     async def _conn(self):
+        # Try Postgres first, but robustly fall back to SQLite if no pool
         if self.use_postgres:
             pool = await self._get_pool()
-            async with pool.acquire() as conn:
-                yield conn
-        else:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                yield db
+            if pool:
+                async with pool.acquire() as conn:
+                    yield conn
+                return
+            # Pool unavailable → switch to SQLite for this session
+            self.use_postgres = False
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            yield db
 
     # ── schema ──
     async def init_db(self):
@@ -3498,7 +3502,9 @@ async def no_cache_html(request: StarletteRequest, call_next):
 async def startup():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     await db_manager.init_db()
-    await redis_manager.connect()
+    # Connect to Redis only if configured
+    if REDIS_URL:
+        await redis_manager.connect()
     # Attach Redis manager to connection manager for WS pub/sub
     connection_manager.redis_manager = redis_manager
     if ENABLE_WS_PUBSUB and redis_manager.redis_client:
