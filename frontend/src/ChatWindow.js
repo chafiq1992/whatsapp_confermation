@@ -1466,6 +1466,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
                       type: 'text',
                       message: prev,
                       from_me: true,
+                      agent: currentAgent || undefined,
                       ...(optimistic.reply_to ? { reply_to: optimistic.reply_to } : {})
                     });
                     setMessages(p => p.map(m => m.temp_id === temp_id ? (() => {
@@ -1550,7 +1551,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               } catch {}
             } else {
               // HTTP fallback: pass the best available message value (URL for media)
-              api.post(`${API_BASE}/send-message`, { user_id: target, message: payload.message, type: payload.type || 'text' });
+              api.post(`${API_BASE}/send-message`, { user_id: target, message: payload.message, type: payload.type || 'text', agent: currentAgent || undefined });
               // Fallback preview
               try {
                 const ts = new Date().toISOString();

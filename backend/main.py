@@ -982,6 +982,8 @@ class DatabaseManager:
             "product_retailer_id",
             "retailer_id",
             "product_id",
+            # agent attribution
+            "agent_username",
         }
 
     async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
@@ -1123,6 +1125,18 @@ class DatabaseManager:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
+                -- Orders created attribution (per agent)
+                CREATE TABLE IF NOT EXISTS orders_created (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id        TEXT,
+                    user_id         TEXT,
+                    agent_username  TEXT,
+                    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_orders_created_agent_time
+                    ON orders_created (agent_username, created_at);
+
                 -- Key/value settings store (JSON-encoded values)
                 CREATE TABLE IF NOT EXISTS settings (
                     key   TEXT PRIMARY KEY,
@@ -1161,6 +1175,8 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "product_id", "TEXT")
             # Ensure server-side timestamp column exists
             await self._add_column_if_missing(db, "messages", "server_ts", "TEXT")
+            # Ensure agent attribution column exists
+            await self._add_column_if_missing(db, "messages", "agent_username", "TEXT")
             # Add index on server_ts for ordering by receive time
             if self.use_postgres:
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_server_ts ON messages (user_id, server_ts)")
@@ -1851,6 +1867,136 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    # ----- Agent analytics helpers -----
+    async def log_order_created(self, order_id: str, user_id: Optional[str], agent_username: Optional[str]):
+        async with self._conn() as db:
+            query = self._convert(
+                """
+                INSERT INTO orders_created (order_id, user_id, agent_username, created_at)
+                VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+                """
+            )
+            # created_at left None for default
+            params = [order_id, user_id, agent_username, None]
+            if self.use_postgres:
+                await db.execute(query, *params)
+            else:
+                await db.execute(query, tuple(params))
+                await db.commit()
+
+    async def get_agent_analytics(self, agent_username: str, start: Optional[str] = None, end: Optional[str] = None) -> dict:
+        # Default window: last 30 days
+        end_iso = end or datetime.utcnow().isoformat()
+        start_iso = start or (datetime.utcnow() - timedelta(days=30)).isoformat()
+        async with self._conn() as db:
+            # messages sent by this agent
+            q_msg = self._convert(
+                """
+                SELECT COUNT(*) AS c
+                FROM messages
+                WHERE from_me = 1 AND agent_username = ?
+                  AND COALESCE(server_ts, timestamp) >= ?
+                  AND COALESCE(server_ts, timestamp) <= ?
+                """
+            )
+            params = [agent_username, start_iso, end_iso]
+            if self.use_postgres:
+                row = await db.fetchrow(q_msg, *params)
+                messages_sent = (row[0] if row else 0) or 0
+            else:
+                cur = await db.execute(q_msg, tuple(params))
+                row = await cur.fetchone()
+                messages_sent = (row[0] if row else 0) or 0
+
+            # orders created by this agent
+            q_order = self._convert(
+                """
+                SELECT COUNT(*) AS c
+                FROM orders_created
+                WHERE agent_username = ?
+                  AND created_at >= ? AND created_at <= ?
+                """
+            )
+            if self.use_postgres:
+                row = await db.fetchrow(q_order, *params)
+                orders_created = (row[0] if row else 0) or 0
+            else:
+                cur = await db.execute(q_order, tuple(params))
+                row = await cur.fetchone()
+                orders_created = (row[0] if row else 0) or 0
+
+            # average response time in seconds (to previous inbound)
+            if self.use_postgres:
+                q_avg = self._convert(
+                    """
+                    SELECT AVG(
+                        EXTRACT(EPOCH FROM CAST(COALESCE(m.server_ts, m.timestamp) AS TIMESTAMP)) -
+                        EXTRACT(EPOCH FROM CAST((
+                            SELECT COALESCE(mi.server_ts, mi.timestamp)
+                            FROM messages mi
+                            WHERE mi.user_id = m.user_id AND mi.from_me = 0
+                                  AND COALESCE(mi.server_ts, mi.timestamp) <= COALESCE(m.server_ts, m.timestamp)
+                            ORDER BY COALESCE(mi.server_ts, mi.timestamp) DESC
+                            LIMIT 1
+                        ) AS TIMESTAMP))
+                    ) AS avg_sec
+                    FROM messages m
+                    WHERE m.from_me = 1 AND m.agent_username = ?
+                      AND COALESCE(m.server_ts, m.timestamp) >= ?
+                      AND COALESCE(m.server_ts, m.timestamp) <= ?
+                    """
+                )
+            else:
+                q_avg = self._convert(
+                    """
+                    SELECT AVG(
+                        strftime('%s', COALESCE(m.server_ts, m.timestamp)) -
+                        strftime('%s', (
+                            SELECT COALESCE(mi.server_ts, mi.timestamp)
+                            FROM messages mi
+                            WHERE mi.user_id = m.user_id AND mi.from_me = 0
+                                  AND COALESCE(mi.server_ts, mi.timestamp) <= COALESCE(m.server_ts, m.timestamp)
+                            ORDER BY COALESCE(mi.server_ts, mi.timestamp) DESC
+                            LIMIT 1
+                        ))
+                    ) AS avg_sec
+                    FROM messages m
+                    WHERE m.from_me = 1 AND m.agent_username = ?
+                      AND COALESCE(m.server_ts, m.timestamp) >= ?
+                      AND COALESCE(m.server_ts, m.timestamp) <= ?
+                    """
+                )
+            if self.use_postgres:
+                row = await db.fetchrow(q_avg, *params)
+                avg_response_seconds = float(row[0]) if row and row[0] is not None else None
+            else:
+                cur = await db.execute(q_avg, tuple(params))
+                row = await cur.fetchone()
+                avg_response_seconds = float(row[0]) if row and row[0] is not None else None
+
+            return {
+                "agent": agent_username,
+                "start": start_iso,
+                "end": end_iso,
+                "messages_sent": int(messages_sent),
+                "orders_created": int(orders_created),
+                **({"avg_response_seconds": avg_response_seconds} if avg_response_seconds is not None else {}),
+            }
+
+    async def get_all_agents_analytics(self, start: Optional[str] = None, end: Optional[str] = None) -> List[dict]:
+        agents = await self.list_agents()
+        results: List[dict] = []
+        for a in agents:
+            username = a.get("username")
+            if not username:
+                continue
+            stats = await self.get_agent_analytics(username, start, end)
+            # add agent name if present
+            if a.get("name"):
+                stats["name"] = a.get("name")
+            results.append(stats)
+        return results
+
 # Message Processor with Complete Optimistic UI
 class MessageProcessor:
     def __init__(self, connection_manager: ConnectionManager, redis_manager: RedisManager, db_manager: DatabaseManager):
@@ -1909,6 +2055,12 @@ class MessageProcessor:
             # buttons passthrough for interactive messages
             "buttons": message_data.get("buttons"),
         }
+        # Attach agent attribution if present
+        agent_username = message_data.get("agent_username")
+        if agent_username:
+            optimistic_message["agent_username"] = agent_username
+            # Also include a generic 'agent' alias for UI compatibility
+            optimistic_message["agent"] = agent_username
         
         # For media messages, add URL field
         if message_type in ["image", "audio", "video"]:
@@ -3670,7 +3822,13 @@ async def _optional_rate_limit_media(request: _LimiterRequest, response: _Limite
 @app.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """WebSocket endpoint for real-time communication"""
-    await connection_manager.connect(websocket, user_id)
+    # Capture agent identity from query string if provided
+    agent_username = None
+    try:
+        agent_username = websocket.query_params.get("agent")  # type: ignore[attr-defined]
+    except Exception:
+        agent_username = None
+    await connection_manager.connect(websocket, user_id, client_info={"agent": agent_username} if agent_username else None)
     if user_id == "admin":
         await db_manager.upsert_user(user_id, is_admin=1)
     
@@ -3718,6 +3876,14 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
     if message_type == "send_message":
         message_data = data.get("data", {})
         message_data["user_id"] = user_id
+        # Attach agent username from connection metadata if available
+        try:
+            meta = connection_manager.connection_metadata.get(websocket) or {}
+            agent_username = ((meta.get("client_info") or {}) or {}).get("agent")
+            if agent_username and not message_data.get("agent_username"):
+                message_data["agent_username"] = agent_username
+        except Exception:
+            pass
         # Enforce WS backpressure: token bucket per agent
         is_media = str(message_data.get("type", "text")) in ("image", "audio", "video", "document")
         if not connection_manager._consume_ws_token(user_id, is_media=is_media):
@@ -3910,6 +4076,9 @@ async def send_message_endpoint(
             "from_me": from_me,
             "timestamp": datetime.utcnow().isoformat()
         }
+        agent_username = request.get("agent") or request.get("agent_username")
+        if agent_username:
+            message_data["agent_username"] = agent_username
         
         # Process the message
         result = await message_processor.process_outgoing_message(message_data)
@@ -4108,6 +4277,16 @@ async def list_archive():
     """List archived (paid) orders."""
     return await db_manager.get_archived_orders()
 
+@app.post("/orders/created/log")
+async def log_order_created(payload: dict = Body(...)):
+    order_id = (payload.get("order_id") or "").strip()
+    user_id = (payload.get("user_id") or None)
+    agent = (payload.get("agent") or payload.get("agent_username") or None)
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+    await db_manager.log_order_created(order_id=order_id, user_id=user_id, agent_username=agent)
+    return {"ok": True}
+
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):
     """Cursor-friendly fetch: use since/before OR legacy offset.
@@ -4143,6 +4322,15 @@ async def get_version():
         "started_at": APP_STARTED_AT,
         **({"commit": commit} if commit else {}),
     }
+
+# ----- Agent analytics -----
+@app.get("/analytics/agents")
+async def get_agents_analytics(start: Optional[str] = None, end: Optional[str] = None):
+    return await db_manager.get_all_agents_analytics(start=start, end=end)
+
+@app.get("/analytics/agents/{username}")
+async def get_agent_analytics(username: str, start: Optional[str] = None, end: Optional[str] = None):
+    return await db_manager.get_agent_analytics(agent_username=username, start=start, end=end)
 
 @app.post("/send-media")
 async def send_media(

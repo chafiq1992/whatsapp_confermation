@@ -72,7 +72,7 @@ function fireConfettiBurst() {
   } catch {}
 }
 
-export default function ShopifyIntegrationsPanel({ activeUser }) {
+export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
   const API_BASE = process.env.REACT_APP_API_BASE || "";
 
   const [customer, setCustomer] = useState(null);
@@ -814,6 +814,17 @@ export default function ShopifyIntegrationsPanel({ activeUser }) {
       fireConfettiBurst();
       // Generate the label and send it as image to the customer (best-effort)
       await generateAndSendOrderLabel(res?.data);
+      // Log order creation for agent analytics (best-effort)
+      try {
+        const orderId = (res?.data?.order_id || res?.data?.draft_order_id || "").toString();
+        if (orderId) {
+          await api.post(`${API_BASE}/orders/created/log`, {
+            order_id: orderId,
+            user_id: activeUser?.user_id || undefined,
+            agent: currentAgent || undefined,
+          });
+        }
+      } catch {}
     } catch (e) {
       setErrorMsg("Error creating order.");
     } finally {

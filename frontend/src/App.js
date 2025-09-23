@@ -12,6 +12,7 @@ import GlobalAudioBar from './GlobalAudioBar';
 // Lazy load heavy panels (must be declared after all import declarations)
 const AdminDashboard = React.lazy(() => import('./AdminDashboard'));
 const ShopifyIntegrationsPanel = React.lazy(() => import('./ShopifyIntegrationsPanel'));
+const Login = React.lazy(() => import('./Login'));
 
 // Read API base from env for production/dev compatibility
 // Default to relative paths if not provided
@@ -46,6 +47,8 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const activeUserRef = useRef(activeUser);
+
+  const isLoginPath = typeof window !== 'undefined' && window.location && window.location.pathname === '/login';
 
   // WebSocket for chat and a separate one for admin updates
   const wsRef = useRef(null);
@@ -244,6 +247,16 @@ export default function App() {
     return () => window.removeEventListener('hashchange', applyFromHash);
   }, []);
 
+  // Hydrate currentAgent from localStorage if not set via hash
+  useEffect(() => {
+    try {
+      if (!currentAgent) {
+        const saved = localStorage.getItem('agent_username');
+        if (saved) setCurrentAgent(saved);
+      }
+    } catch {}
+  }, []);
+
   // Open a persistent WebSocket for admin notifications (with reconnection)
   useEffect(() => {
     let retry = 0;
@@ -358,7 +371,8 @@ export default function App() {
       `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
 
     const connectUser = () => {
-      const ws = new WebSocket(`${wsBase}${activeUserRef.current?.user_id}`);
+      const agentQS = currentAgent ? `?agent=${encodeURIComponent(currentAgent)}` : '';
+      const ws = new WebSocket(`${wsBase}${activeUserRef.current?.user_id}${agentQS}`);
       wsRef.current = ws;
       ws.addEventListener('open', () => {
         retry = 0;
@@ -388,6 +402,17 @@ export default function App() {
       setActiveUser(prev => prev ? { ...prev, tags } : prev);
     }
   };
+
+  if (isLoginPath) {
+    return (
+      <Suspense fallback={<div className="min-h-screen w-full flex items-center justify-center bg-gray-900 text-white">Loading…</div>}>
+        <Login onSuccess={(user) => {
+          try { localStorage.setItem('agent_username', user || ''); } catch {}
+          window.location.replace(`/#agent=${encodeURIComponent(user || '')}`);
+        }} />
+      </Suspense>
+    );
+  }
 
   return (
     <AudioProvider>
@@ -437,7 +462,7 @@ export default function App() {
       {/* RIGHT: Shopify "contact info" panel, responsive (hidden on small/medium) */}
       <div className="hidden lg:block lg:w-80 lg:min-w-[18rem] lg:flex-shrink-0 border-l border-gray-700 bg-gray-900 overflow-y-auto">
         <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading Shopify panel…</div>}>
-          <ShopifyIntegrationsPanel activeUser={activeUser} />
+          <ShopifyIntegrationsPanel activeUser={activeUser} currentAgent={currentAgent} />
         </Suspense>
       </div>
       {showAdmin && (
