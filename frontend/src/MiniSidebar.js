@@ -11,6 +11,7 @@ export default function MiniSidebar({
 	onOpenSettings,
 	onOpenAutomation,
   currentAgent = '',
+  isAdmin = false,
 }) {
 	const [showDropdown, setShowDropdown] = useState(false);
 	const [agents, setAgents] = useState([]);
@@ -130,6 +131,7 @@ export default function MiniSidebar({
 
 			{/* Lower section */}
 			<div className="flex flex-col items-center gap-3">
+				{isAdmin && (
 				<button
 					type="button"
 					title="Automation"
@@ -138,6 +140,7 @@ export default function MiniSidebar({
 				>
 					<FaRobot />
 				</button>
+				)}
 				<button
 					type="button"
 					title="Settings"

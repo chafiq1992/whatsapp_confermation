@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import api from './api';
 const AnalyticsPanel = React.lazy(() => import('./AnalyticsPanel'));
 
-export default function AdminDashboard({ onClose }) {
+export default function AdminDashboard({ onClose, isAdmin = false, currentAgent = '' }) {
   const [agents, setAgents] = useState([]);
   const [form, setForm] = useState({ username: '', name: '', password: '', is_admin: false });
   const [loading, setLoading] = useState(false);
   const [tagOptions, setTagOptions] = useState([]);
   const [savingTags, setSavingTags] = useState(false);
-  const [tab, setTab] = useState('agents'); // 'agents' | 'tags' | 'analytics'
+  const [tab, setTab] = useState(isAdmin ? 'agents' : 'profile'); // 'agents' | 'tags' | 'analytics' | 'profile'
+  const [pw, setPw] = useState({ old: '', new1: '', new2: '' });
+  const [pwMsg, setPwMsg] = useState('');
 
   const loadAgents = async () => {
     try {
@@ -69,17 +71,24 @@ export default function AdminDashboard({ onClose }) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="w-[720px] max-w-[90vw] bg-gray-900 border border-gray-700 rounded-lg p-4" onClick={(e)=>e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Admin Dashboard</h2>
+          <h2 className="text-lg font-semibold">{isAdmin ? 'Admin Dashboard' : 'Agent Settings'}</h2>
           <div className="flex items-center gap-2">
-            <button className={`px-3 py-1 rounded ${tab==='agents'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('agents')}>Agents</button>
+            {!isAdmin && (
+              <button className={`px-3 py-1 rounded ${tab==='profile'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('profile')}>My account</button>
+            )}
             <button className={`px-3 py-1 rounded ${tab==='tags'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('tags')}>Tags</button>
-            <button className={`px-3 py-1 rounded ${tab==='analytics'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('analytics')}>Analytics</button>
-            <button className="px-3 py-1 rounded bg-gray-800 text-gray-200" onClick={()=>{ window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}>Automation</button>
+            {isAdmin && (
+              <>
+                <button className={`px-3 py-1 rounded ${tab==='agents'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('agents')}>Agents</button>
+                <button className={`px-3 py-1 rounded ${tab==='analytics'?'bg-blue-600 text-white':'bg-gray-800 text-gray-300'}`} onClick={()=>setTab('analytics')}>Analytics</button>
+                <button className="px-3 py-1 rounded bg-gray-800 text-gray-200" onClick={()=>{ window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}>Automation</button>
+              </>
+            )}
             <button className="px-2 py-1 bg-gray-700 rounded" onClick={onClose}>✕</button>
           </div>
         </div>
 
-        {tab === 'agents' && (
+        {isAdmin && tab === 'agents' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="border border-gray-800 rounded p-3">
             <h3 className="font-medium mb-2">Add Agent</h3>
@@ -115,7 +124,7 @@ export default function AdminDashboard({ onClose }) {
         </div>
         )}
 
-        {tab === 'agents' && (
+        {isAdmin && tab === 'agents' && (
         <div className="mt-4 border-t border-gray-800 pt-3">
           <h3 className="font-medium mb-1">Shared Inbox Link</h3>
           <div className="flex gap-2 items-center">
@@ -159,11 +168,41 @@ export default function AdminDashboard({ onClose }) {
         </div>
         )}
 
-        {tab === 'analytics' && (
+        {isAdmin && tab === 'analytics' && (
           <div className="mt-2">
             <React.Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading analytics…</div>}>
               <AnalyticsPanel />
             </React.Suspense>
+          </div>
+        )}
+
+        {!isAdmin && tab === 'profile' && (
+          <div className="mt-2 border border-gray-800 rounded p-3">
+            <div className="font-medium mb-2">My account</div>
+            <div className="text-sm text-gray-300 mb-3">Signed in as <span className="font-semibold">{currentAgent}</span></div>
+            <div className="font-medium mb-1">Change password</div>
+            {pwMsg && <div className="text-sm mb-2 {pwMsg.startsWith('✔') ? 'text-green-400' : 'text-red-400'}">{pwMsg}</div>}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <input className="p-2 bg-gray-800 rounded" type="password" placeholder="Current password" value={pw.old} onChange={(e)=>setPw({ ...pw, old: e.target.value })} />
+              <input className="p-2 bg-gray-800 rounded" type="password" placeholder="New password" value={pw.new1} onChange={(e)=>setPw({ ...pw, new1: e.target.value })} />
+              <input className="p-2 bg-gray-800 rounded" type="password" placeholder="Confirm new password" value={pw.new2} onChange={(e)=>setPw({ ...pw, new2: e.target.value })} />
+            </div>
+            <div className="mt-2">
+              <button
+                className="px-3 py-2 bg-blue-600 rounded"
+                onClick={async ()=>{
+                  setPwMsg('');
+                  if (!pw.old || !pw.new1 || pw.new1 !== pw.new2) { setPwMsg('Passwords do not match'); return; }
+                  try {
+                    await api.post('/auth/change-password', { username: currentAgent, old_password: pw.old, new_password: pw.new1 });
+                    setPw({ old:'', new1:'', new2:'' });
+                    setPwMsg('✔ Password updated');
+                  } catch (e) {
+                    setPwMsg('Failed to update password');
+                  }
+                }}
+              >Update password</button>
+            </div>
           </div>
         )}
       </div>

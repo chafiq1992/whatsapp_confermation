@@ -45,6 +45,7 @@ export default function App() {
   const [showArchive, setShowArchive] = useState(false);
   const [showInternalPanel, setShowInternalPanel] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
   const activeUserRef = useRef(activeUser);
 
@@ -254,7 +255,27 @@ export default function App() {
         const saved = localStorage.getItem('agent_username');
         if (saved) setCurrentAgent(saved);
       }
+      const savedAdmin = localStorage.getItem('agent_is_admin');
+      if (savedAdmin != null) setIsAdmin(savedAdmin === '1' || savedAdmin === 'true');
     } catch {}
+  }, []);
+
+  // Validate session with backend and hydrate admin flag
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get('/auth/me');
+        const u = res?.data?.username;
+        const a = !!res?.data?.is_admin;
+        if (u && !currentAgent) setCurrentAgent(u);
+        setIsAdmin(a);
+        try { localStorage.setItem('agent_is_admin', a ? '1' : '0'); } catch {}
+      } catch (e) {
+        // Not logged in – redirect if not on login
+        if (!isLoginPath) window.location.replace('/login');
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Open a persistent WebSocket for admin notifications (with reconnection)
@@ -427,6 +448,7 @@ export default function App() {
           onOpenSettings={() => setShowAdmin(true)}
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
           currentAgent={currentAgent}
+          isAdmin={isAdmin}
         />
         <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
@@ -468,7 +490,7 @@ export default function App() {
       </div>
       {showAdmin && (
         <Suspense fallback={<div className="p-3 text-sm text-gray-300">Loading settings…</div>}>
-          <AdminDashboard onClose={() => setShowAdmin(false)} />
+          <AdminDashboard onClose={() => setShowAdmin(false)} isAdmin={isAdmin} currentAgent={currentAgent} />
         </Suspense>
       )}
     </div>

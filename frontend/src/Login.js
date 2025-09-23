@@ -19,11 +19,13 @@ export default function Login({ onSuccess }) {
       const res = await api.post('/auth/login', { username, password });
       const token = res?.data?.token;
       const user = res?.data?.username || username;
+      const isAdmin = !!res?.data?.is_admin;
       try {
         if (token) localStorage.setItem('agent_token', token);
         if (user) localStorage.setItem('agent_username', user);
+        localStorage.setItem('agent_is_admin', isAdmin ? '1' : '0');
       } catch {}
-      if (typeof onSuccess === 'function') onSuccess(user, token);
+      if (typeof onSuccess === 'function') onSuccess(user, token, isAdmin);
     } catch (e) {
       setError('Invalid credentials');
     } finally {
