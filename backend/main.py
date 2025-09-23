@@ -60,7 +60,7 @@ MEDIA_DIR.mkdir(exist_ok=True)
 PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "")
-DB_PATH = os.getenv("DB_PATH", "data/whatsapp_messages.db")
+DB_PATH = os.getenv("DB_PATH") or "/tmp/whatsapp_messages.db"
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
@@ -98,6 +98,7 @@ except Exception:
     config = None  # type: ignore
 # Verbose logging flag (minimize noisy logs when off)
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "0") == "1"
+DISABLE_AUTH = os.getenv("DISABLE_AUTH", "0") == "1"
 
 # Backpressure and rate limiting configuration
 WA_MAX_CONCURRENCY = int(os.getenv("WA_MAX_CONCURRENCY", "4"))
@@ -4261,13 +4262,18 @@ SESSIONS: dict[str, dict] = {}
 
 @app.post("/auth/login")
 async def auth_login(payload: dict = Body(...)):
-    username = (payload.get("username") or "").strip()
-    password = payload.get("password") or ""
-    stored = await db_manager.get_agent_password_hash(username)
-    if not stored or not verify_password(password, stored):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    # Resolve admin flag for this agent
-    is_admin = bool(await db_manager.get_agent_is_admin(username))
+    if DISABLE_AUTH:
+        # Bypass credential checks entirely
+        username = (payload.get("username") or "admin").strip() or "admin"
+        is_admin = True
+    else:
+        username = (payload.get("username") or "").strip()
+        password = payload.get("password") or ""
+        stored = await db_manager.get_agent_password_hash(username)
+        if not stored or not verify_password(password, stored):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        # Resolve admin flag for this agent
+        is_admin = bool(await db_manager.get_agent_is_admin(username))
     # Prefer stateless, signed token when secret is configured; else fall back to in-memory session
     if AGENT_AUTH_SECRET:
         token = issue_agent_token(username, is_admin)
@@ -4278,6 +4284,9 @@ async def auth_login(payload: dict = Body(...)):
 
 @app.get("/auth/me")
 async def auth_me(request: Request):
+    if DISABLE_AUTH:
+        # Always allow and treat caller as admin
+        return {"username": "admin", "is_admin": True}
     auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
     if not auth_header:
         raise HTTPException(status_code=401, detail="Unauthorized")
