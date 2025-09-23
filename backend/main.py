@@ -1918,7 +1918,7 @@ class DatabaseManager:
                 """
                 SELECT COUNT(*) AS c
                 FROM messages
-                WHERE from_me = 1 AND agent_username = ?
+                WHERE from_me = 1 AND lower(COALESCE(agent_username,'')) = lower(?)
                   AND COALESCE(server_ts, timestamp) >= ?
                   AND COALESCE(server_ts, timestamp) <= ?
                 """
@@ -1937,7 +1937,7 @@ class DatabaseManager:
                 """
                 SELECT COUNT(*) AS c
                 FROM orders_created
-                WHERE agent_username = ?
+                WHERE lower(COALESCE(agent_username,'')) = lower(?)
                   AND created_at >= ? AND created_at <= ?
                 """
             )
@@ -1965,7 +1965,7 @@ class DatabaseManager:
                         ) AS TIMESTAMP))
                     ) AS avg_sec
                     FROM messages m
-                    WHERE m.from_me = 1 AND m.agent_username = ?
+                    WHERE m.from_me = 1 AND lower(COALESCE(m.agent_username,'')) = lower(?)
                       AND COALESCE(m.server_ts, m.timestamp) >= ?
                       AND COALESCE(m.server_ts, m.timestamp) <= ?
                     """
@@ -1985,7 +1985,7 @@ class DatabaseManager:
                         ))
                     ) AS avg_sec
                     FROM messages m
-                    WHERE m.from_me = 1 AND m.agent_username = ?
+                    WHERE m.from_me = 1 AND lower(COALESCE(m.agent_username,'')) = lower(?)
                       AND COALESCE(m.server_ts, m.timestamp) >= ?
                       AND COALESCE(m.server_ts, m.timestamp) <= ?
                     """
@@ -3602,7 +3602,7 @@ async def _html_login_gate(request: StarletteRequest, call_next):
         if any(p == ap or p.startswith(ap) for ap in allow_prefixes):
             return await call_next(request)
         # Only gate HTML navigation requests
-        accept = ",".join(request.headers.getall("accept", default=[])).lower()
+        accept = str(request.headers.get("accept") or "").lower()
         wants_html = ("text/html" in accept) or p == "/" or (not "." in p)
         if not wants_html:
             return await call_next(request)
@@ -5153,8 +5153,15 @@ async def link_preview(url: str):
         print(f"Link preview error: {exc}")
         raise HTTPException(status_code=502, detail="Preview fetch failed")
 
-# Serve React build after all routes
-app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
+# Serve React build after all routes (optional if present)
+try:
+    frontend_build_dir = Path("frontend") / "build"
+    if frontend_build_dir.exists():
+        app.mount("/", StaticFiles(directory=str(frontend_build_dir), html=True), name="frontend")
+    else:
+        print("⚠️  frontend/build not found. Skipping static mount.")
+except Exception as exc:
+    print(f"⚠️  Skipping frontend mount: {exc}")
 
 
 
