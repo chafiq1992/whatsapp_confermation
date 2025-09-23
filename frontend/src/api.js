@@ -11,9 +11,20 @@ const api = axios.create({
   baseURL: baseUrl
 });
 
-// Avoid stale caches for GETs (especially after cold starts/morning opens)
+// Avoid stale caches for GETs and attach auth token
 api.interceptors.request.use((config) => {
   try {
+    // Attach Authorization header if token exists
+    try {
+      const token = localStorage.getItem('agent_token');
+      if (token) {
+        config.headers = {
+          ...(config.headers || {}),
+          Authorization: `Bearer ${token}`,
+        };
+      }
+    } catch {}
+
     if ((config.method || 'get').toLowerCase() === 'get') {
       // Add cache-buster param
       const ts = Date.now();
