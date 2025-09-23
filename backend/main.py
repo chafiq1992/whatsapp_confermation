@@ -24,6 +24,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import subprocess
 import asyncpg
@@ -4331,6 +4332,70 @@ async def get_agents_analytics(start: Optional[str] = None, end: Optional[str] =
 @app.get("/analytics/agents/{username}")
 async def get_agent_analytics(username: str, start: Optional[str] = None, end: Optional[str] = None):
     return await db_manager.get_agent_analytics(agent_username=username, start=start, end=end)
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return (
+        """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Login</title>
+    <style>
+      body{margin:0;background:#0f172a;color:#e5e7eb;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif}
+      .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+      .card{width:100%;max-width:380px;background:#111827;border:1px solid #334155;border-radius:16px;padding:24px}
+      .title{font-size:20px;font-weight:700;margin-bottom:12px}
+      .label{display:block;color:#cbd5e1;font-size:12px;margin:8px 0 4px}
+      .input{width:100%;padding:10px 12px;border-radius:8px;background:#0b1220;border:1px solid #334155;color:#e5e7eb}
+      .btn{width:100%;padding:10px 12px;border-radius:10px;background:#4f46e5;color:#fff;border:0;font-weight:600;margin-top:16px}
+      .btn:disabled{opacity:.7}
+      .err{color:#f87171;font-size:12px;margin:6px 0}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <form class="card" id="loginForm">
+        <div class="title">Agent Login</div>
+        <div class="err" id="err" style="display:none"></div>
+        <label class="label">Username</label>
+        <input class="input" id="u" autocomplete="username" />
+        <label class="label">Password</label>
+        <input class="input" id="p" type="password" autocomplete="current-password" />
+        <button class="btn" id="btn" type="submit">Sign in</button>
+      </form>
+    </div>
+    <script>
+      const f = document.getElementById('loginForm');
+      const u = document.getElementById('u');
+      const p = document.getElementById('p');
+      const e = document.getElementById('err');
+      const b = document.getElementById('btn');
+      f.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        e.style.display='none';
+        b.disabled = true;
+        try {
+          const res = await fetch('/auth/login', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ username: u.value, password: p.value }) });
+          if (!res.ok) throw new Error('Invalid credentials');
+          const data = await res.json();
+          const name = (data && (data.username || '')) || u.value || '';
+          try { localStorage.setItem('agent_username', name); localStorage.setItem('agent_token', data.token || ''); } catch {}
+          window.location.href = '/#agent=' + encodeURIComponent(name);
+        } catch (err) {
+          e.textContent = 'Invalid credentials';
+          e.style.display = 'block';
+        } finally {
+          b.disabled = false;
+        }
+      });
+    </script>
+  </body>
+ </html>
+        """
+    )
 
 @app.post("/send-media")
 async def send_media(

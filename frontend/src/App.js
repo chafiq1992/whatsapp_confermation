@@ -426,6 +426,7 @@ export default function App() {
           onSelectInternalAgent={(username)=> { setActiveUser({ user_id: `dm:${username}`, name: `@${username}` }); setShowInternalPanel(false); }}
           onOpenSettings={() => setShowAdmin(true)}
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
+          currentAgent={currentAgent}
         />
         <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
