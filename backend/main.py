@@ -4417,6 +4417,8 @@ async def get_agent_analytics(username: str, start: Optional[str] = None, end: O
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
+    if DISABLE_AUTH:
+        return RedirectResponse("/#agent=admin")
     try:
         index_path = ROOT_DIR / "frontend" / "build" / "index.html"
         with open(index_path, "r", encoding="utf-8") as f:
