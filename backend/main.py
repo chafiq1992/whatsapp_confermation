@@ -2,6 +2,8 @@ import asyncio
 import json
 import uuid
 import hashlib
+import hmac
+import base64
 import secrets
 import logging
 from datetime import datetime, timezone, timedelta
@@ -144,6 +146,37 @@ def verify_password(password: str, stored: str) -> bool:
         return h.lower() == dk.hex().lower()
     except Exception:
         return False
+# ── Agent auth token (stateless, HMAC‑signed) ─────────────────────
+AGENT_AUTH_SECRET = os.getenv("AGENT_AUTH_SECRET", "") or os.getenv("SECRET_KEY", "")
+_AGENT_AUTH_SECRET_BYTES = AGENT_AUTH_SECRET.encode("utf-8")
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+def _b64url_decode(data_str: str) -> bytes:
+    padding = "=" * (-len(data_str) % 4)
+    return base64.urlsafe_b64decode((data_str + padding).encode())
+
+def issue_agent_token(username: str, is_admin: bool, ttl_seconds: int = 30 * 24 * 3600) -> str:
+    payload = {"u": username, "a": 1 if is_admin else 0, "exp": int(time.time()) + int(ttl_seconds)}
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode())
+    sig = hmac.new(_AGENT_AUTH_SECRET_BYTES, body.encode(), hashlib.sha256).digest()
+    return f"{body}.{_b64url_encode(sig)}"
+
+def parse_agent_token(token: str) -> Optional[dict]:
+    try:
+        if not token or "." not in token or not _AGENT_AUTH_SECRET_BYTES:
+            return None
+        body, sig = token.split(".", 1)
+        expected = _b64url_encode(hmac.new(_AGENT_AUTH_SECRET_BYTES, body.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(_b64url_decode(body).decode("utf-8"))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return {"username": str(payload.get("u") or ""), "is_admin": bool(payload.get("a"))}
+    except Exception:
+        return None
 # Get environment variables
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
@@ -4235,9 +4268,12 @@ async def auth_login(payload: dict = Body(...)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     # Resolve admin flag for this agent
     is_admin = bool(await db_manager.get_agent_is_admin(username))
-    # Issue a simple in-memory session token (non-persistent)
-    token = uuid.uuid4().hex
-    SESSIONS[token] = {"username": username, "is_admin": is_admin, "created_at": datetime.utcnow().isoformat()}
+    # Prefer stateless, signed token when secret is configured; else fall back to in-memory session
+    if AGENT_AUTH_SECRET:
+        token = issue_agent_token(username, is_admin)
+    else:
+        token = uuid.uuid4().hex
+        SESSIONS[token] = {"username": username, "is_admin": is_admin, "created_at": datetime.utcnow().isoformat()}
     return {"token": token, "username": username, "is_admin": is_admin}
 
 @app.get("/auth/me")
@@ -4247,6 +4283,12 @@ async def auth_me(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     parts = auth_header.split()
     token = parts[-1] if parts else ""
+    if AGENT_AUTH_SECRET:
+        parsed = parse_agent_token(token)
+        if not parsed or not parsed.get("username"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return {"username": parsed["username"], "is_admin": bool(parsed.get("is_admin"))}
+    # Fallback for dev without secret: use in-memory session
     session = SESSIONS.get(token)
     if not session:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -4366,67 +4408,12 @@ async def get_agent_analytics(username: str, start: Optional[str] = None, end: O
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
-    return (
-        """
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent Login</title>
-    <style>
-      body{margin:0;background:#0f172a;color:#e5e7eb;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif}
-      .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-      .card{width:100%;max-width:380px;background:#111827;border:1px solid #334155;border-radius:16px;padding:24px}
-      .title{font-size:20px;font-weight:700;margin-bottom:12px}
-      .label{display:block;color:#cbd5e1;font-size:12px;margin:8px 0 4px}
-      .input{width:100%;padding:10px 12px;border-radius:8px;background:#0b1220;border:1px solid #334155;color:#e5e7eb}
-      .btn{width:100%;padding:10px 12px;border-radius:10px;background:#4f46e5;color:#fff;border:0;font-weight:600;margin-top:16px}
-      .btn:disabled{opacity:.7}
-      .err{color:#f87171;font-size:12px;margin:6px 0}
-    </style>
-  </head>
-  <body>
-    <div class="wrap">
-      <form class="card" id="loginForm">
-        <div class="title">Agent Login</div>
-        <div class="err" id="err" style="display:none"></div>
-        <label class="label">Username</label>
-        <input class="input" id="u" autocomplete="username" />
-        <label class="label">Password</label>
-        <input class="input" id="p" type="password" autocomplete="current-password" />
-        <button class="btn" id="btn" type="submit">Sign in</button>
-      </form>
-    </div>
-    <script>
-      const f = document.getElementById('loginForm');
-      const u = document.getElementById('u');
-      const p = document.getElementById('p');
-      const e = document.getElementById('err');
-      const b = document.getElementById('btn');
-      f.addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        e.style.display='none';
-        b.disabled = true;
-        try {
-          const res = await fetch('/auth/login', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ username: u.value, password: p.value }) });
-          if (!res.ok) throw new Error('Invalid credentials');
-          const data = await res.json();
-          const name = (data && (data.username || '')) || u.value || '';
-          try { localStorage.setItem('agent_username', name); localStorage.setItem('agent_token', data.token || ''); } catch {}
-          window.location.href = '/#agent=' + encodeURIComponent(name);
-        } catch (err) {
-          e.textContent = 'Invalid credentials';
-          e.style.display = 'block';
-        } finally {
-          b.disabled = false;
-        }
-      });
-    </script>
-  </body>
- </html>
-        """
-    )
+    try:
+        index_path = ROOT_DIR / "frontend" / "build" / "index.html"
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except Exception:
+        return RedirectResponse("/")
 
 @app.post("/send-media")
 async def send_media(
