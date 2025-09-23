@@ -27,7 +27,12 @@ from fastapi.responses import PlainTextResponse
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import subprocess
-import asyncpg
+try:
+    import asyncpg  # type: ignore
+    _ASYNC_PG_AVAILABLE = True
+except Exception:
+    asyncpg = None  # type: ignore
+    _ASYNC_PG_AVAILABLE = False
 import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for, _parse_gcs_url, _get_client
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -953,10 +958,10 @@ class DatabaseManager:
     def __init__(self, db_path: str | None = None, db_url: str | None = None):
         self.db_url = db_url or DATABASE_URL
         self.db_path = db_path or DB_PATH
-        self.use_postgres = bool(self.db_url)
+        self.use_postgres = bool(self.db_url and _ASYNC_PG_AVAILABLE)
         if not self.use_postgres:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._pool: Optional[asyncpg.pool.Pool] = None
+        self._pool = None
         # Columns allowed in the messages table (except auto-increment id)
         self.message_columns = {
             "wa_message_id",
@@ -1006,11 +1011,13 @@ class DatabaseManager:
                 await db.commit()
 
     async def _get_pool(self):
+        if not self.use_postgres or not _ASYNC_PG_AVAILABLE:
+            return None
         if not self._pool:
             try:
-                self._pool = await asyncpg.create_pool(self.db_url)
+                # type: ignore[attr-defined]
+                self._pool = await asyncpg.create_pool(self.db_url)  # type: ignore
             except Exception as exc:
-                # Fallback to SQLite if Postgres is unavailable at startup
                 print(f"⚠️ Postgres pool creation failed, falling back to SQLite: {exc}")
                 self.use_postgres = False
                 self._pool = None
