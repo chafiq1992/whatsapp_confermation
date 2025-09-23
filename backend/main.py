@@ -3230,8 +3230,13 @@ class MessageProcessor:
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
             return
-        # Enable for all customers; ignore any old test-number whitelist
-        # (kept variables for backwards compatibility but no gating here)
+        # Restrict to explicit test numbers only
+        try:
+            uid_norm = _digits_only(user_id)
+            if uid_norm not in AUTO_REPLY_TEST_NUMBERS:
+                return
+        except Exception:
+            return
         # 24h cooldown per user (bypass when an explicit product ID/URL is present)
         try:
             if await self.redis_manager.was_auto_reply_recent(user_id):
