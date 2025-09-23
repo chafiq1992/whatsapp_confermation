@@ -15,7 +15,7 @@ import aiosqlite
 import aiofiles
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body, Depends, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks, Request, UploadFile, File, Form, HTTPException, Body, Depends
 from starlette.requests import Request as _LimiterRequest
 from starlette.responses import Response as _LimiterResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,12 +27,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import subprocess
-try:
-    import asyncpg  # type: ignore
-    _ASYNC_PG_AVAILABLE = True
-except Exception:
-    asyncpg = None  # type: ignore
-    _ASYNC_PG_AVAILABLE = False
+import asyncpg
 import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for, _parse_gcs_url, _get_client
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -958,10 +953,10 @@ class DatabaseManager:
     def __init__(self, db_path: str | None = None, db_url: str | None = None):
         self.db_url = db_url or DATABASE_URL
         self.db_path = db_path or DB_PATH
-        self.use_postgres = bool(self.db_url and _ASYNC_PG_AVAILABLE)
+        self.use_postgres = bool(self.db_url)
         if not self.use_postgres:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._pool = None
+        self._pool: Optional[asyncpg.pool.Pool] = None
         # Columns allowed in the messages table (except auto-increment id)
         self.message_columns = {
             "wa_message_id",
@@ -1011,13 +1006,11 @@ class DatabaseManager:
                 await db.commit()
 
     async def _get_pool(self):
-        if not self.use_postgres or not _ASYNC_PG_AVAILABLE:
-            return None
         if not self._pool:
             try:
-                # type: ignore[attr-defined]
-                self._pool = await asyncpg.create_pool(self.db_url)  # type: ignore
+                self._pool = await asyncpg.create_pool(self.db_url)
             except Exception as exc:
+                # Fallback to SQLite if Postgres is unavailable at startup
                 print(f"⚠️ Postgres pool creation failed, falling back to SQLite: {exc}")
                 self.use_postgres = False
                 self._pool = None
@@ -1232,18 +1225,6 @@ class DatabaseManager:
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
 
-    async def get_agent_info(self, username: str) -> Optional[dict]:
-        async with self._conn() as db:
-            query = self._convert("SELECT username, name, is_admin, password_hash FROM agents WHERE username = ?")
-            params = (username,)
-            if self.use_postgres:
-                row = await db.fetchrow(query, *params)
-                return dict(row) if row else None
-            else:
-                cur = await db.execute(query, params)
-                row = await cur.fetchone()
-                return dict(row) if row else None
-
     async def delete_agent(self, username: str):
         async with self._conn() as db:
             query = self._convert("DELETE FROM agents WHERE username = ?")
@@ -1264,16 +1245,6 @@ class DatabaseManager:
                 cur = await db.execute(query, params)
                 row = await cur.fetchone()
             return row[0] if row else None
-
-    async def update_agent_password(self, username: str, new_password_hash: str):
-        async with self._conn() as db:
-            query = self._convert("UPDATE agents SET password_hash = ? WHERE username = ?")
-            params = (new_password_hash, username)
-            if self.use_postgres:
-                await db.execute(query, *params)
-            else:
-                await db.execute(query, params)
-                await db.commit()
 
     # ── Conversation metadata (assignment, tags, avatar) ───────────
     async def get_conversation_meta(self, user_id: str) -> dict:
@@ -1603,7 +1574,6 @@ class DatabaseManager:
             "type": message.get("type", "text"),
             "from_me": 1,
             "status": status,
-            "agent_username": message.get("agent_username"),
             "price": message.get("price"),
             "caption": message.get("caption"),
             "url": message.get("url"),
@@ -1925,7 +1895,7 @@ class DatabaseManager:
                 """
                 SELECT COUNT(*) AS c
                 FROM messages
-                WHERE from_me = 1 AND lower(COALESCE(agent_username,'')) = lower(?)
+                WHERE from_me = 1 AND agent_username = ?
                   AND COALESCE(server_ts, timestamp) >= ?
                   AND COALESCE(server_ts, timestamp) <= ?
                 """
@@ -1944,7 +1914,7 @@ class DatabaseManager:
                 """
                 SELECT COUNT(*) AS c
                 FROM orders_created
-                WHERE lower(COALESCE(agent_username,'')) = lower(?)
+                WHERE agent_username = ?
                   AND created_at >= ? AND created_at <= ?
                 """
             )
@@ -1972,7 +1942,7 @@ class DatabaseManager:
                         ) AS TIMESTAMP))
                     ) AS avg_sec
                     FROM messages m
-                    WHERE m.from_me = 1 AND lower(COALESCE(m.agent_username,'')) = lower(?)
+                    WHERE m.from_me = 1 AND m.agent_username = ?
                       AND COALESCE(m.server_ts, m.timestamp) >= ?
                       AND COALESCE(m.server_ts, m.timestamp) <= ?
                     """
@@ -1992,7 +1962,7 @@ class DatabaseManager:
                         ))
                     ) AS avg_sec
                     FROM messages m
-                    WHERE m.from_me = 1 AND lower(COALESCE(m.agent_username,'')) = lower(?)
+                    WHERE m.from_me = 1 AND m.agent_username = ?
                       AND COALESCE(m.server_ts, m.timestamp) >= ?
                       AND COALESCE(m.server_ts, m.timestamp) <= ?
                     """
@@ -3417,70 +3387,134 @@ class MessageProcessor:
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
             return
-        # 24h cooldown per user (allow bypass only if an explicit product/variant id is present)
+        # Only the QUICK-REPLY BUTTONS are gated by test numbers; catalog matches are for all
+        try:
+            is_test_number = _digits_only(user_id) in AUTO_REPLY_TEST_NUMBERS
+        except Exception:
+            is_test_number = False
+        # 24h cooldown per user (bypass when an explicit product ID/URL is present)
         try:
             if await self.redis_manager.was_auto_reply_recent(user_id):
-                has_explicit_id = bool(self._extract_product_retailer_id(text))
+                try:
+                    has_explicit_id = bool(self._extract_product_retailer_id(text))
+                except Exception:
+                    has_explicit_id = False
                 if not has_explicit_id:
                     return
         except Exception:
             pass
-
-        # Only proceed when an explicit retailer/variant/product id can be extracted from the message
-        retailer_id_raw = self._extract_product_retailer_id(text)
-        if not retailer_id_raw:
-            return
-
-        # Resolve to a valid Shopify variant id if needed
-        resolved_variant_id: Optional[str] = None
-        resolved_variant: Optional[dict] = None
+        # 0) If the message has no URL and contains no digits, offer quick-reply buttons
         try:
-            resolved_variant_id, resolved_variant = await self._resolve_shopify_variant(str(retailer_id_raw))
+            has_url = bool(re.search(r"https?://", text or ""))
+            has_digit = bool(re.search(r"\d", text or ""))
         except Exception:
-            resolved_variant_id, resolved_variant = None, None
-
-        # Try to find the product in the local cache for interactive send
-        try:
-            products = catalog_manager.get_cached_products()
-        except Exception:
-            products = []
-        matched = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id_raw)), None) if products else None
-
-        if matched:
+            has_url = False
+            has_digit = False
+        if (not has_url) and (not has_digit) and is_test_number:
             await self.process_outgoing_message({
                 "user_id": user_id,
-                "type": "catalog_item",
+                "type": "buttons",
                 "from_me": True,
-                # UI should carry Shopify variant id for Add to Order if we resolved it
-                "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
-                # Use meta retailer_id for WA interactive send
-                "retailer_id": str(matched.get("retailer_id")),
-                "caption": (resolved_variant or {}).get("title") or matched.get("name") or "",
+                "message": (
+                    "Veuillez choisir une option :\nJe veux acheter un article\nJe veux vérifier le statut de ma commande\n\n"
+                    "اختر خيارًا:\nأريد شراء منتج\nأريد التحقق من حالة طلبي"
+                ),
+                "buttons": [
+                    {"id": "buy_item", "title": "Acheter | شراء"},
+                    {"id": "order_status", "title": "Statut | حالة"},
+                ],
                 "timestamp": datetime.utcnow().isoformat(),
-                "needs_bilingual_prompt": True,
             })
             try:
                 await self.redis_manager.mark_auto_reply_sent(user_id)
             except Exception:
                 pass
             return
+        # 1) Try explicit retailer_id extraction from text
+        retailer_id_raw = self._extract_product_retailer_id(text)
+        if retailer_id_raw:
+            # Resolve to a valid Shopify variant id if needed
+            resolved_variant_id: Optional[str] = None
+            resolved_variant: Optional[dict] = None
+            try:
+                resolved_variant_id, resolved_variant = await self._resolve_shopify_variant(str(retailer_id_raw))
+            except Exception:
+                resolved_variant_id, resolved_variant = None, None
+            try:
+                products = catalog_manager.get_cached_products()
+            except Exception:
+                products = []
+            if products:
+                matched = next((p for p in products if str(p.get("retailer_id")) == str(retailer_id_raw)), None)
+            else:
+                matched = None
 
-        # No local catalog match, still try to send interactive product by retailer/variant id
-        cap = ""
-        if resolved_variant:
-            t = resolved_variant.get("title") or ""
-            pr = resolved_variant.get("price") or ""
-            cap = (f"{t} - {pr} MAD").strip(" -")
-        await self.process_outgoing_message({
+            if matched:
+                # Send interactive catalog item; mark to append bilingual prompt after delivery
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "catalog_item",
+                    "from_me": True,
+                    # UI should carry Shopify variant id for Add to Order if we resolved it
+                    "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
+                    # Use meta retailer_id for WA interactive send
+                    "retailer_id": str(matched.get("retailer_id")),
+                    "caption": (resolved_variant or {}).get("title") or matched.get("name") or "",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "needs_bilingual_prompt": True,
+                })
+                try:
+                    await self.redis_manager.mark_auto_reply_sent(user_id)
+                except Exception:
+                    pass
+                return
+            else:
+                # No local catalog match, still try to send interactive product by retailer_id
+                # Build caption from Shopify variant if available
+                cap = ""
+                if resolved_variant:
+                    t = resolved_variant.get("title") or ""
+                    pr = resolved_variant.get("price") or ""
+                    cap = (f"{t} - {pr} MAD").strip(" -")
+                await self.process_outgoing_message({
+                    "user_id": user_id,
+                    "type": "catalog_item",
+                    "from_me": True,
+                    # UI variant id for Add to Order
+                    "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
+                    "caption": cap,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "needs_bilingual_prompt": True,
+                })
+                try:
+                    await self.redis_manager.mark_auto_reply_sent(user_id)
+                except Exception:
+                    pass
+                return
+
+        # 2) Fallback to name-based best match using score threshold
+        product = self._best_catalog_match(text)
+        if not product:
+            return
+        images = product.get("images") or []
+        if not images:
+            return
+        image_url = images[0].get("url")
+        if not image_url:
+            return
+        caption_parts = [p for p in [product.get("name"), product.get("price")] if p]
+        caption = " - ".join(caption_parts)
+        message_data = {
             "user_id": user_id,
-            "type": "catalog_item",
+            "message": image_url,
+            "url": image_url,
+            "type": "image",
             "from_me": True,
-            # UI variant id for Add to Order
-            "product_retailer_id": str(resolved_variant_id or retailer_id_raw),
-            "caption": cap,
+            "caption": caption,
+            "price": product.get("price", ""),
             "timestamp": datetime.utcnow().isoformat(),
-            "needs_bilingual_prompt": True,
-        })
+        }
+        await self.process_outgoing_message(message_data)
         try:
             await self.redis_manager.mark_auto_reply_sent(user_id)
         except Exception:
@@ -3583,43 +3617,6 @@ _allowed_hosts_env = os.getenv("ALLOWED_HOSTS", "*")
 allowed_hosts = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
 if allowed_hosts and allowed_hosts != ["*"]:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
-
-# --- Simple HTML auth gate: redirect to /login when no agent cookie ---
-@app.middleware("http")
-async def _html_login_gate(request: StarletteRequest, call_next):
-    try:
-        p = request.url.path or "/"
-        if request.method != "GET":
-            return await call_next(request)
-        # Allowlist
-        allow_prefixes = (
-            "/login",
-            "/auth/login",
-            "/health",
-            "/metrics",
-            "/webhook",
-            "/media/",
-            "/static/",
-            "/assets/",
-            "/favicon",
-            "/robots.txt",
-            "/openapi",
-            "/docs",
-        )
-        if any(p == ap or p.startswith(ap) for ap in allow_prefixes):
-            return await call_next(request)
-        # Only gate HTML navigation requests
-        accept = str(request.headers.get("accept") or "").lower()
-        wants_html = ("text/html" in accept) or p == "/" or (not "." in p)
-        if not wants_html:
-            return await call_next(request)
-        # Check cookie
-        agent_cookie = request.cookies.get("agent_username")
-        if not agent_cookie:
-            return RedirectResponse(url="/login")
-        return await call_next(request)
-    except Exception:
-        return await call_next(request)
 
 # Smart caching: no-cache HTML shell, long cache for static assets
 @app.middleware("http")
@@ -4214,46 +4211,15 @@ async def delete_agent_endpoint(username: str):
     return {"ok": True}
 
 @app.post("/auth/login")
-async def auth_login(payload: dict = Body(...), response: Response | None = None):
+async def auth_login(payload: dict = Body(...)):
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
-    info = await db_manager.get_agent_info(username)
-    stored = (info or {}).get("password_hash") if info else None
+    stored = await db_manager.get_agent_password_hash(username)
     if not stored or not verify_password(password, stored):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     # Minimal session token: for simplicity return echo token (NOT JWT). Frontend can store.
     token = uuid.uuid4().hex
-    is_admin = bool((info or {}).get("is_admin") or 0)
-    try:
-        # set lightweight cookies to support HTML redirects/gating
-        if response is not None:
-            response.set_cookie("agent_username", username, path="/", httponly=False, samesite="Lax")
-            response.set_cookie("is_admin", "1" if is_admin else "0", path="/", httponly=False, samesite="Lax")
-    except Exception:
-        pass
-    return {"token": token, "username": username, "is_admin": is_admin}
-
-@app.get("/auth/me")
-async def auth_me(request: Request):
-    u = request.cookies.get("agent_username")
-    a = request.cookies.get("is_admin")
-    if not u:
-        raise HTTPException(status_code=401, detail="Not logged in")
-    is_admin = str(a or "0") in ("1","true","yes","on")
-    return {"username": u, "is_admin": is_admin}
-
-@app.post("/auth/change-password")
-async def change_password(payload: dict = Body(...)):
-    username = (payload.get("username") or "").strip()
-    old_password = payload.get("old_password") or ""
-    new_password = payload.get("new_password") or ""
-    if not username or not old_password or not new_password:
-        raise HTTPException(status_code=400, detail="username, old_password, new_password are required")
-    stored = await db_manager.get_agent_password_hash(username)
-    if not stored or not verify_password(old_password, stored):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    await db_manager.update_agent_password(username, hash_password(new_password))
-    return {"ok": True}
+    return {"token": token, "username": username}
 
 @app.post("/conversations/{user_id}/assign")
 async def assign_conversation(user_id: str, payload: dict = Body(...)):
@@ -4360,17 +4326,11 @@ async def get_version():
 
 # ----- Agent analytics -----
 @app.get("/analytics/agents")
-async def get_agents_analytics(request: Request, start: Optional[str] = None, end: Optional[str] = None):
-    v = request.cookies.get("is_admin")
-    if str(v or "0") not in ("1","true","yes","on"):
-        raise HTTPException(status_code=403, detail="Admin only")
+async def get_agents_analytics(start: Optional[str] = None, end: Optional[str] = None):
     return await db_manager.get_all_agents_analytics(start=start, end=end)
 
 @app.get("/analytics/agents/{username}")
-async def get_agent_analytics(username: str, request: Request, start: Optional[str] = None, end: Optional[str] = None):
-    v = request.cookies.get("is_admin")
-    if str(v or "0") not in ("1","true","yes","on"):
-        raise HTTPException(status_code=403, detail="Admin only")
+async def get_agent_analytics(username: str, start: Optional[str] = None, end: Optional[str] = None):
     return await db_manager.get_agent_analytics(agent_username=username, start=start, end=end)
 
 @app.get("/login", response_class=HTMLResponse)
@@ -5160,15 +5120,8 @@ async def link_preview(url: str):
         print(f"Link preview error: {exc}")
         raise HTTPException(status_code=502, detail="Preview fetch failed")
 
-# Serve React build after all routes (optional if present)
-try:
-    frontend_build_dir = Path("frontend") / "build"
-    if frontend_build_dir.exists():
-        app.mount("/", StaticFiles(directory=str(frontend_build_dir), html=True), name="frontend")
-    else:
-        print("⚠️  frontend/build not found. Skipping static mount.")
-except Exception as exc:
-    print(f"⚠️  Skipping frontend mount: {exc}")
+# Serve React build after all routes
+app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
 
 
 
