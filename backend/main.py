@@ -1246,6 +1246,19 @@ class DatabaseManager:
                 row = await cur.fetchone()
             return row[0] if row else None
 
+    async def get_agent_is_admin(self, username: str) -> int:
+        """Return 1 if agent is admin, else 0."""
+        async with self._conn() as db:
+            query = self._convert("SELECT is_admin FROM agents WHERE username = ?")
+            params = (username,)
+            if self.use_postgres:
+                row = await db.fetchrow(query, *params)
+                return int(row[0]) if row else 0
+            else:
+                cur = await db.execute(query, params)
+                row = await cur.fetchone()
+                return int(row[0]) if row else 0
+
     # ── Conversation metadata (assignment, tags, avatar) ───────────
     async def get_conversation_meta(self, user_id: str) -> dict:
         async with self._conn() as db:
@@ -1896,8 +1909,8 @@ class DatabaseManager:
                 SELECT COUNT(*) AS c
                 FROM messages
                 WHERE from_me = 1 AND agent_username = ?
-                  AND COALESCE(server_ts, timestamp) >= ?
-                  AND COALESCE(server_ts, timestamp) <= ?
+                  AND SUBSTR(REPLACE(COALESCE(server_ts, timestamp), ' ', 'T'), 1, 19) >= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
+                  AND SUBSTR(REPLACE(COALESCE(server_ts, timestamp), ' ', 'T'), 1, 19) <= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
                 """
             )
             params = [agent_username, start_iso, end_iso]
@@ -1915,7 +1928,8 @@ class DatabaseManager:
                 SELECT COUNT(*) AS c
                 FROM orders_created
                 WHERE agent_username = ?
-                  AND created_at >= ? AND created_at <= ?
+                  AND SUBSTR(REPLACE(created_at, ' ', 'T'), 1, 19) >= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
+                  AND SUBSTR(REPLACE(created_at, ' ', 'T'), 1, 19) <= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
                 """
             )
             if self.use_postgres:
@@ -1943,8 +1957,8 @@ class DatabaseManager:
                     ) AS avg_sec
                     FROM messages m
                     WHERE m.from_me = 1 AND m.agent_username = ?
-                      AND COALESCE(m.server_ts, m.timestamp) >= ?
-                      AND COALESCE(m.server_ts, m.timestamp) <= ?
+                      AND SUBSTR(REPLACE(COALESCE(m.server_ts, m.timestamp), ' ', 'T'), 1, 19) >= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
+                      AND SUBSTR(REPLACE(COALESCE(m.server_ts, m.timestamp), ' ', 'T'), 1, 19) <= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
                     """
                 )
             else:
@@ -1963,8 +1977,8 @@ class DatabaseManager:
                     ) AS avg_sec
                     FROM messages m
                     WHERE m.from_me = 1 AND m.agent_username = ?
-                      AND COALESCE(m.server_ts, m.timestamp) >= ?
-                      AND COALESCE(m.server_ts, m.timestamp) <= ?
+                      AND SUBSTR(REPLACE(COALESCE(m.server_ts, m.timestamp), ' ', 'T'), 1, 19) >= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
+                      AND SUBSTR(REPLACE(COALESCE(m.server_ts, m.timestamp), ' ', 'T'), 1, 19) <= SUBSTR(REPLACE(?, ' ', 'T'), 1, 19)
                     """
                 )
             if self.use_postgres:
@@ -4210,6 +4224,8 @@ async def delete_agent_endpoint(username: str):
     await db_manager.delete_agent(username)
     return {"ok": True}
 
+SESSIONS: dict[str, dict] = {}
+
 @app.post("/auth/login")
 async def auth_login(payload: dict = Body(...)):
     username = (payload.get("username") or "").strip()
@@ -4217,9 +4233,24 @@ async def auth_login(payload: dict = Body(...)):
     stored = await db_manager.get_agent_password_hash(username)
     if not stored or not verify_password(password, stored):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    # Minimal session token: for simplicity return echo token (NOT JWT). Frontend can store.
+    # Resolve admin flag for this agent
+    is_admin = bool(await db_manager.get_agent_is_admin(username))
+    # Issue a simple in-memory session token (non-persistent)
     token = uuid.uuid4().hex
-    return {"token": token, "username": username}
+    SESSIONS[token] = {"username": username, "is_admin": is_admin, "created_at": datetime.utcnow().isoformat()}
+    return {"token": token, "username": username, "is_admin": is_admin}
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    parts = auth_header.split()
+    token = parts[-1] if parts else ""
+    session = SESSIONS.get(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"username": session.get("username"), "is_admin": bool(session.get("is_admin"))}
 
 @app.post("/conversations/{user_id}/assign")
 async def assign_conversation(user_id: str, payload: dict = Body(...)):
