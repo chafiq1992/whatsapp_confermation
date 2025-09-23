@@ -127,6 +127,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const highlightTimeoutsRef = useRef(new Map());
   const forwardPayloadRef = useRef(null);
   const messagesRef = useRef([]);
+  // Track the in-flight initial HTTP fetch so we can cancel it once WS delivers data
+  const initialFetchControllerRef = useRef(null);
 
   // Helper to merge and deduplicate messages by stable identifiers
   const mergeAndDedupe = useCallback((prevList, incomingList) => {
@@ -163,8 +165,14 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     });
     // Then kick off network fetch with cancellation
     const controller = new AbortController();
+    initialFetchControllerRef.current = controller;
     fetchMessages({ offset: 0 }, controller.signal, uid);
-    return () => controller.abort();
+    return () => {
+      try { controller.abort(); } catch {}
+      if (initialFetchControllerRef.current === controller) {
+        initialFetchControllerRef.current = null;
+      }
+    };
   }, [activeUser?.user_id, /* stable */]);
   
   // Track last received timestamp for resume on reconnect
@@ -347,8 +355,14 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           setMessages(prev => mergeAndDedupe(prev, list));
           setOffset(list.length);
           setHasMore(list.length > 0);
+          // WS delivered initial data – stop showing skeleton and cancel HTTP fallback
+          setIsInitialLoading(false);
+          try { initialFetchControllerRef.current?.abort(); } catch {}
+          initialFetchControllerRef.current = null;
         } else if (data.type === 'conversation_history') {
           setMessages(prev => mergeAndDedupe(prev, Array.isArray(data.data) ? data.data : []));
+          // Any history received implies we can end initial loading
+          setIsInitialLoading(false);
         } else if (data.type === 'message_sent') {
           setMessages(prev => {
             const idx = prev.findIndex(m => (m.temp_id && m.temp_id === data.data.temp_id) || (m.id && m.id === data.data.id));
