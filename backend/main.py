@@ -3230,13 +3230,11 @@ class MessageProcessor:
     async def _maybe_auto_reply_with_catalog(self, user_id: str, text: str) -> None:
         if not AUTO_REPLY_CATALOG_MATCH:
             return
-        # Restrict to explicit test numbers only
+        # Only the QUICK-REPLY BUTTONS are gated by test numbers; catalog matches are for all
         try:
-            uid_norm = _digits_only(user_id)
-            if uid_norm not in AUTO_REPLY_TEST_NUMBERS:
-                return
+            is_test_number = _digits_only(user_id) in AUTO_REPLY_TEST_NUMBERS
         except Exception:
-            return
+            is_test_number = False
         # 24h cooldown per user (bypass when an explicit product ID/URL is present)
         try:
             if await self.redis_manager.was_auto_reply_recent(user_id):
@@ -3255,7 +3253,7 @@ class MessageProcessor:
         except Exception:
             has_url = False
             has_digit = False
-        if (not has_url) and (not has_digit):
+        if (not has_url) and (not has_digit) and is_test_number:
             await self.process_outgoing_message({
                 "user_id": user_id,
                 "type": "buttons",
