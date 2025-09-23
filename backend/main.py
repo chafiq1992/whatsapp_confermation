@@ -1219,6 +1219,11 @@ class DatabaseManager:
                 query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY created_at DESC")
                 rows = await db.fetch(query)
                 return [dict(r) for r in rows]
+            else:
+                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
+                cur = await db.execute(query)
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
 
     async def get_agent_info(self, username: str) -> Optional[dict]:
         async with self._conn() as db:
@@ -1231,11 +1236,6 @@ class DatabaseManager:
                 cur = await db.execute(query, params)
                 row = await cur.fetchone()
                 return dict(row) if row else None
-            else:
-                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
-                cur = await db.execute(query)
-                rows = await cur.fetchall()
-                return [dict(r) for r in rows]
 
     async def delete_agent(self, username: str):
         async with self._conn() as db:
