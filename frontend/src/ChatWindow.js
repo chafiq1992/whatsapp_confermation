@@ -598,10 +598,17 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       const oldest = (append && current.length > 0) ? current[0]?.timestamp : null;
       const newest = (!append && current.length > 0) ? current[current.length - 1]?.timestamp : null;
       const params = new URLSearchParams();
+      const initialLoad = !append && current.length === 0;
       if (!append && newest) params.set('since', newest);
+      // On first load for a conversation, force-fetch recent history via 'since' to bypass any caches
+      if (initialLoad && !newest) {
+        const sinceMs = Date.now() - (48 * 60 * 60 * 1000); // last 48 hours
+        params.set('since', new Date(sinceMs).toISOString());
+      }
       if (append && oldest) params.set('before', oldest);
       // Always pass limit; if neither since/before present, backend will use legacy offset
-      params.set('limit', String(MESSAGE_LIMIT));
+      const limitForRequest = initialLoad ? Math.max(200, MESSAGE_LIMIT) : MESSAGE_LIMIT;
+      params.set('limit', String(limitForRequest));
       // If we didn't set since/before, include offset explicitly
       if (!params.has('since') && !params.has('before')) params.set('offset', String(off));
       const url = `${API_BASE}/messages/${uid}?${params.toString()}`;
@@ -624,6 +631,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         ? prev
         : (append ? mergeAndDedupe(prev, data) : sortByTime(data))
       );
+      try { saveMessages(uid, (append ? mergeAndDedupe(messagesRef.current, data) : data)); } catch {}
       const firstUnreadIndex = data.findIndex(msg => !msg.from_me && !msg.read);
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
       if (append) {
