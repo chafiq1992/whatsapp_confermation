@@ -3478,13 +3478,14 @@ async def no_cache_html(request: StarletteRequest, call_next):
     if path == "/" or path.endswith(".html"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
-    # Enable long-lived cache for versioned static assets
-    if (
+    # Always serve freshest app code to avoid hard refresh requirements
+    if path.endswith((".js", ".css", ".map")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    # Allow long-lived cache for static media assets only (not JS/CSS)
+    elif (
         path.startswith("/static/")
         or path.endswith((
-            ".js",
-            ".css",
-            ".map",
             ".png",
             ".jpg",
             ".jpeg",

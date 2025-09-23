@@ -45,8 +45,6 @@ export default function App() {
   const [showInternalPanel, setShowInternalPanel] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
-  const [appVersion, setAppVersion] = useState(null);
-  const [updateAvailable, setUpdateAvailable] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   // WebSocket for chat and a separate one for admin updates
@@ -57,46 +55,7 @@ export default function App() {
     activeUserRef.current = activeUser;
   }, [activeUser]);
 
-  // Version polling to prompt manual refresh after deploy
-  useEffect(() => {
-    let timer;
-    let stopped = false;
-    const fetchVersion = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/version`, { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-        const id = data?.build_id || data?.started_at || JSON.stringify(data || {});
-        setAppVersion((prev) => {
-          if (prev && id && prev !== id) setUpdateAvailable(true);
-          return prev || id;
-        });
-      } catch {}
-      if (!stopped) timer = setTimeout(fetchVersion, 60000);
-    };
-    fetchVersion();
-    return () => { stopped = true; clearTimeout(timer); };
-  }, []);
-
-  const hardRefresh = async () => {
-    try {
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map(r => r.unregister()));
-      }
-      if (window.caches && caches.keys) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map(k => caches.delete(k)));
-      }
-    } catch {}
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.set('t', String(Date.now()));
-      window.location.replace(url.toString());
-    } catch {
-      window.location.reload();
-    }
-  };
+  // No version banner; backend serves fresh JS/CSS with no-cache headers
 
   // Compute a root font scale to preserve layout while making UI elements smaller
   useEffect(() => {
@@ -433,17 +392,6 @@ export default function App() {
   return (
     <AudioProvider>
     <div className="flex h-screen bg-gray-900 text-white overflow-hidden" style={{ fontSize: 'var(--app-font-size, 16px)' }}>
-      {updateAvailable && (
-        <div className="fixed top-0 left-0 right-0 z-50">
-          <div className="mx-auto max-w-[1600px] px-4 py-2 bg-yellow-500 text-black flex items-center justify-between shadow-md">
-            <div className="text-sm font-medium">New version available. Refresh to get the latest features and fixes.</div>
-            <div className="flex items-center gap-2">
-              <button onClick={hardRefresh} className="px-3 py-1.5 rounded-md bg-black text-yellow-300 text-sm hover:bg-gray-900">Hard refresh</button>
-              <button onClick={() => setUpdateAvailable(false)} className="px-3 py-1.5 rounded-md border border-black/40 text-sm">Dismiss</button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* LEFT: Mini sidebar + Agent header + Chat list */}
       <div className="w-[30rem] min-w-[30rem] flex-shrink-0 overflow-hidden flex relative z-0 bg-gray-900">
         <MiniSidebar
