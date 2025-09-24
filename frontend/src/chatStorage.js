@@ -35,7 +35,7 @@ async function getDB() {
 export async function saveMessages(userId, messageArray) {
   if (!userId) return;
   const db = await getDB();
-  const msgs = Array.isArray(messageArray) ? messageArray.slice(-100) : [];
+  const msgs = Array.isArray(messageArray) ? messageArray.slice(-300) : [];
   await db.put(STORE_MESSAGES, msgs, userId);
 }
 

@@ -3143,23 +3143,21 @@ class MessageProcessor:
         except Exception:
             pass
         
-        # Send to UI and process...
+        # Persist first, then broadcast to ensure durability even if clients are offline
+        # Remove "id" so SQLite doesn't try to insert the text wa_message_id into INTEGER PK
+        db_data = {k: v for k, v in message_obj.items() if k != "id"}
+        await self.db_manager.upsert_message(db_data)
+        await self.redis_manager.cache_message(sender, db_data)
+
+        # Now deliver to UI and admin dashboards
         await self.connection_manager.send_to_user(sender, {
             "type": "message_received",
             "data": message_obj
         })
-
-        # Notify any admin dashboards about the new message
         await self.connection_manager.broadcast_to_admins(
             {"type": "message_received", "data": message_obj},
             exclude_user=sender
         )
-
-        # Cache and save to database. Remove "id" so SQLite doesn't try to
-        # insert the text wa_message_id into the INTEGER primary key column.
-        db_data = {k: v for k, v in message_obj.items() if k != "id"}
-        await self.redis_manager.cache_message(sender, db_data)
-        await self.db_manager.upsert_message(db_data)
         
         # Auto-responses
         try:
