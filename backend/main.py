@@ -3552,21 +3552,8 @@ class MessageProcessor:
             return
         caption_parts = [p for p in [product.get("name"), product.get("price")] if p]
         caption = " - ".join(caption_parts)
-        message_data = {
-            "user_id": user_id,
-            "message": image_url,
-            "url": image_url,
-            "type": "image",
-            "from_me": True,
-            "caption": caption,
-            "price": product.get("price", ""),
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        await self.process_outgoing_message(message_data)
-        try:
-            await self.redis_manager.mark_auto_reply_sent(user_id)
-        except Exception:
-            pass
+        # Removed automatic image auto-reply on name-based match
+        return
 
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
         """Download media from WhatsApp and upload it to Google Cloud Storage.
