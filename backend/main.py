@@ -3335,12 +3335,11 @@ class MessageProcessor:
 
     # ------------------------- auto-reply helpers -------------------------
     def _extract_product_retailer_id(self, text: str) -> Optional[str]:
-        """Extract the last numeric product id from the user's text.
+        """Extract a product/variant id only when explicitly referenced.
 
-        Priority:
-        - Explicit pattern like "ID: 123456789"
-        - From URLs: variant query or /variants/{id} in path
-        - Otherwise, last long digit sequence (>= 6 digits)
+        Accepted sources:
+        - Explicit pattern like "ID: 123456" (6+ digits)
+        - From URLs: variant query, generic id query, or /variants/{id} in path
         """
         try:
             if not text:
@@ -3374,10 +3373,9 @@ class MessageProcessor:
                         return m2.group(1)
                 except Exception:
                     continue
-            # 2) Any long digit sequences; pick the last one
-            candidates = re.findall(r"(\d{6,})", text)
-            if candidates:
-                return candidates[-1]
+            # NOTE: Do not treat bare digit sequences as valid IDs to avoid
+            # false positives from casual numbers in normal text. Only explicit
+            # "ID:" labels or URLs are accepted.
         except Exception:
             pass
         return None
