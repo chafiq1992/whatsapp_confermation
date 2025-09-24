@@ -260,34 +260,6 @@ function ChatList({
     return filtered.sort((a, b) => toMsNormalized(b.last_message_time) - toMsNormalized(a.last_message_time));
   }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
-  // If search looks like a phone number and not present in list, offer a "new chat" row
-  const newChatCandidate = useMemo(() => {
-    const raw = String(search || '').trim();
-    if (!raw) return null;
-    // Accept digits, spaces, hyphens, parentheses, leading +
-    const cleaned = raw.replace(/[^\d+]/g, '');
-    const digits = cleaned.replace(/\D/g, '');
-    // Heuristic: phone-like if at least 8 digits
-    if (digits.length < 8) return null;
-    // Normalize user_id as digits-only (your backend stores user_id as WA id/phone)
-    const candidateId = digits;
-    const exists = (Array.isArray(conversations) ? conversations : []).some(c => String(c.user_id || '') === candidateId);
-    if (exists) return null;
-    const nowIso = new Date().toISOString();
-    return {
-      __newChat: true,
-      user_id: candidateId,
-      name: cleaned.startsWith('+') ? cleaned : candidateId,
-      last_message: 'Start new chat',
-      last_message_type: 'text',
-      last_message_time: nowIso,
-      last_message_from_me: undefined,
-      last_message_status: undefined,
-      unread_count: 0,
-      unresponded_count: 0,
-      tags: [],
-    };
-  }, [search, conversations]);
 
   /* ─── Helpers ─── */
   const isOnline = useCallback(
@@ -529,7 +501,7 @@ function ChatList({
       </div>
 
       {/* Empty states */}
-      {filteredConversations.length === 0 && !newChatCandidate ? (
+      {filteredConversations.length === 0 ? (
         loading ? (
           <div className="flex-1 p-3 space-y-3" aria-live="polite">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -555,23 +527,6 @@ function ChatList({
       ) : (
         /* Chat list */
         <div ref={(el)=>{ listRef.current = el; containerRef.current = el; }} className="flex-1 overflow-y-auto divide-y divide-gray-800">
-          {newChatCandidate && (
-            <div
-              data-row
-              data-id={newChatCandidate.user_id}
-              className="group flex gap-3 p-4 cursor-pointer bg-blue-900/30 hover:bg-blue-900/40 text-white/90 rounded-xl m-2 border border-blue-800"
-              onClick={() => handleSelect(newChatCandidate)}
-            >
-              <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold">+</div>
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-center">
-                  <span className="truncate font-medium">{newChatCandidate.name}</span>
-                  <span className="text-xs opacity-80">New</span>
-                </div>
-                <div className="text-xs text-gray-300">Start new chat</div>
-              </div>
-            </div>
-          )}
           <List
             height={Math.max(200, listHeight)}
             itemCount={filteredConversations.length}

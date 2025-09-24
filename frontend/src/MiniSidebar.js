@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { HiChatBubbleLeftRight, HiInboxArrowDown, HiArchiveBox, HiCog6Tooth, HiUserCircle } from 'react-icons/hi2';
+import { HiChatBubbleLeftRight, HiInboxArrowDown, HiArchiveBox, HiCog6Tooth, HiUserCircle, HiPlus } from 'react-icons/hi2';
 import { FaRobot } from 'react-icons/fa';
 import api from './api';
 
@@ -12,11 +12,14 @@ export default function MiniSidebar({
 	onOpenAutomation,
   currentAgent = '',
   isAdmin = false,
+  onStartNewChat,
 }) {
 	const [showDropdown, setShowDropdown] = useState(false);
 	const [agents, setAgents] = useState([]);
 	const buttonRef = useRef(null);
 	const dropdownRef = useRef(null);
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [newChatValue, setNewChatValue] = useState('');
 
 	useEffect(() => {
 		(async () => {
@@ -52,6 +55,47 @@ export default function MiniSidebar({
 		<div className="w-16 bg-gray-900 border-r border-gray-800 h-full flex flex-col items-center justify-between py-3 relative">
 			{/* Upper section */}
 			<div className="flex flex-col items-center gap-3">
+				<button
+					type="button"
+					title="New chat"
+					onClick={() => setShowNewChat(v => !v)}
+					className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl bg-green-700 text-white hover:bg-green-600"
+				>
+					<HiPlus />
+				</button>
+				{showNewChat && (
+					<div className="absolute left-16 top-3 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-50 w-64 p-3">
+						<div className="text-sm text-gray-300 mb-2">Start new chat</div>
+						<div className="flex gap-2">
+							<input
+								type="tel"
+								placeholder="WhatsApp number"
+								value={newChatValue}
+								onChange={(e) => setNewChatValue(e.target.value)}
+								className="flex-1 px-2 py-1 bg-gray-800 text-white rounded border border-gray-700"
+							/>
+							<button
+								type="button"
+								className="px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-50"
+								onClick={() => {
+									try {
+										const cleaned = String(newChatValue || '').replace(/[^\d+]/g, '');
+										const digits = cleaned.replace(/\D/g, '');
+										if (digits.length < 8) return;
+										if (typeof onStartNewChat === 'function') {
+											onStartNewChat(digits, cleaned);
+										}
+										setShowNewChat(false);
+										setNewChatValue('');
+									} catch {}
+								}}
+								disabled={!newChatValue || newChatValue.trim().length < 4}
+							>
+								Start
+							</button>
+						</div>
+					</div>
+				)}
 				<button
 					type="button"
 					title="Inbox"

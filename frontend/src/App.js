@@ -449,6 +449,15 @@ export default function App() {
           onOpenAutomation={() => { window.open('/#/automation-studio', '_blank', 'noopener,noreferrer'); }}
           currentAgent={currentAgent}
           isAdmin={isAdmin}
+        onStartNewChat={(digits, display) => {
+          try {
+            const id = String(digits);
+            const name = display || id;
+            setActiveUser({ user_id: id, name });
+            // Ensure Inbox tab
+            setShowArchive(false);
+          } catch {}
+        }}
         />
         <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
