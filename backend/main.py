@@ -62,6 +62,9 @@ BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
 REDIS_URL = os.getenv("REDIS_URL", "")
 DB_PATH = os.getenv("DB_PATH") or "/tmp/whatsapp_messages.db"
 DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
+PG_POOL_MIN = int(os.getenv("PG_POOL_MIN", "1"))
+PG_POOL_MAX = int(os.getenv("PG_POOL_MAX", "4"))
+REQUIRE_POSTGRES = int(os.getenv("REQUIRE_POSTGRES", "1"))  # when 1 and DATABASE_URL is set, never fallback to SQLite
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1042,9 +1045,18 @@ class DatabaseManager:
     async def _get_pool(self):
         if not self._pool:
             try:
-                self._pool = await asyncpg.create_pool(self.db_url)
+                # Limit pool sizes to avoid exhausting free-tier Postgres (e.g., Supabase)
+                self._pool = await asyncpg.create_pool(
+                    self.db_url,
+                    min_size=PG_POOL_MIN,
+                    max_size=PG_POOL_MAX,
+                    timeout=30.0,
+                )
             except Exception as exc:
-                # Fallback to SQLite if Postgres is unavailable at startup
+                if self.db_url and REQUIRE_POSTGRES:
+                    # Explicitly require Postgres: surface error and do not silently fallback
+                    raise
+                # Fallback to SQLite if not strictly requiring Postgres
                 print(f"⚠️ Postgres pool creation failed, falling back to SQLite: {exc}")
                 self.use_postgres = False
                 self._pool = None
@@ -1078,6 +1090,8 @@ class DatabaseManager:
                     yield conn
                 return
             # Pool unavailable → switch to SQLite for this session
+            if self.db_url and REQUIRE_POSTGRES:
+                raise RuntimeError("Postgres required but connection pool is unavailable")
             self.use_postgres = False
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
