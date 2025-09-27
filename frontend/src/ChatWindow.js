@@ -626,17 +626,32 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
       // If we didn't set since/before, include offset explicitly
       if (!params.has('since') && !params.has('before')) params.set('offset', String(off));
       const url = `${API_BASE}/messages/${uid}?${params.toString()}`;
-      const res = await api.get(url, { signal });
-      const data = res.data;
+      let res = await api.get(url, { signal });
+      let data = res.data;
+      // Fallback: if initial since-based request returned nothing, try legacy offset=0 to load older history
+      const attemptedSinceOrBefore = params.has('since') || params.has('before');
+      if ((!Array.isArray(data) || data.length === 0) && !append && attemptedSinceOrBefore) {
+        try {
+          const legacy = new URLSearchParams();
+          legacy.set('offset', String(0));
+          legacy.set('limit', String(Math.max(200, MESSAGE_LIMIT)));
+          const legacyUrl = `${API_BASE}/messages/${uid}?${legacy.toString()}`;
+          res = await api.get(legacyUrl, { signal });
+          data = res.data;
+        } catch {}
+      }
       if (!Array.isArray(data) || data.length === 0) {
-        // No data from server, fall back to cached messages
+        // No data from server, fall back to cached messages (do not kill hasMore prematurely on initial load)
         const cached = await loadMessages(uid);
         if (cached.length > 0) {
           setMessages(prev => (conversationIdRef.current !== uid)
             ? prev
             : (append ? mergeAndDedupe(prev, cached) : sortByTime(cached))
           );
-          setHasMore(false);
+          if (append) setHasMore(false);
+        } else {
+          // Keep hasMore true on first load so the user can pull older history
+          if (!append) setHasMore(true);
         }
         setIsInitialLoading(false);
         return cached;
