@@ -47,6 +47,7 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const activeUserRef = useRef(activeUser);
 
   const isLoginPath = typeof window !== 'undefined' && window.location && window.location.pathname === '/login';
@@ -200,8 +201,9 @@ export default function App() {
     }
   };
 
-  // Load conversations/products on mount
+  // Load conversations/products after auth is ready (or on login page)
   useEffect(() => {
+    if (!authReady && !isLoginPath) return;
     loadConversations().then(cached => {
       if (cached.length > 0) {
         setConversations(cached);
@@ -215,7 +217,7 @@ export default function App() {
     //   fetchCatalogProducts();
     // }, 5000);
     // return () => clearInterval(interval);
-  }, []);
+  }, [authReady, isLoginPath]);
 
   // Read agent/channel from URL hash for deep links: #agent=alice&assigned=1 | #dm=alice | #team=sales
   useEffect(() => {
@@ -270,6 +272,7 @@ export default function App() {
         if (u && !currentAgent) setCurrentAgent(u);
         setIsAdmin(a);
         try { localStorage.setItem('agent_is_admin', a ? '1' : '0'); } catch {}
+        setAuthReady(true);
       } catch (e) {
         // Not logged in – redirect if not on login
         if (!isLoginPath) window.location.replace('/login');
@@ -462,30 +465,36 @@ export default function App() {
         <div className="flex-1 flex flex-col border-r border-gray-700 bg-gray-900 overflow-y-auto">
           <AgentHeaderBar />
           {/* InternalChannelsBar inline list removed in favor of dropdown on the sidebar icon */}
-          <ChatList
-            conversations={conversations}
-            setActiveUser={setActiveUser}
-            activeUser={activeUser}
-            wsConnected={adminWsConnected}
-            defaultAssignedFilter={(agentInboxMode && currentAgent) ? currentAgent : (myAssignedOnly && currentAgent ? currentAgent : 'all')}
-            showArchive={showArchive}
-            currentAgent={currentAgent}
-            loading={loadingConversations}
-            onUpdateConversationTags={handleUpdateConversationTags}
-          />
+          {authReady || isLoginPath ? (
+            <ChatList
+              conversations={conversations}
+              setActiveUser={setActiveUser}
+              activeUser={activeUser}
+              wsConnected={adminWsConnected}
+              defaultAssignedFilter={(agentInboxMode && currentAgent) ? currentAgent : (myAssignedOnly && currentAgent ? currentAgent : 'all')}
+              showArchive={showArchive}
+              currentAgent={currentAgent}
+              loading={loadingConversations}
+              onUpdateConversationTags={handleUpdateConversationTags}
+            />
+          ) : (
+            <div className="p-3 text-sm text-gray-300">Checking session…</div>
+          )}
         </div>
       </div>
       {/* MIDDLE: Chat window */}
       <div className="flex-1 overflow-hidden relative z-0 min-w-0">
         {/* Pass wsRef.current as prop so ChatWindow can send/receive via WebSocket */}
-        <ChatWindow
-          activeUser={activeUser}
-          catalogProducts={catalogProducts}
-          ws={wsRef.current}
-          currentAgent={currentAgent}
-          adminWs={adminWsRef.current}
-          onUpdateConversationTags={handleUpdateConversationTags}
-        />
+        {authReady || isLoginPath ? (
+          <ChatWindow
+            activeUser={activeUser}
+            catalogProducts={catalogProducts}
+            ws={wsRef.current}
+            currentAgent={currentAgent}
+            adminWs={adminWsRef.current}
+            onUpdateConversationTags={handleUpdateConversationTags}
+          />
+        ) : null}
         {/* Persistent audio bar above composer area */}
         <div className="absolute left-0 right-0 bottom-[88px] px-4">
           <GlobalAudioBar />
