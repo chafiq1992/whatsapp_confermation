@@ -43,15 +43,10 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Redirect to login on auth errors
+// Do not redirect on auth errors; allow app to continue (temporary auth disabled mode)
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    const status = error?.response?.status;
-    const detail = error?.response?.data?.detail;
-    if (status === 401 || detail === 'Merchant login required') {
-      window.location.href = '/login';
-    }
     return Promise.reject(error);
   }
 );

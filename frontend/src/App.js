@@ -274,8 +274,8 @@ export default function App() {
         try { localStorage.setItem('agent_is_admin', a ? '1' : '0'); } catch {}
         setAuthReady(true);
       } catch (e) {
-        // Not logged in – redirect if not on login
-        if (!isLoginPath) window.location.replace('/login');
+        // Auth disabled or not logged in – proceed without redirect
+        setAuthReady(true);
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
