@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 
@@ -26,14 +26,21 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   const path = url.pathname;
   const hasRange = !!req.headers.get('range');
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
 
   // Skip non-GET, Range requests, or API-like endpoints entirely
   if (req.method !== 'GET') return;
   if (hasRange) return;
   // Skip non-http(s) schemes (e.g., chrome-extension:, blob:)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+  // Always bypass requests that carry Authorization, or dynamic API routes that must be fresh
+  if (authHeader) return;
   if (
     path.startsWith('/api') ||
+    path.startsWith('/conversations') ||
+    path.startsWith('/messages') ||
+    path.startsWith('/admin') ||
+    path.startsWith('/auth') ||
     path.startsWith('/ws') ||
     path.startsWith('/media/proxy') ||
     path.startsWith('/proxy-audio') ||
