@@ -1742,6 +1742,12 @@ class DatabaseManager:
                 rows = await db.fetch(base, limit, offset)
                 conversations: List[dict] = []
                 for r in rows:
+                    # Normalize tags JSON to list
+                    tags_raw = r["tags"] if "tags" in r else None
+                    try:
+                        tags_list = json.loads(tags_raw) if isinstance(tags_raw, str) and tags_raw else []
+                    except Exception:
+                        tags_list = []
                     conv = {
                         "user_id": r["user_id"],
                         "name": r["name"],
@@ -1755,7 +1761,7 @@ class DatabaseManager:
                         "unresponded_count": r["unresponded_count"] or 0,
                         "avatar": (r["avatar"] if "avatar" in r else None),
                         "assigned_agent": r["assigned_agent"],
-                        "tags": r["tags"] or [],
+                        "tags": tags_list,
                     }
                     # Apply light in-memory filters
                     if q:
