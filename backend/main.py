@@ -1689,93 +1689,139 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
-    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None) -> List[dict]:
-        """Return conversation summaries for chat list with optional filters."""
+    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 200, offset: int = 0) -> List[dict]:
+        """Return conversation summaries for chat list with optional filters.
+
+        Optimized single-query plan for Postgres; SQLite uses existing per-user aggregation.
+        """
         async with self._conn() as db:
+            # Postgres optimized path
             if self.use_postgres:
-                user_rows = await db.fetch(self._convert("SELECT DISTINCT user_id FROM messages"))
-            else:
-                # SQLite: DISTINCT user_id is fine
-                cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
-                user_rows = await cur.fetchall()
+                # Fetch a window of conversations ordered by last message time using LATERAL
+                base = self._convert(
+                    """
+                    SELECT
+                      m.user_id,
+                      u.name,
+                      u.phone,
+                      last_msg.message       AS last_message,
+                      last_msg.type          AS last_message_type,
+                      last_msg.from_me       AS last_message_from_me,
+                      last_msg.status        AS last_message_status,
+                      last_msg.ts            AS last_message_time,
+                      (SELECT COUNT(*) FROM messages mu WHERE mu.user_id = m.user_id AND mu.from_me = 0 AND mu.status != 'read') AS unread_count,
+                      (
+                        SELECT COUNT(*)
+                        FROM messages mx
+                        WHERE mx.user_id = m.user_id
+                          AND mx.from_me = 0
+                          AND mx.status = 'read'
+                          AND COALESCE(mx.server_ts, mx.timestamp) > (
+                            SELECT COALESCE(MAX(COALESCE(server_ts, timestamp)), '1970-01-01')
+                            FROM messages ma
+                            WHERE ma.user_id = m.user_id AND ma.from_me = 1
+                          )
+                      ) AS unresponded_count,
+                      cm.assigned_agent,
+                      cm.tags,
+                      cm.avatar_url AS avatar
+                    FROM (SELECT DISTINCT user_id FROM messages) m
+                    LEFT JOIN users u ON u.user_id = m.user_id
+                    LEFT JOIN LATERAL (
+                      SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts
+                      FROM messages mm
+                      WHERE mm.user_id = m.user_id
+                      ORDER BY COALESCE(server_ts, timestamp) DESC
+                      LIMIT 1
+                    ) last_msg ON TRUE
+                    LEFT JOIN conversation_meta cm ON cm.user_id = m.user_id
+                    ORDER BY last_msg.ts DESC NULLS LAST
+                    LIMIT ? OFFSET ?
+                    """
+                )
+                rows = await db.fetch(base, limit, offset)
+                conversations: List[dict] = []
+                for r in rows:
+                    conv = {
+                        "user_id": r["user_id"],
+                        "name": r["name"],
+                        "phone": r["phone"],
+                        "last_message": r["last_message"],
+                        "last_message_time": r["last_message_time"],
+                        "last_message_type": r["last_message_type"],
+                        "last_message_from_me": bool(r["last_message_from_me"]) if r["last_message_from_me"] is not None else None,
+                        "last_message_status": r["last_message_status"],
+                        "unread_count": r["unread_count"] or 0,
+                        "unresponded_count": r["unresponded_count"] or 0,
+                        "avatar": (r["avatar"] if "avatar" in r else None),
+                        "assigned_agent": r["assigned_agent"],
+                        "tags": r["tags"] or [],
+                    }
+                    # Apply light in-memory filters
+                    if q:
+                        t = (conv.get("name") or conv.get("user_id") or "").lower()
+                        if q.lower() not in t:
+                            continue
+                    if unread_only and not (conv.get("unread_count") or 0) > 0:
+                        continue
+                    if assigned is not None:
+                        if assigned == "unassigned" and conv.get("assigned_agent"):
+                            continue
+                        if assigned not in (None, "unassigned") and conv.get("assigned_agent") != assigned:
+                            continue
+                    if tags:
+                        conv_tags = set(conv.get("tags") or [])
+                        if not set(tags).issubset(conv_tags):
+                            continue
+                    conversations.append(conv)
+                return conversations
+
+            # SQLite fallback path (existing logic)
+            cur = await db.execute(self._convert("SELECT DISTINCT user_id FROM messages"))
+            user_rows = await cur.fetchall()
             user_ids = [r["user_id"] for r in user_rows]
 
             conversations = []
             for uid in user_ids:
-                params = [uid]
-                if self.use_postgres:
-                    user = await db.fetchrow(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), *params)
-                else:
-                    cur = await db.execute(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), tuple(params))
-                    user = await cur.fetchone()
+                cur = await db.execute(self._convert("SELECT name, phone FROM users WHERE user_id = ?"), (uid,))
+                user = await cur.fetchone()
 
-                if self.use_postgres:
-                    last = await db.fetchrow(
-                        self._convert(
-                            "SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
-                        ),
-                        uid,
-                    )
-                else:
-                    cur = await db.execute(
-                        self._convert(
-                            "SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
-                        ),
-                        (uid,)
-                    )
-                    last = await cur.fetchone()
+                cur = await db.execute(
+                    self._convert(
+                        "SELECT message, type, from_me, status, COALESCE(server_ts, timestamp) AS ts FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT 1"
+                    ),
+                    (uid,)
+                )
+                last = await cur.fetchone()
                 last_msg = last["message"] if last else None
                 last_time = last["ts"] if last else None
                 last_type = last["type"] if last else None
                 last_from_me = bool(last["from_me"]) if last and ("from_me" in last) else None
                 last_status = last["status"] if last else None
 
-                if self.use_postgres:
-                    unread_row = await db.fetchrow(
-                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
-                        uid,
-                    )
-                else:
-                    cur = await db.execute(
-                        self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
-                        (uid,)
-                    )
-                    unread_row = await cur.fetchone()
+                cur = await db.execute(
+                    self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
+                    (uid,)
+                )
+                unread_row = await cur.fetchone()
                 unread = unread_row["c"]
 
-                if self.use_postgres:
-                    last_agent_row = await db.fetchrow(
-                        self._convert(
-                            "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
-                        ),
-                        uid,
-                    )
-                else:
-                    cur = await db.execute(
-                        self._convert(
-                            "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
-                        ),
-                        (uid,)
-                    )
-                    last_agent_row = await cur.fetchone()
-                last_agent = last_agent_row["t"] or "1970-01-01"
+                cur = await db.execute(
+                    self._convert(
+                        "SELECT MAX(COALESCE(server_ts, timestamp)) as t FROM messages WHERE user_id = ? AND from_me = 1"
+                    ),
+                    (uid,)
+                )
+                last_agent_row = await cur.fetchone()
+                last_agent = (last_agent_row["t"] or "1970-01-01") if last_agent_row else "1970-01-01"
 
-                if self.use_postgres:
-                    unr_row = await db.fetchrow(
-                        self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status = 'read' AND COALESCE(server_ts, timestamp) > ?"
-                        ),
-                        uid,
-                        last_agent,
-                    )
-                else:
-                    cur = await db.execute(
-                        self._convert(
-                            "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status = 'read' AND COALESCE(server_ts, timestamp) > ?"
-                        ),
-                        (uid, last_agent),
-                    )
-                    unr_row = await cur.fetchone()
+                cur = await db.execute(
+                    self._convert(
+                        "SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status = 'read' AND COALESCE(server_ts, timestamp) > ?"
+                    ),
+                    (uid, last_agent),
+                )
+                unr_row = await cur.fetchone()
                 unresponded = unr_row["c"]
 
                 meta = await self.get_conversation_meta(uid)
@@ -1794,7 +1840,7 @@ class DatabaseManager:
                     "assigned_agent": meta.get("assigned_agent"),
                     "tags": meta.get("tags", []),
                 }
-                # Apply filters in-memory for simplicity
+                # Apply filters in-memory
                 if q:
                     t = (conv.get("name") or conv.get("user_id") or "").lower()
                     if q.lower() not in t:
@@ -1810,11 +1856,11 @@ class DatabaseManager:
                     conv_tags = set(conv.get("tags") or [])
                     if not set(tags).issubset(conv_tags):
                         continue
-                # filter conversations that need a reply if requested later via route param
                 conversations.append(conv)
 
             conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
-            return conversations
+            # Apply pagination for SQLite path
+            return conversations[offset: offset + limit]
 
     # ── Settings (key/value JSON) ──────────────────────────────────
     async def get_setting(self, key: str) -> Optional[str]:
@@ -3705,6 +3751,15 @@ async def no_cache_html(request: StarletteRequest, call_next):
 async def startup():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     await db_manager.init_db()
+    try:
+        # Safe startup hint about DB backend and pool settings
+        from urllib.parse import urlparse
+        parsed = urlparse(DATABASE_URL) if DATABASE_URL else None
+        port_info = parsed.port if parsed else None
+        backend = "postgres" if db_manager.use_postgres else "sqlite"
+        print(f"DB init: backend={backend}, db_port={port_info}, pool_min={PG_POOL_MIN}, pool_max={PG_POOL_MAX}")
+    except Exception:
+        pass
     # Connect to Redis only if configured
     if REDIS_URL:
         await redis_manager.connect()
@@ -4205,11 +4260,11 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False):
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, limit: int = 200, offset: int = 0):
     """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list)
+        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, limit=max(1, min(limit, 500)), offset=max(0, offset))
         if unresponded_only:
             conversations = [c for c in conversations if (c.get("unresponded_count") or 0) > 0]
         return conversations
