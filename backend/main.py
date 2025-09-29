@@ -1051,6 +1051,11 @@ class DatabaseManager:
                     min_size=PG_POOL_MIN,
                     max_size=PG_POOL_MAX,
                     timeout=30.0,
+                    # PgBouncer (Supabase pooler) + prepared statements don't mix in transaction pooling
+                    # Disable statement cache to avoid prepared-statement usage across pooled connections
+                    statement_cache_size=0,
+                    # Recycle idle connections to keep footprint small on free tiers
+                    max_inactive_connection_lifetime=60.0,
                 )
             except Exception as exc:
                 if self.db_url and REQUIRE_POSTGRES:
@@ -1458,15 +1463,14 @@ class DatabaseManager:
         """
         async with self._conn() as db:
             if self.use_postgres:
-                # In Postgres the column is TEXT, but ISO-8601 strings sort correctly lexicographically
+                # Order by server receive time when available, falling back to original timestamp
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT ? OFFSET ?"
                 )
             else:
-                # SQLite: avoid datetime() wrapper because our timestamps are ISO-8601 with 'T'
-                # which sort correctly as TEXT
+                # SQLite: ISO-8601 strings sort correctly lexicographically
                 query = self._convert(
-                    "SELECT * FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+                    "SELECT * FROM messages WHERE user_id = ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT ? OFFSET ?"
                 )
             params = [user_id, limit, offset]
             if self.use_postgres:
@@ -1485,7 +1489,7 @@ class DatabaseManager:
         """
         async with self._conn() as db:
             query = self._convert(
-                "SELECT * FROM messages WHERE user_id = ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?"
+                "SELECT * FROM messages WHERE user_id = ? AND COALESCE(server_ts, timestamp) > ? ORDER BY COALESCE(server_ts, timestamp) ASC LIMIT ?"
             )
             params = [user_id, since_timestamp, limit]
             if self.use_postgres:
@@ -1503,7 +1507,7 @@ class DatabaseManager:
         """
         async with self._conn() as db:
             query = self._convert(
-                "SELECT * FROM messages WHERE user_id = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?"
+                "SELECT * FROM messages WHERE user_id = ? AND COALESCE(server_ts, timestamp) < ? ORDER BY COALESCE(server_ts, timestamp) DESC LIMIT ?"
             )
             params = [user_id, before_timestamp, limit]
             if self.use_postgres:
