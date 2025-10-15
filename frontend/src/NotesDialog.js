@@ -15,14 +15,11 @@ export default function NotesDialog({ open, onClose, userId, currentAgent }) {
     cancelRecording,
   } = useAudioRecorder(userId, async (file) => {
     try {
-      // Upload audio via existing media endpoint to get a durable URL
+      // Upload audio as internal note attachment (no WhatsApp send)
       const form = new FormData();
-      form.append('files', file);
-      form.append('user_id', userId || 'internal');
-      form.append('media_type', 'audio');
-      const res = await api.post(`/send-media-async`, form);
-      const first = Array.isArray(res?.data?.messages) ? res.data.messages[0] : null;
-      const url = (first && (first.media_url || first.result?.url)) || res?.data?.url || res?.data?.file_path;
+      form.append('file', file);
+      const res = await api.post(`/notes/upload`, form);
+      const url = res?.data?.url || res?.data?.file_path;
       if (!url) throw new Error('No audio URL');
       await addNote({ type: 'audio', url });
     } catch (e) {

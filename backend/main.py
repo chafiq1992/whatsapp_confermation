@@ -4258,6 +4258,45 @@ async def test_media_upload(file: UploadFile = File(...)):
         print(f"❌ Test upload error: {e}")
         return {"error": str(e), "status": "failed"}
 
+
+# ───────────────────────── Internal Notes Upload (no WhatsApp send) ─────────────────────────
+@app.post("/notes/upload")
+async def upload_note_file(
+    file: UploadFile = File(...),
+):
+    """Upload a note attachment (e.g., audio) and return a public URL, without sending to WhatsApp."""
+    try:
+        # Ensure media folder exists
+        MEDIA_DIR.mkdir(exist_ok=True)
+
+        # Persist upload locally first
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        suffix = Path(file.filename or "note").suffix or ".bin"
+        filename = f"note_{timestamp}_{uuid.uuid4().hex[:8]}{suffix}"
+        file_path = MEDIA_DIR / filename
+
+        content = await file.read()
+        async with aiofiles.open(file_path, "wb") as f:
+            await f.write(content)
+
+        # Upload to Cloud Storage and return the public URL
+        try:
+            media_url = await upload_file_to_gcs(str(file_path))
+        except Exception as exc:
+            print(f"GCS upload failed for notes upload (returning local path): {exc}")
+            media_url = None
+
+        if media_url:
+            return {"url": media_url, "file_path": str(file_path)}
+        else:
+            # Fallback to serving via local /media mount
+            return {"url": f"/media/{filename}", "file_path": str(file_path)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Error in /notes/upload: {exc}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
 @app.post("/send-message")
 async def send_message_endpoint(
     request: dict,
