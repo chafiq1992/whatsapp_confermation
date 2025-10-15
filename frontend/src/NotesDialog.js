@@ -50,7 +50,14 @@ export default function NotesDialog({ open, onClose, userId, currentAgent }) {
       const added = res.data;
       setNotes(prev => [...prev, added]);
       setText("");
-      setTimeout(() => { try { listRef.current?.scrollTop = listRef.current?.scrollHeight || 0; } catch {} }, 50);
+      setTimeout(() => {
+        try {
+          const el = listRef.current;
+          if (el) {
+            el.scrollTop = el.scrollHeight || 0;
+          }
+        } catch {}
+      }, 50);
     } catch {}
   };
 
