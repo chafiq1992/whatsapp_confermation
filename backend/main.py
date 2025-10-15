@@ -1023,6 +1023,15 @@ class DatabaseManager:
             # agent attribution
             "agent_username",
         }
+        # Columns allowed in the conversation_notes table (except auto-increment id)
+        self.note_columns = {
+            "user_id",
+            "agent_username",
+            "type",
+            "text",
+            "url",
+            "created_at",
+        }
 
     async def _add_column_if_missing(self, db, table: str, column: str, col_def: str):
         """Add a column to a table if it doesn't already exist."""
@@ -1155,6 +1164,17 @@ class DatabaseManager:
                     avatar_url     TEXT
                 );
 
+                -- Internal, agent-only notes attached to a conversation
+                CREATE TABLE IF NOT EXISTS conversation_notes (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id         TEXT NOT NULL,
+                    agent_username  TEXT,
+                    type            TEXT DEFAULT 'text', -- 'text' | 'audio'
+                    text            TEXT,
+                    url             TEXT,
+                    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_msg_wa_id
                     ON messages (wa_message_id);
 
@@ -1164,6 +1184,9 @@ class DatabaseManager:
                 -- Additional index to optimize TEXT-based timestamp ordering in SQLite
                 CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text
                     ON messages (user_id, timestamp);
+
+                CREATE INDEX IF NOT EXISTS idx_notes_user_time
+                    ON conversation_notes (user_id, datetime(created_at));
 
                 -- Idempotency: ensure per-chat uniqueness for wa_message_id and temp_id
                 CREATE UNIQUE INDEX IF NOT EXISTS uniq_msg_user_wa
@@ -1204,6 +1227,7 @@ class DatabaseManager:
                 # PostgreSQL doesn't support the SQLite datetime() function in
                 # index definitions, so index the raw timestamp column instead.
                 script = script.replace("datetime(timestamp)", "timestamp")
+                script = script.replace("datetime(created_at)", "created_at")
                 statements = [s.strip() for s in script.split(";") if s.strip()]
                 for stmt in statements:
                     await db.execute(stmt)
@@ -1516,6 +1540,59 @@ class DatabaseManager:
                 cur = await db.execute(query, tuple(params))
                 rows = await cur.fetchall()
             return [dict(r) for r in rows][::-1]
+
+    # ── Conversation notes helpers ─────────────────────────────────
+    async def add_note(self, note: dict) -> dict:
+        """Insert a new conversation note and return the stored row."""
+        data = {k: v for k, v in (note or {}).items() if k in self.note_columns}
+        if not data.get("user_id"):
+            raise HTTPException(status_code=400, detail="user_id is required")
+        async with self._conn() as db:
+            cols = ", ".join(data.keys())
+            qs = ", ".join("?" for _ in data)
+            query = self._convert(f"INSERT INTO conversation_notes ({cols}) VALUES ({qs})")
+            if self.use_postgres:
+                await db.execute(query, *data.values())
+                rowq = self._convert(
+                    "SELECT * FROM conversation_notes WHERE user_id = ? ORDER BY created_at DESC LIMIT ?"
+                )
+                rows = await db.fetch(rowq, data["user_id"], 1)
+                return dict(rows[0]) if rows else data
+            else:
+                await db.execute(query, tuple(data.values()))
+                await db.commit()
+                cur = await db.execute(
+                    "SELECT * FROM conversation_notes WHERE user_id = ? ORDER BY datetime(created_at) DESC LIMIT 1",
+                    (data["user_id"],),
+                )
+                row = await cur.fetchone()
+                return dict(row) if row else data
+
+    async def list_notes(self, user_id: str) -> list[dict]:
+        if not user_id:
+            return []
+        async with self._conn() as db:
+            if self.use_postgres:
+                q = self._convert(
+                    "SELECT * FROM conversation_notes WHERE user_id = ? ORDER BY created_at ASC"
+                )
+                rows = await db.fetch(q, user_id)
+                return [dict(r) for r in rows]
+            else:
+                cur = await db.execute(
+                    "SELECT * FROM conversation_notes WHERE user_id = ? ORDER BY datetime(created_at) ASC",
+                    (user_id,),
+                )
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
+
+    async def delete_note(self, note_id: int):
+        async with self._conn() as db:
+            if self.use_postgres:
+                await db.execute("DELETE FROM conversation_notes WHERE id = $1", note_id)
+            else:
+                await db.execute("DELETE FROM conversation_notes WHERE id = ?", (note_id,))
+                await db.commit()
 
     async def update_message_status(self, wa_message_id: str, status: str):
         """Persist a status update for a message identified by wa_message_id.
@@ -3779,6 +3856,24 @@ async def startup():
             await FastAPILimiter.init(redis_manager.redis_client)
         except Exception as exc:
             print(f"Rate limiter init failed: {exc}")
+    # Ensure conversation_notes table exists for legacy deployments
+    try:
+        async with db_manager._conn() as db:
+            if db_manager.use_postgres:
+                await db.execute(
+                    "CREATE TABLE IF NOT EXISTS conversation_notes ("
+                    "id SERIAL PRIMARY KEY, user_id TEXT NOT NULL, agent_username TEXT, type TEXT DEFAULT 'text', text TEXT, url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+                )
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_time ON conversation_notes (user_id, created_at)")
+            else:
+                await db.execute(
+                    "CREATE TABLE IF NOT EXISTS conversation_notes ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, agent_username TEXT, type TEXT DEFAULT 'text', text TEXT, url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+                )
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_time ON conversation_notes (user_id, datetime(created_at))")
+                await db.commit()
+    except Exception as exc:
+        print(f"conversation_notes ensure failed: {exc}")
     # Catalog cache: avoid blocking startup in production
     try:
         # Try hydrate from GCS quickly if missing
@@ -5579,3 +5674,49 @@ async def cashin(
     except Exception as exc:
         print(f"❌ Error in /cashin: {exc}")
         return {"error": f"Internal server error: {exc}", "status": "failed"}
+
+
+# ───────────────────────── Conversation Notes API ─────────────────────────
+@app.get("/conversations/{user_id}/notes")
+async def get_conversation_notes(user_id: str):
+    try:
+        notes = await db_manager.list_notes(user_id)
+        return notes
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list notes: {exc}")
+
+
+@app.post("/conversations/{user_id}/notes")
+async def create_conversation_note(
+    user_id: str,
+    note_type: str = Body("text"),
+    text: str | None = Body(None),
+    url: str | None = Body(None),
+    agent_username: str | None = Body(None),
+):
+    try:
+        payload = {
+            "user_id": user_id,
+            "type": (note_type or "text").lower(),
+            "text": (text or None),
+            "url": (url or None),
+            "agent_username": agent_username,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        if payload["type"] not in ("text", "audio"):
+            payload["type"] = "text"
+        stored = await db_manager.add_note(payload)
+        return stored
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to add note: {exc}")
+
+
+@app.delete("/conversations/notes/{note_id}")
+async def delete_conversation_note(note_id: int):
+    try:
+        await db_manager.delete_note(note_id)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete note: {exc}")

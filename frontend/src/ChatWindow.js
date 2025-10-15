@@ -8,6 +8,7 @@ import { saveMessages, loadMessages } from './chatStorage';
 import Composer from './Composer';
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
 const MemoMessageBubble = React.memo(MessageBubble);
+const NotesDialog = React.lazy(() => import('./NotesDialog'));
 
 // API and WebSocket endpoints
 const API_BASE = process.env.REACT_APP_API_BASE || '';
@@ -126,6 +127,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const [highlightedIds, setHighlightedIds] = useState(new Set());
   const highlightTimeoutsRef = useRef(new Map());
   const forwardPayloadRef = useRef(null);
+  const [notesOpen, setNotesOpen] = useState(false);
   const messagesRef = useRef([]);
   // Track the in-flight initial HTTP fetch so we can cancel it once WS delivers data
   const initialFetchControllerRef = useRef(null);
@@ -145,6 +147,14 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
 
   // Reset state immediately on conversation change, then hydrate from cache
   useEffect(() => {
+    const openHandler = (ev) => {
+      const uid = ev?.detail?.user_id;
+      if (!uid || uid !== activeUser?.user_id) return;
+      setNotesOpen(true);
+    };
+    window.addEventListener('open-notes', openHandler);
+    return () => window.removeEventListener('open-notes', openHandler);
+  }, [activeUser?.user_id]);
     const uid = activeUser?.user_id;
     if (!uid) return;
     setIsInitialLoading(true);
@@ -1226,6 +1236,22 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           >↓</button>
         </div>
         <div className="flex items-center space-x-2">
+          {/* Notes button */}
+          {activeUser?.user_id && (
+            <button
+              className="px-2 py-1 bg-blue-700 text-white rounded"
+              onClick={() => {
+                try {
+                  const uid = activeUser?.user_id;
+                  if (!uid) return;
+                  window.dispatchEvent(new CustomEvent('open-notes', { detail: { user_id: uid } }));
+                } catch {}
+              }}
+              title="Conversation notes"
+            >
+              Notes
+            </button>
+          )}
           {(() => {
             const isDone = (activeUser?.tags || []).some(t => String(t || '').toLowerCase() === 'done');
             const userId = activeUser?.user_id;
@@ -1599,6 +1625,14 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           setForwardOpen(false);
         }}
       />
+      <Suspense fallback={null}>
+        <NotesDialog
+          open={notesOpen}
+          onClose={() => setNotesOpen(false)}
+          userId={activeUser?.user_id}
+          currentAgent={currentAgent}
+        />
+      </Suspense>
     </div>
   );
 }
