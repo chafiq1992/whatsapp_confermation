@@ -155,6 +155,8 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     window.addEventListener('open-notes', openHandler);
     return () => window.removeEventListener('open-notes', openHandler);
   }, [activeUser?.user_id]);
+
+  useEffect(() => {
     const uid = activeUser?.user_id;
     if (!uid) return;
     setIsInitialLoading(true);
