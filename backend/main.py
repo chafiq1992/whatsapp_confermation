@@ -57,11 +57,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
 
-# Serve built frontend assets (JS/CSS) under /static
-try:
-	app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "frontend" / "build" / "static")), name="static")
-except Exception:
-	pass
 
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
@@ -4629,12 +4624,25 @@ async def login_page():
     except Exception:
         return RedirectResponse("/")
 
+@app.get("/favicon.ico")
+async def favicon():
+    try:
+        fav = ROOT_DIR / "frontend" / "build" / "favicon.ico"
+        if fav.exists():
+            return FileResponse(str(fav))
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
 @app.get("/")
 async def index_page():
     try:
-        index_path = ROOT_DIR / "frontend" / "build" / "index.html"
-        with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
+        build_dir = ROOT_DIR / "frontend" / "build"
+        index_path = build_dir / "index.html"
+        if not index_path.exists():
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        html = index_path.read_text(encoding="utf-8")
+        return HTMLResponse(content=html)
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
