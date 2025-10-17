@@ -26,6 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 import httpx
 import redis.asyncio as redis
 from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 import subprocess
@@ -4621,6 +4622,15 @@ async def login_page():
             return HTMLResponse(content=f.read())
     except Exception:
         return RedirectResponse("/")
+
+@app.get("/")
+async def index_page():
+    try:
+        index_path = ROOT_DIR / "frontend" / "build" / "index.html"
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
 @app.post("/send-media")
 async def send_media(
