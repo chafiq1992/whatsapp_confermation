@@ -5345,11 +5345,6 @@ async def link_preview(url: str):
         print(f"Link preview error: {exc}")
         raise HTTPException(status_code=502, detail="Preview fetch failed")
 
-# Serve React build after all routes
-app.mount("/", StaticFiles(directory="frontend/build", html=True), name="frontend")
-
-
-
 META_CATALOG_URL = f"https://graph.facebook.com/v19.0/{CATALOG_ID}/products"
 
 async def fetch_meta_catalog():
