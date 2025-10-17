@@ -5725,7 +5725,18 @@ async def cashin(
 async def get_conversation_notes(user_id: str):
     try:
         notes = await db_manager.list_notes(user_id)
-        return notes
+        # Attach signed URLs for any GCS-backed media so browser can access
+        enriched = []
+        for n in notes:
+            try:
+                url = n.get("url")
+                signed = maybe_signed_url_for(url, ttl_seconds=3600) if url else None
+                if signed:
+                    n = { **n, "signed_url": signed }
+            except Exception:
+                pass
+            enriched.append(n)
+        return enriched
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to list notes: {exc}")
 
@@ -5750,6 +5761,14 @@ async def create_conversation_note(
         if payload["type"] not in ("text", "audio"):
             payload["type"] = "text"
         stored = await db_manager.add_note(payload)
+        # Include signed_url in the response for immediate playback
+        try:
+            media_url = stored.get("url")
+            signed = maybe_signed_url_for(media_url, ttl_seconds=3600) if media_url else None
+            if signed:
+                stored = { **stored, "signed_url": signed }
+        except Exception:
+            pass
         return stored
     except HTTPException:
         raise

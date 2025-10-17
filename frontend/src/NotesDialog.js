@@ -110,7 +110,7 @@ export default function NotesDialog({ open, onClose, userId, currentAgent }) {
                   {new Date(n.created_at || Date.now()).toLocaleString()} {n.agent_username ? `· ${n.agent_username}` : ''}
                 </div>
                 {n.type === 'audio' && n.url ? (
-                  <audio controls src={n.url} className="mt-1" />
+                  <audio controls src={n.signed_url || n.url} className="mt-1" />
                 ) : (
                   <div className="mt-1 whitespace-pre-wrap break-words">{n.text}</div>
                 )}
