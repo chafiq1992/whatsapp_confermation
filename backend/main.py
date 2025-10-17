@@ -57,6 +57,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
 
+# Serve built frontend assets (JS/CSS) under /static
+try:
+    app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "frontend" / "build" / "static")), name="static")
+except Exception:
+    pass
+
 
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
