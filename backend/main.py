@@ -57,6 +57,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
 
+# Serve built frontend assets (JS/CSS) under /static
+try:
+	app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "frontend" / "build" / "static")), name="static")
+except Exception:
+	pass
+
 # ── Cloud‑Run helpers ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
 BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
@@ -2537,9 +2543,9 @@ class MessageProcessor:
                                 "*Bienvenue chez IRRAKIDS* 👋\n"
                                 "*Merci de nous indiquer :*\n"
                                 "• Taille souhaitée 📏\n"
-                                "• Âge de l’enfant 🎂\n"
+                                "• Âge de l'enfant 🎂\n"
                                 "• Garçon ou fille 👦👧\n"
-                                "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                "*Nous vérifierons la disponibilité et vous proposerons d'autres articles adaptés à votre enfant.*\n"
                                 "*مرحبًا بك في IRRAKIDS* 👋\n"
                                 "*يرجى تزويدنا بـ:*\n"
                                 "• المقاس المطلوب 📏\n"
@@ -2606,9 +2612,9 @@ class MessageProcessor:
                                     "*Bienvenue chez IRRAKIDS* 👋\n"
                                     "*Merci de nous indiquer :*\n"
                                     "• Taille souhaitée 📏\n"
-                                    "• Âge de l’enfant 🎂\n"
+                                    "• Âge de l'enfant 🎂\n"
                                     "• Garçon ou fille 👦👧\n"
-                                    "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                    "*Nous vérifierons la disponibilité et vous proposerons d'autres articles adaptés à votre enfant.*\n"
                                     "*مرحبًا بك في IRRAKIDS* 👋\n"
                                     "*يرجى تزويدنا بـ:*\n"
                                     "• المقاس المطلوب 📏\n"
@@ -2639,9 +2645,9 @@ class MessageProcessor:
                                     "*Bienvenue chez IRRAKIDS* 👋\n"
                                     "*Merci de nous indiquer :*\n"
                                     "• Taille souhaitée 📏\n"
-                                    "• Âge de l’enfant 🎂\n"
+                                    "• Âge de l'enfant 🎂\n"
                                     "• Garçon ou fille 👦👧\n"
-                                    "*Nous vérifierons la disponibilité et vous proposerons d’autres articles adaptés à votre enfant.*\n"
+                                    "*Nous vérifierons la disponibilité et vous proposerons d'autres articles adaptés à votre enfant.*\n"
                                     "*مرحبًا بك في IRRAKIDS* 👋\n"
                                     "*يرجى تزويدنا بـ:*\n"
                                     "• المقاس المطلوب 📏\n"
