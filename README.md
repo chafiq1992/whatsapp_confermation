@@ -1,4 +1,4 @@
-# WhatsApp Shopify Integration
+# WhatsApp Shopify Integration 
 
 This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores.
 
