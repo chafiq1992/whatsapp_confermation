@@ -57,11 +57,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 MEDIA_DIR = ROOT_DIR / "media"
 MEDIA_DIR.mkdir(exist_ok=True)
 
-# Serve built frontend assets (JS/CSS) under /static
-try:
-    app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "frontend" / "build" / "static")), name="static")
-except Exception:
-    pass
+# (static mount will be added later, after route declarations)
 
 
 # ── Cloud‑Run helpers ────────────────────────────────────────────
@@ -4610,6 +4606,12 @@ async def get_version():
         **({"commit": commit} if commit else {}),
     }
 
+# After all routes: mount the static folder for any other assets under /static
+try:
+    app.mount("/static", StaticFiles(directory=str(ROOT_DIR / "frontend" / "build" / "static")), name="static")
+except Exception:
+    pass
+
 # ----- Agent analytics -----
 @app.get("/analytics/agents")
 async def get_agents_analytics(start: Optional[str] = None, end: Optional[str] = None):
@@ -4649,6 +4651,47 @@ async def index_page():
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         html = index_path.read_text(encoding="utf-8")
         return HTMLResponse(content=html)
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+# Serve hashed main bundle filenames for safety even if HTML references are stale
+@app.get("/static/js/{filename}")
+async def serve_js(filename: str):
+    try:
+        js_path = ROOT_DIR / "frontend" / "build" / "static" / "js" / filename
+        if js_path.exists():
+            return FileResponse(str(js_path))
+        # Best-effort: fallback to the current main bundle if name changed
+        manifest = ROOT_DIR / "frontend" / "build" / "asset-manifest.json"
+        if manifest.exists():
+            import json as _json
+            data = _json.loads(manifest.read_text(encoding="utf-8"))
+            main_rel = (data.get("files", {}) or {}).get("main.js")
+            if main_rel:
+                target = ROOT_DIR / "frontend" / "build" / main_rel.lstrip("/")
+                if target.exists():
+                    return FileResponse(str(target))
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+@app.get("/static/css/{filename}")
+async def serve_css(filename: str):
+    try:
+        css_path = ROOT_DIR / "frontend" / "build" / "static" / "css" / filename
+        if css_path.exists():
+            return FileResponse(str(css_path))
+        # Fallback to current main css from manifest
+        manifest = ROOT_DIR / "frontend" / "build" / "asset-manifest.json"
+        if manifest.exists():
+            import json as _json
+            data = _json.loads(manifest.read_text(encoding="utf-8"))
+            main_rel = (data.get("files", {}) or {}).get("main.css")
+            if main_rel:
+                target = ROOT_DIR / "frontend" / "build" / main_rel.lstrip("/")
+                if target.exists():
+                    return FileResponse(str(target))
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
