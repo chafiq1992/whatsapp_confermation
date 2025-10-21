@@ -128,6 +128,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const highlightTimeoutsRef = useRef(new Map());
   const forwardPayloadRef = useRef(null);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [notesCount, setNotesCount] = useState(0);
   const messagesRef = useRef([]);
   // Track the in-flight initial HTTP fetch so we can cancel it once WS delivers data
   const initialFetchControllerRef = useRef(null);
@@ -154,6 +155,36 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
     };
     window.addEventListener('open-notes', openHandler);
     return () => window.removeEventListener('open-notes', openHandler);
+  }, [activeUser?.user_id]);
+
+  // Fetch notes count on conversation change
+  useEffect(() => {
+    const uid = activeUser?.user_id;
+    if (!uid) { setNotesCount(0); return; }
+    (async () => {
+      try {
+        const res = await api.get(`/conversations/${uid}/notes`);
+        setNotesCount(Array.isArray(res.data) ? res.data.length : 0);
+      } catch {
+        setNotesCount(0);
+      }
+    })();
+  }, [activeUser?.user_id]);
+
+  // Live update notes count when notes are added/removed
+  useEffect(() => {
+    const uid = activeUser?.user_id;
+    if (!uid) return;
+    const onAdded = (ev) => { try { if (ev?.detail?.user_id === uid) setNotesCount((n) => n + 1); } catch {} };
+    const onDeleted = (ev) => { try { if (ev?.detail?.user_id === uid) setNotesCount((n) => Math.max(0, n - 1)); } catch {} };
+    window.addEventListener('note-added', onAdded);
+    window.addEventListener('note-deleted', onDeleted);
+    return () => {
+      try {
+        window.removeEventListener('note-added', onAdded);
+        window.removeEventListener('note-deleted', onDeleted);
+      } catch {}
+    };
   }, [activeUser?.user_id]);
 
   useEffect(() => {
@@ -1241,7 +1272,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           {/* Notes button */}
           {activeUser?.user_id && (
             <button
-              className="px-2 py-1 bg-blue-700 text-white rounded"
+              className="relative px-2 py-1 bg-blue-700 text-white rounded"
               onClick={() => {
                 try {
                   const uid = activeUser?.user_id;
@@ -1252,6 +1283,11 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
               title="Conversation notes"
             >
               Notes
+              {notesCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] leading-[18px] text-center">
+                  {notesCount}
+                </span>
+              )}
             </button>
           )}
           {(() => {

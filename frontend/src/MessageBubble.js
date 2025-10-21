@@ -725,6 +725,23 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                       );
                     }
                   }
+                  if (t.type === 'catalog_item' || t.type === 'interactive_product') {
+                    const rid = String(t.product_retailer_id || t.retailer_id || t.product_id || '');
+                    const info = catalogProducts[rid] || {};
+                    const raw = getSafeMediaUrl(info.image);
+                    const thumb = raw && /^https?:\/\//i.test(raw) ? `${API_BASE}/proxy-image?url=${encodeURIComponent(raw)}&w=64` : raw;
+                    if (thumb) {
+                      return (
+                        <img
+                          src={thumb}
+                          alt="product"
+                          className="w-10 h-10 object-cover rounded border border-gray-400/40 bg-gray-100"
+                          onError={(e) => handleImageError(e, '/placeholder-product.png')}
+                          loading="lazy"
+                        />
+                      );
+                    }
+                  }
                 } catch {}
                 return null;
               })()}
@@ -736,6 +753,12 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                     if (t.type === 'image') return '🖼️ Image';
                     if (t.type === 'audio') return '🎙️ Audio';
                     if (t.type === 'video') return '🎞️ Video';
+                    if (t.type === 'catalog_item' || t.type === 'interactive_product') {
+                      const rid = String(t.product_retailer_id || t.retailer_id || t.product_id || '');
+                      const label = String(t.caption || '').trim();
+                      const base = label || '🛒 Product';
+                      return rid ? `${base} • ${rid}` : base;
+                    }
                     return String(t.type || 'message');
                   } catch { return 'message'; }
                 })()}

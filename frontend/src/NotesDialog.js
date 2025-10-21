@@ -47,6 +47,7 @@ export default function NotesDialog({ open, onClose, userId, currentAgent }) {
       const added = res.data;
       setNotes(prev => [...prev, added]);
       setText("");
+      try { window.dispatchEvent(new CustomEvent('note-added', { detail: { user_id: userId } })); } catch {}
       setTimeout(() => {
         try {
           const el = listRef.current;
@@ -62,6 +63,7 @@ export default function NotesDialog({ open, onClose, userId, currentAgent }) {
     try {
       await api.delete(`/conversations/notes/${id}`);
       setNotes(prev => prev.filter(n => n.id !== id));
+      try { window.dispatchEvent(new CustomEvent('note-deleted', { detail: { user_id: userId } })); } catch {}
     } catch {}
   };
 
