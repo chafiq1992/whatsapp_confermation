@@ -680,11 +680,11 @@ class WhatsAppMessenger:
         if context_message_id:
             payload["context"] = {"message_id": context_message_id}
         
-        print(f"🚀 Sending WhatsApp message to {to}: {message}")
+        logging.info("send_text_message start to=%s context=%s", to, (context_message_id or ""))
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, headers=self.headers)
             result = response.json()
-            print(f"📱 WhatsApp API Response: {result}")
+            logging.info("send_text_message response status=%s body=%s", response.status_code, result)
             return result
 
     async def send_reaction(self, to: str, target_message_id: str, emoji: str, action: str = "react") -> dict:
@@ -930,11 +930,11 @@ class WhatsAppMessenger:
         if context_message_id:
             payload["context"] = {"message_id": context_message_id}
         
-        print(f"🚀 Sending WhatsApp media to {to}: {media_type} - {media_id_or_url}")
+        logging.info("send_media_message start to=%s type=%s is_link=%s", to, media_type, is_link)
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, headers=self.headers)
             result = response.json()
-            print(f"📱 WhatsApp Media API Response: {result}")
+            logging.info("send_media_message response status=%s body=%s", response.status_code, result)
             return result
 
     async def mark_message_as_read(self, message_id: str) -> dict:
@@ -2484,6 +2484,7 @@ class MessageProcessor:
         """Background task to send message to WhatsApp and update status"""
         temp_id = message["temp_id"]
         user_id = message["user_id"]
+        logging.info("send_to_whatsapp attempt user_id=%s type=%s temp_id=%s", user_id, message.get("type"), temp_id)
         # Internal channels: user_id starting with "team:", "agent:", or "dm:" are NOT sent to WhatsApp
         if isinstance(user_id, str) and (
             user_id.startswith("team:") or user_id.startswith("agent:") or user_id.startswith("dm:")
@@ -2505,7 +2506,7 @@ class MessageProcessor:
                 except Exception:
                     pass
             except Exception as exc:
-                print(f"Internal channel processing error: {exc}")
+                logging.error("Internal channel processing error user_id=%s temp_id=%s error=%s", user_id, temp_id, exc, exc_info=True)
             return
         
         try:
@@ -2876,6 +2877,7 @@ class MessageProcessor:
                 }
             }
             
+            logging.info("send_to_whatsapp success user_id=%s temp_id=%s wa_message_id=%s", user_id, temp_id, wa_message_id)
             # Send status update to UI
             await self.connection_manager.send_to_user(user_id, status_update)
             
@@ -2907,7 +2909,7 @@ class MessageProcessor:
             _vlog(f"✅ Message sent successfully: {wa_message_id}")
             
         except Exception as e:
-            print(f"❌ WhatsApp send failed: {e}")
+            logging.error("send_to_whatsapp failed user_id=%s temp_id=%s error=%s", user_id, temp_id, e, exc_info=True)
             # Update UI with error status
             error_update = {
                 "type": "message_status_update", 
@@ -2924,7 +2926,7 @@ class MessageProcessor:
                 try:
                     Path(media_path).unlink(missing_ok=True)
                 except Exception as e:
-                    print(f"⚠️ Cleanup failed for {media_path}: {e}")
+                    logging.warning("Cleanup failed for %s error=%s", media_path, e)
 
     async def _verify_graph_media(self, media_id: str) -> dict:
         """Fetch media metadata from Graph and return JSON."""
@@ -4086,6 +4088,7 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
     if message_type == "send_message":
         message_data = data.get("data", {})
         message_data["user_id"] = user_id
+        logging.info("WS send_message request user_id=%s type=%s", user_id, message_data.get("type"))
         # Attach agent username from connection metadata if available
         try:
             meta = connection_manager.connection_metadata.get(websocket) or {}
@@ -4328,13 +4331,14 @@ async def send_message_endpoint(
         agent_username = request.get("agent") or request.get("agent_username")
         if agent_username:
             message_data["agent_username"] = agent_username
+        logging.info("/send-message requested user_id=%s type=%s agent=%s", user_id, message_type, agent_username or "")
         
         # Process the message
         result = await message_processor.process_outgoing_message(message_data)
         return {"status": "success", "message": result}
         
     except Exception as e:
-        print(f"Error sending message: {e}")
+        logging.error("Error in /send-message user_id=%s error=%s", request.get("user_id"), e, exc_info=True)
         return {"error": str(e)}
 
 @app.get("/conversations/{user_id}/messages")
@@ -4705,6 +4709,7 @@ async def send_media(
     _: None = Depends(_optional_rate_limit_media),
 ):
     """Send media message with proper error handling, plus WebM → OGG conversion"""
+    logging.info("/send-media requested user_id=%s type=%s files=%s caption=%s", user_id, media_type, len(files or []), caption)
 
     try:
         # ---------- basic validation ----------
@@ -4809,7 +4814,7 @@ async def send_media(
         # Propagate HTTP errors to the client
         raise
     except Exception as exc:
-        print(f"❌ Error in /send-media: {exc}")
+        logging.error("Error in /send-media user_id=%s error=%s", user_id, exc, exc_info=True)
         return {"error": f"Internal server error: {exc}", "status": "failed"}
 
 
