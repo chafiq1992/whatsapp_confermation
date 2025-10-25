@@ -89,6 +89,24 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
     ));
   }, [q, templates]);
 
+  const countPlaceholders = (text) => {
+    try {
+      const s = String(text || '');
+      const matches = s.match(/\{\{\d+\}\}/g);
+      return matches ? matches.length : 0;
+    } catch { return 0; }
+  };
+
+  const getParamSlotsForComponent = (comp) => {
+    if (!comp || typeof comp !== 'object') return 0;
+    if (Array.isArray(comp.parameters)) return comp.parameters.length;
+    const t = String(comp.type || '').toUpperCase();
+    if (t === 'BODY' || t === 'HEADER') {
+      return countPlaceholders(comp.text);
+    }
+    return 0;
+  };
+
   const buildGraphComponents = (template) => {
     const comps = Array.isArray(template?.components) ? template.components : [];
     const out = [];
@@ -96,10 +114,10 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
       const t = String(c?.type || '').toUpperCase();
       if (t === 'BODY' || t === 'HEADER' || t === 'FOOTER') {
         const item = { type: t };
-        const params = Array.isArray(c.parameters) ? c.parameters : [];
-        if (params.length) {
-          item.parameters = params.map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${pi}`] || '' }));
-        }
+        const slots = getParamSlotsForComponent(c);
+        if (slots > 0) {
+          item.parameters = Array.from({ length: slots }).map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${pi}`] || '' }));
+        } 
         out.push(item);
       } else if (t === 'BUTTON' || t === 'BUTTONS') {
         // Graph expects a separate BUTTON component entry per button with subtype
@@ -165,9 +183,9 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
                   {(active.components || []).map((comp, ci) => (
                     <div key={ci} className="border border-gray-700 rounded p-2">
                       <div className="text-xs text-gray-400 mb-1">{comp.type}</div>
-                      {(comp.parameters || []).length > 0 ? (
+                      {(getParamSlotsForComponent(comp) > 0) ? (
                         <div className="space-y-1">
-                          {comp.parameters.map((p, pi) => (
+                          {Array.from({ length: getParamSlotsForComponent(comp) }).map((_, pi) => (
                             <input
                               key={pi}
                               className="w-full px-2 py-1 bg-gray-800 rounded text-sm"
