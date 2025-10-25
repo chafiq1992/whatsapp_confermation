@@ -5794,7 +5794,7 @@ async def list_whatsapp_templates():
 
         url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{waba_id}/message_templates"
         params = {
-            "fields": "name,status,category,language,quality_score",
+            "fields": "name,status,category,language,quality_score,components",
             "limit": 100,
         }
         headers = await get_whatsapp_headers()
@@ -5814,6 +5814,7 @@ async def list_whatsapp_templates():
                             "language": t.get("language"),
                             "category": t.get("category"),
                             "quality_score": (t.get("quality_score") or {}).get("score"),
+                            "components": t.get("components") or [],
                         })
                     except Exception:
                         continue
@@ -5840,6 +5841,41 @@ async def whatsapp_config():
         }
     except Exception as exc:
         return {"error": str(exc)}
+
+@app.post("/whatsapp/send-template")
+async def send_whatsapp_template(
+    to: str = Body(..., embed=True),
+    template_name: str = Body(..., embed=True),
+    language: str = Body("en", embed=True),
+    components: list | None = Body(None, embed=True),
+):
+    """Send a WhatsApp template with full components to a phone (E.164 or raw).
+
+    Body: { to, template_name, language, components }
+    """
+    try:
+        # Normalize if raw digits provided
+        norm = to
+        if isinstance(to, str) and to and not to.startswith("+"):
+            try:
+                digits = "".join(ch for ch in to if ch.isdigit())
+                if digits.startswith("212"):
+                    norm = "+" + digits
+                elif digits.startswith("0"):
+                    norm = "+212" + digits[1:]
+                else:
+                    norm = "+" + digits
+            except Exception:
+                norm = to
+        res = await messenger.send_template_message(
+            to=norm,
+            template_name=template_name,
+            language=language or "en",
+            components=components,
+        )
+        return {"ok": True, "response": res}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Send template failed: {exc}")
 
 class CatalogManager:
     # Simple in-memory cache for set products to speed up responses
