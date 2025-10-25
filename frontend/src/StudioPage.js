@@ -50,7 +50,7 @@ export default function StudioPage() {
             <button
               className="px-2 py-1 text-xs bg-blue-600 text-white rounded"
               onClick={() => {
-                const name = prompt('New automation name?');
+                const name = window.prompt('New automation name?');
                 if (!name) return;
                 const id = name.toLowerCase().replace(/[^a-z0-9_\-]/g, '_');
                 const entry = { id, name, flow: { nodes: [], edges: [] } };
@@ -66,7 +66,7 @@ export default function StudioPage() {
               onClick={() => {
                 if (!selectedId) return;
                 const current = list.find(x => x.id === selectedId);
-                const name = prompt('Rename automation', current?.name || selectedId);
+                const name = window.prompt('Rename automation', current?.name || selectedId);
                 if (!name) return;
                 const next = list.map(x => x.id === selectedId ? { ...x, name } : x);
                 setList(next);
@@ -78,7 +78,7 @@ export default function StudioPage() {
               disabled={!selectedId}
               onClick={() => {
                 if (!selectedId) return;
-                if (!confirm('Delete this automation?')) return;
+                if (!window.confirm('Delete this automation?')) return;
                 const next = list.filter(x => x.id !== selectedId);
                 setList(next);
                 setSelectedId(next[0]?.id || null);
