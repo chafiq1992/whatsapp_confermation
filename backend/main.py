@@ -191,6 +191,8 @@ ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
+META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FB_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "") or os.getenv("FB_APP_SECRET", "")
 
 # Sync CATALOG_ID into compatibility shim, if present
 try:
@@ -3044,6 +3046,24 @@ class MessageProcessor:
         """Process incoming WhatsApp message"""
         try:
             value = webhook_data['entry'][0]['changes'][0]['value']
+            # Filter by phone_number_id so this instance only processes its own inbox
+            try:
+                meta = value.get("metadata") or {}
+                incoming_phone_id = str(meta.get("phone_number_id") or "")
+                configured_phone_id = str(PHONE_NUMBER_ID or "")
+                if (
+                    incoming_phone_id
+                    and configured_phone_id
+                    and configured_phone_id != "your_phone_number_id"
+                    and incoming_phone_id != configured_phone_id
+                ):
+                    _vlog(
+                        f"⏭️ Skipping webhook for phone_number_id {incoming_phone_id} (configured {configured_phone_id})"
+                    )
+                    return
+            except Exception:
+                # If metadata is missing or unexpected, proceed without filtering
+                pass
             
             # Handle status updates
             if "statuses" in value:
@@ -3849,6 +3869,26 @@ async def startup():
         print(f"DB init: backend={backend}, db_port={port_info}, pool_min={PG_POOL_MIN}, pool_max={PG_POOL_MAX}")
     except Exception:
         pass
+    # Optional: validate access token against Graph if app credentials provided
+    try:
+        if ACCESS_TOKEN and META_APP_ID and META_APP_SECRET:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://graph.facebook.com/debug_token",
+                    params={
+                        "input_token": ACCESS_TOKEN,
+                        "access_token": f"{META_APP_ID}|{META_APP_SECRET}",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json() or {}
+                    d = (data.get("data") or {})
+                    if not d.get("is_valid", False):
+                        print(f"⚠️ Meta access token appears invalid: {d}")
+                else:
+                    print(f"⚠️ Token debug request failed: {resp.status_code} {await resp.aread()}\n")
+    except Exception as exc:
+        print(f"⚠️ Token debug error: {exc}")
     # Connect to Redis only if configured
     if REDIS_URL:
         await redis_manager.connect()
@@ -4232,7 +4272,21 @@ async def webhook(request: Request):
         return PlainTextResponse("Verification failed", status_code=403)
         
     elif request.method == "POST":
-        data = await request.json()
+        # Optional: verify Meta webhook signature when META_APP_SECRET is set
+        try:
+            if META_APP_SECRET:
+                body_bytes = await request.body()
+                sig_header = request.headers.get("X-Hub-Signature-256", "")
+                expected = hmac.new(META_APP_SECRET.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+                presented = sig_header.split("=", 1)[1] if "=" in sig_header else sig_header
+                if not presented or not hmac.compare_digest(presented, expected):
+                    _vlog("❌ Invalid webhook signature")
+                    return PlainTextResponse("Invalid signature", status_code=401)
+                data = json.loads(body_bytes.decode("utf-8") or "{}")
+            else:
+                data = await request.json()
+        except Exception:
+            return PlainTextResponse("Bad Request", status_code=400)
         _vlog("📥 Incoming Webhook Payload:")
         _vlog(json.dumps(data, indent=2))
 
