@@ -189,6 +189,7 @@ def parse_agent_token(token: str) -> Optional[dict]:
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
+WABA_ID_ENV = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID")
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
 META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FB_APP_ID", "")
@@ -702,6 +703,46 @@ class WhatsAppMessenger:
             },
         }
         return await self._make_request("messages", data)
+
+    async def check_whatsapp_contact(self, phone_e164: str) -> dict:
+        """Check if a phone has WhatsApp using the contacts endpoint.
+        Returns the raw response with entries like [{ input, status, wa_id? }].
+        """
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{self.phone_number_id}/contacts"
+        payload = {
+            "blocking": "wait",
+            "contacts": [phone_e164],
+            "force_check": True,
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=self.headers)
+            return resp.json() if resp is not None else {}
+
+    async def send_template_message(
+        self,
+        to: str,
+        template_name: str,
+        language: str = "en",
+        components: list | None = None,
+        context_message_id: str | None = None,
+    ) -> dict:
+        url = f"{self.base_url}/messages"
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language},
+            },
+        }
+        if components:
+            payload["template"]["components"] = components
+        if context_message_id:
+            payload["context"] = {"message_id": context_message_id}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=self.headers)
+            return resp.json() if resp is not None else {}
 
     async def _make_request(self, endpoint: str, data: dict) -> dict:
         """Helper to send POST requests to WhatsApp API"""
@@ -4626,7 +4667,218 @@ async def log_order_created(payload: dict = Body(...)):
     if not order_id:
         raise HTTPException(status_code=400, detail="order_id is required")
     await db_manager.log_order_created(order_id=order_id, user_id=user_id, agent_username=agent)
+    # Kick off order confirmation flow in background (only for test number gate)
+    try:
+        asyncio.create_task(_run_order_confirmation_flow(order_id))
+    except Exception:
+        pass
     return {"ok": True}
+
+# ---------- Order Confirmation Flow (Test number only) ----------
+
+async def _fetch_order_phone(order_id: str) -> str:
+    """Fetch customer's phone from Shopify order."""
+    try:
+        # Lazy import to avoid hard dependency if Shopify not configured
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        url = f"{admin_api_base()}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return ""
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            # Prefer shipping address phone, fallback to customer or billing
+            phone = (
+                (order.get("shipping_address") or {}).get("phone")
+                or (order.get("billing_address") or {}).get("phone")
+                or (order.get("customer") or {}).get("phone")
+                or order.get("phone")
+                or ""
+            )
+            return str(phone or "").strip()
+    except Exception:
+        return ""
+
+async def _add_order_tag(order_id: str, tag: str) -> None:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            # Get current tags
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            current_tags = order.get("tags") or ""
+            tags = [t.strip() for t in str(current_tags).split(",") if t and t.strip()]
+            if tag not in tags:
+                tags.append(tag)
+            payload = {"order": {"id": order_id, "tags": ", ".join(tags)}}
+            await client.put(url, json=payload, **_client_args())
+    except Exception:
+        return
+
+def _normalize_ma_phone(phone: str) -> str:
+    """Normalize Moroccan phone to E.164 (+212...)."""
+    try:
+        s = "".join([ch for ch in str(phone or "") if ch.isdigit() or ch == "+"]) or ""
+        if not s:
+            return ""
+        # If already e164
+        if s.startswith("+"):
+            return s
+        # Strip all non-digits, then normalize
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if digits.startswith("212"):
+            return "+" + digits
+        if digits.startswith("0"):
+            digits = digits[1:]
+        # Assume Morocco default
+        return "+212" + digits
+    except Exception:
+        return ""
+
+async def _run_order_confirmation_flow(order_id: str) -> None:
+    """Run order confirmation flow for test number only, with node logs in Redis."""
+    TEST_NUMBER_RAW = "0618182056"
+    try:
+        # Node log structure helper
+        flow_key = f"flow_run:order_confirm:{order_id}"
+        nodes: list[dict] = []
+
+        def log_node(name: str, input_data: dict | None = None, output: dict | None = None, status: str = "ok", error: str | None = None):
+            nodes.append({
+                "name": name,
+                "status": status,
+                "input": input_data or {},
+                "output": output or {},
+                **({"error": error} if error else {}),
+                "ts": datetime.utcnow().isoformat(),
+            })
+
+        # Trigger: fetch order phone
+        raw_phone = await _fetch_order_phone(order_id)
+        log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
+
+        # Gate: only proceed if matches the test number
+        gate_digits = "".join(ch for ch in TEST_NUMBER_RAW if ch.isdigit())
+        raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
+        if not raw_digits.endswith(gate_digits):
+            # Store nodes and return
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
+        # Normalize phone
+        phone_e164 = _normalize_ma_phone(raw_phone)
+        log_node("normalize_phone", {"raw": raw_phone}, {"e164": phone_e164})
+        if not phone_e164:
+            log_node("normalize_phone", {"raw": raw_phone}, status="error", error="Empty normalized phone")
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
+        # Check WhatsApp availability
+        try:
+            contact_res = await messenger.check_whatsapp_contact(phone_e164)
+            entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
+            wa_status = (entry.get("status") or "").lower()
+            has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
+            log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
+        except Exception as exc:
+            log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
+        # Tag and return if no WhatsApp
+        if not has_wa:
+            await _add_order_tag(order_id, "no_wtp")
+            log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
+        # Send order confirmation template
+        template_name = os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
+        template_lang = os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
+        components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
+        components = None
+        try:
+            if components_env:
+                components = json.loads(components_env)
+        except Exception:
+            components = None
+        try:
+            send_res = await messenger.send_template_message(
+                to=phone_e164,
+                template_name=template_name,
+                language=template_lang,
+                components=components,
+            )
+            log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, {"response": send_res})
+            await _add_order_tag(order_id, "ok_wtp")
+            log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+        except Exception as exc:
+            log_node("send_template", {"to": phone_e164, "template": template_name}, status="error", error=str(exc))
+
+        # Persist all nodes
+        await _persist_flow_nodes(flow_key, nodes)
+    except Exception as exc:
+        try:
+            # Best-effort log outer error
+            flow_key = f"flow_run:order_confirm:{order_id}"
+            await _persist_flow_nodes(flow_key, [{"name": "flow:error", "status": "error", "error": str(exc), "ts": datetime.utcnow().isoformat()}])
+        except Exception:
+            pass
+
+async def _persist_flow_nodes(flow_key: str, nodes: list[dict]):
+    try:
+        if redis_manager.redis_client:
+            await redis_manager.redis_client.setex(flow_key, 24 * 3600, json.dumps({"nodes": nodes}))
+            # Also push to recent list
+            await redis_manager.redis_client.lpush("flow_run:order_confirm:list", flow_key)
+            await redis_manager.redis_client.ltrim("flow_run:order_confirm:list", 0, 49)
+    except Exception:
+        pass
+
+@app.get("/flows/order-confirmation/last")
+async def get_last_order_confirmation_runs(limit: int = 20):
+    try:
+        if not redis_manager.redis_client:
+            return []
+        keys = await redis_manager.redis_client.lrange("flow_run:order_confirm:list", 0, max(0, int(limit) - 1))
+        out: list[dict] = []
+        for k in keys:
+            key = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+            raw = await redis_manager.redis_client.get(key)
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+                out.append({"key": key, "summary": (parsed.get("nodes") or [])[-1] if parsed else {}})
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+@app.get("/flows/order-confirmation/{order_id}")
+async def get_order_confirmation_run(order_id: str):
+    try:
+        if not redis_manager.redis_client:
+            return {"nodes": []}
+        key = f"flow_run:order_confirm:{order_id}"
+        raw = await redis_manager.redis_client.get(key)
+        if not raw:
+            return {"nodes": []}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"nodes": []}
+    except Exception:
+        return {"nodes": []}
 
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):
@@ -5501,6 +5753,10 @@ async def get_waba_id() -> Optional[str]:
     global _WABA_ID_CACHE
     try:
         if _WABA_ID_CACHE:
+            return _WABA_ID_CACHE
+        # Allow explicit override via environment
+        if WABA_ID_ENV and isinstance(WABA_ID_ENV, str) and WABA_ID_ENV.strip():
+            _WABA_ID_CACHE = WABA_ID_ENV.strip()
             return _WABA_ID_CACHE
         if not PHONE_NUMBER_ID or PHONE_NUMBER_ID == "your_phone_number_id":
             return None
