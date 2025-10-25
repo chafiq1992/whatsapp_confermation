@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api from './api';
 
-export default function TemplatesDialog({ open, onClose, onSelectTemplate }) {
+export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUserId }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(null); // selected template
   const [paramsState, setParamsState] = useState({}); // keyed by component index/param index
+  const [customerData, setCustomerData] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -28,6 +29,55 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate }) {
     return () => { active = false; ctrl.abort(); };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !toUserId) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.get(`/search-customers-all`, { params: { phone_number: toUserId } });
+        const list = Array.isArray(res.data) ? res.data : [];
+        const first = list[0] || null;
+        if (alive) setCustomerData(first);
+      } catch {
+        if (alive) setCustomerData(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [open, toUserId]);
+
+  useEffect(() => {
+    // When a template is selected and we have customer data, prefill parameters
+    if (!active) return;
+    const comps = Array.isArray(active.components) ? active.components : [];
+    // Build default variables from last order/customer
+    const name = String((customerData?.name || '').split(' ')[0] || '').trim();
+    const orderNum = String(customerData?.last_order?.order_number || '').trim();
+    const total = String(customerData?.last_order?.total_price || '').trim();
+    const city = String(customerData?.primary_address?.city || '').trim();
+    const address = String(customerData?.primary_address?.address1 || customerData?.addresses?.[0]?.address1 || '').trim();
+    const phone = String(customerData?.primary_address?.phone || customerData?.phone || '').trim();
+    const items = Array.isArray(customerData?.last_order?.line_items) ? customerData.last_order.line_items : [];
+    const products = items.map(li => {
+      const title = [li.title, li.variant_title].filter(Boolean).join(' — ');
+      const qty = li.quantity != null ? `x${li.quantity}` : '';
+      return `• ${title} ${qty}`.trim();
+    }).join('\n');
+    const defaults = [name, orderNum, products, total, city, address, phone];
+    const next = {};
+    let idx = 0;
+    comps.forEach((c, ci) => {
+      const params = Array.isArray(c.parameters) ? c.parameters : [];
+      params.forEach((_, pi) => {
+        if (idx < defaults.length && defaults[idx]) {
+          next[`${ci}:${pi}`] = defaults[idx];
+        }
+        idx++;
+      });
+      // Buttons dynamic params (rare) not auto-filled here
+    });
+    if (Object.keys(next).length) setParamsState(next);
+  }, [active, customerData]);
+
   const filtered = useMemo(() => {
     const term = (q || '').trim().toLowerCase();
     if (!term) return templates;
@@ -38,6 +88,35 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate }) {
       String(t.category || '').toLowerCase().includes(term)
     ));
   }, [q, templates]);
+
+  const buildGraphComponents = (template) => {
+    const comps = Array.isArray(template?.components) ? template.components : [];
+    const out = [];
+    comps.forEach((c, ci) => {
+      const t = String(c?.type || '').toUpperCase();
+      if (t === 'BODY' || t === 'HEADER' || t === 'FOOTER') {
+        const item = { type: t };
+        const params = Array.isArray(c.parameters) ? c.parameters : [];
+        if (params.length) {
+          item.parameters = params.map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${pi}`] || '' }));
+        }
+        out.push(item);
+      } else if (t === 'BUTTON' || t === 'BUTTONS') {
+        // Graph expects a separate BUTTON component entry per button with subtype
+        const buttons = Array.isArray(c.buttons) ? c.buttons : (Array.isArray(c.parameters) ? c.parameters : []);
+        buttons.forEach((btn, bi) => {
+          const subtype = String(btn?.sub_type || btn?.subtype || (btn?.type || '')).toUpperCase();
+          const item = { type: 'BUTTON', sub_type: subtype || 'QUICK_REPLY', index: String(bi) };
+          // For URL/PHONE buttons, Graph may expect parameters with text for dynamic parts
+          if (Array.isArray(btn?.parameters) && btn.parameters.length) {
+            item.parameters = btn.parameters.map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${bi}:${pi}`] || '' }));
+          }
+          out.push(item);
+        });
+      }
+    });
+    return out;
+  };
 
   if (!open) return null;
 
@@ -101,6 +180,24 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate }) {
                       ) : (
                         <div className="text-xs text-gray-500">No parameters</div>
                       )}
+                      {Array.isArray(comp.buttons) && comp.buttons.length>0 && (
+                        <div className="mt-2 space-y-1">
+                          {comp.buttons.map((btn, bi) => (
+                            <div key={bi} className="text-xs">
+                              <div className="text-gray-400">Button {bi+1} ({btn.sub_type || btn.subtype || btn.type || 'QUICK_REPLY'})</div>
+                              {Array.isArray(btn.parameters) && btn.parameters.map((bp, pi) => (
+                                <input
+                                  key={pi}
+                                  className="w-full px-2 py-1 bg-gray-800 rounded text-sm mt-1"
+                                  placeholder={`Button ${bi+1} Param ${pi+1}`}
+                                  value={paramsState[`${ci}:${bi}:${pi}`] || ''}
+                                  onChange={(e)=> setParamsState(s => ({...s, [`${ci}:${bi}:${pi}`]: e.target.value}))}
+                                />
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -109,16 +206,11 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate }) {
                     className="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm"
                     onClick={async ()=>{
                       try {
-                        // Build components payload with user-entered params
-                        const comps = (active.components || []).map((c, ci) => {
-                          const out = { type: c.type };
-                          if (Array.isArray(c.parameters) && c.parameters.length>0) {
-                            out.parameters = c.parameters.map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${pi}`] || '' }));
-                          }
-                          return out;
-                        });
+                        const comps = buildGraphComponents(active);
+                        const to = String(toUserId || '').trim();
+                        if (!to) { alert('No recipient.'); return; }
                         await api.post('/whatsapp/send-template', {
-                          to: window.__ACTIVE_CHAT_USER_ID__ || '',
+                          to,
                           template_name: active.name,
                           language: active.language || 'en',
                           components: comps,
