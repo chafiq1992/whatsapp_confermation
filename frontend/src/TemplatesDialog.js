@@ -39,6 +39,19 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
         const list = Array.isArray(res.data) ? res.data : [];
         const first = list[0] || null;
         if (alive) setCustomerData(first);
+        // Attempt to resolve last order's first variant image for header media
+        try {
+          const lo = first?.last_order;
+          const firstItem = Array.isArray(lo?.line_items) && lo.line_items.length ? lo.line_items[0] : null;
+          const variantId = firstItem?.variant_id || firstItem?.variantId || firstItem?.variant_id_str;
+          if (variantId) {
+            const v = await api.get(`/shopify-variant/${variantId}`);
+            const image = v?.data?.variant?.image_src || v?.data?.variant?.image?.src || null;
+            if (image) {
+              setHeaderInputs(s => ({ ...s, 0: image }));
+            }
+          }
+        } catch {}
       } catch {
         if (alive) setCustomerData(null);
       }
