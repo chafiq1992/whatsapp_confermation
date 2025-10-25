@@ -8,6 +8,7 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
   const [active, setActive] = useState(null); // selected template
   const [paramsState, setParamsState] = useState({}); // keyed by component index/param index
   const [customerData, setCustomerData] = useState(null);
+  const [headerInputs, setHeaderInputs] = useState({}); // ci -> media/link for header
 
   useEffect(() => {
     if (!open) return;
@@ -76,6 +77,7 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
       // Buttons dynamic params (rare) not auto-filled here
     });
     if (Object.keys(next).length) setParamsState(next);
+    setHeaderInputs({});
   }, [active, customerData]);
 
   const filtered = useMemo(() => {
@@ -114,10 +116,22 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
       const t = String(c?.type || '').toUpperCase();
       if (t === 'BODY' || t === 'HEADER' || t === 'FOOTER') {
         const item = { type: t };
+        if (t === 'HEADER') {
+          const fmt = String(c?.format || '').toUpperCase();
+          if (fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT') {
+            const mediaKey = fmt.toLowerCase();
+            const url = headerInputs[ci] || '';
+            if (url) {
+              item.parameters = [{ type: mediaKey, [mediaKey]: { link: url } }];
+            }
+            out.push(item);
+            return;
+          }
+        }
         const slots = getParamSlotsForComponent(c);
         if (slots > 0) {
           item.parameters = Array.from({ length: slots }).map((_, pi) => ({ type: 'text', text: paramsState[`${ci}:${pi}`] || '' }));
-        } 
+        }
         out.push(item);
       } else if (t === 'BUTTON' || t === 'BUTTONS') {
         // Graph expects a separate BUTTON component entry per button with subtype
@@ -183,6 +197,14 @@ export default function TemplatesDialog({ open, onClose, onSelectTemplate, toUse
                   {(active.components || []).map((comp, ci) => (
                     <div key={ci} className="border border-gray-700 rounded p-2">
                       <div className="text-xs text-gray-400 mb-1">{comp.type}</div>
+                      {String(comp.type||'').toUpperCase()==='HEADER' && ['IMAGE','VIDEO','DOCUMENT'].includes(String(comp.format||'').toUpperCase()) && (
+                        <input
+                          className="w-full px-2 py-1 bg-gray-800 rounded text-sm mb-2"
+                          placeholder={`Header ${String(comp.format).toUpperCase()} URL`}
+                          value={headerInputs[ci] || ''}
+                          onChange={(e)=> setHeaderInputs(s => ({...s, [ci]: e.target.value}))}
+                        />
+                      )}
                       {(getParamSlotsForComponent(comp) > 0) ? (
                         <div className="space-y-1">
                           {Array.from({ length: getParamSlotsForComponent(comp) }).map((_, pi) => (
