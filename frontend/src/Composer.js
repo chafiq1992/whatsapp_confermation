@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState, Suspense } from 'react';
-import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile } from 'react-icons/hi2';
+import { HiPaperAirplane, HiPaperClip, HiMicrophone, HiFaceSmile, HiSquares2X2 } from 'react-icons/hi2';
 
 const EmojiPicker = React.lazy(() => import('emoji-picker-react'));
 
@@ -17,6 +17,7 @@ function ComposerInternal({
   onFileInputChange,
   fileInputRef,
   isUploading,
+  onOpenTemplates,
 }) {
   const [text, setText] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -138,6 +139,14 @@ function ComposerInternal({
                 tabIndex={-1}
               >
                 <HiPaperClip size={20} />
+              </button>
+              <button
+                className="text-[#5AA0FF] hover:opacity-90"
+                onClick={onOpenTemplates}
+                disabled={isUploading}
+                title="Templates"
+              >
+                <HiSquares2X2 size={20} />
               </button>
               <button
                 onClick={startRecording}

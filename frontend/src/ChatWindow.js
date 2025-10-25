@@ -6,6 +6,7 @@ import useAudioRecorder from './useAudioRecorder';
 import { Virtuoso } from 'react-virtuoso';
 import { saveMessages, loadMessages } from './chatStorage';
 import Composer from './Composer';
+const TemplatesDialog = React.lazy(() => import('./TemplatesDialog'));
 const CatalogPanel = React.lazy(() => import("./CatalogPanel"));
 const MemoMessageBubble = React.memo(MessageBubble);
 const NotesDialog = React.lazy(() => import('./NotesDialog'));
@@ -129,6 +130,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   const forwardPayloadRef = useRef(null);
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesCount, setNotesCount] = useState(0);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const messagesRef = useRef([]);
   // Track the in-flight initial HTTP fetch so we can cancel it once WS delivers data
   const initialFetchControllerRef = useRef(null);
@@ -1593,6 +1595,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
             removePendingImage={removePendingImage}
             sendPendingImages={sendPendingImages}
             clearPendingImages={clearPendingImages}
+            onOpenTemplates={() => setTemplatesOpen(true)}
           />
         </div>
       )}
@@ -1663,6 +1666,24 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
           setForwardOpen(false);
         }}
       />
+      <Suspense fallback={null}>
+        <TemplatesDialog
+          open={templatesOpen}
+          onClose={() => setTemplatesOpen(false)}
+          onSelectTemplate={(tpl) => {
+            try {
+              if (!tpl || !tpl.name) return;
+              // For now just insert the template name as text; sending a template can be added next.
+              if (ws && ws.readyState === WebSocket.OPEN) {
+                sendMessageViaWebSocket({ message: `Template: ${tpl.name}`, type: 'text' });
+              } else if (activeUser?.user_id) {
+                api.post(`${API_BASE}/send-message`, { user_id: activeUser.user_id, type: 'text', message: `Template: ${tpl.name}`, from_me: true, agent: currentAgent || undefined });
+              }
+            } catch {}
+            setTemplatesOpen(false);
+          }}
+        />
+      </Suspense>
       <Suspense fallback={null}>
         <NotesDialog
           open={notesOpen}

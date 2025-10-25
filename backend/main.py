@@ -5440,6 +5440,78 @@ async def get_whatsapp_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
 
+# Resolve and cache the WhatsApp Business Account (WABA) ID using the configured phone number id
+_WABA_ID_CACHE: Optional[str] = None
+
+async def get_waba_id() -> Optional[str]:
+    global _WABA_ID_CACHE
+    try:
+        if _WABA_ID_CACHE:
+            return _WABA_ID_CACHE
+        if not PHONE_NUMBER_ID or PHONE_NUMBER_ID == "your_phone_number_id":
+            return None
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{PHONE_NUMBER_ID}"
+        params = {"fields": "whatsapp_business_account"}
+        headers = await get_whatsapp_headers()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            data = resp.json() if resp is not None else {}
+        wba = (data or {}).get("whatsapp_business_account") or {}
+        waba_id = wba.get("id")
+        if isinstance(waba_id, str) and waba_id:
+            _WABA_ID_CACHE = waba_id
+            return waba_id
+        return None
+    except Exception:
+        return None
+
+
+@app.get("/whatsapp/templates")
+async def list_whatsapp_templates():
+    """Return Meta-approved WhatsApp message templates for the configured WABA.
+
+    Response shape: [{ name, status, language, category, quality_score }]
+    """
+    try:
+        waba_id = await get_waba_id()
+        if not waba_id:
+            raise HTTPException(status_code=500, detail="WABA ID not configured")
+
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{waba_id}/message_templates"
+        params = {
+            "fields": "name,status,category,language,quality_score",
+            "limit": 100,
+        }
+        headers = await get_whatsapp_headers()
+
+        results: list[dict] = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            next_url = url
+            next_params = params
+            while next_url:
+                r = await client.get(next_url, headers=headers, params=next_params if next_params else None)
+                payload = r.json() if r is not None else {}
+                for t in (payload.get("data") or []):
+                    try:
+                        results.append({
+                            "name": t.get("name"),
+                            "status": t.get("status"),
+                            "language": t.get("language"),
+                            "category": t.get("category"),
+                            "quality_score": (t.get("quality_score") or {}).get("score"),
+                        })
+                    except Exception:
+                        continue
+                # Graph pagination
+                next_url = (payload.get("paging") or {}).get("next")
+                next_params = None
+
+        return results
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch templates: {exc}")
+
 class CatalogManager:
     # Simple in-memory cache for set products to speed up responses
     _SET_CACHE: dict[str, list[Dict[str, Any]]] = {}
