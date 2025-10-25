@@ -265,8 +265,8 @@ function makeEdge(from, fromPort, to, toPort) {
   return { id: nextId(), from, fromPort, to, toPort };
 }
 
-export default function AutomationStudio({ onClose }) {
-  const [flow, setFlow] = useState(defaultFlow);
+export default function AutomationStudio({ onClose, initialFlow = null, onSaveFlow = null }) {
+  const [flow, setFlow] = useState(initialFlow && initialFlow.nodes && initialFlow.edges ? initialFlow : defaultFlow);
   const [linking, setLinking] = useState(null);
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
@@ -361,6 +361,11 @@ export default function AutomationStudio({ onClose }) {
 
   const [running, setRunning] = useState(false);
   const [activeNodeId, setActiveNodeId] = useState(null);
+  const handleSave = async () => {
+    try {
+      if (typeof onSaveFlow === 'function') await onSaveFlow(flow);
+    } catch {}
+  };
 
   const simulate = async () => {
     setRunning(true);

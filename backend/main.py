@@ -5842,6 +5842,26 @@ async def whatsapp_config():
     except Exception as exc:
         return {"error": str(exc)}
 
+# ---------------- Automations storage (simple key/value) -----------------
+
+AUTOMATIONS_KEY = "automations:list"
+
+@app.get("/automations")
+async def list_automations():
+    try:
+        raw = await db_manager.get_setting(AUTOMATIONS_KEY)
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+@app.post("/automations")
+async def save_automations(payload: list[dict] = Body(...)):
+    try:
+        await db_manager.set_setting(AUTOMATIONS_KEY, payload or [])
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save automations: {exc}")
+
 @app.post("/whatsapp/send-template")
 async def send_whatsapp_template(
     to: str = Body(..., embed=True),
