@@ -189,7 +189,12 @@ def parse_agent_token(token: str) -> Optional[dict]:
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
-WABA_ID_ENV = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID")
+WABA_ID_ENV = (
+    os.getenv("WHATSAPP_WABA_ID")
+    or os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID")
+    or os.getenv("WABA_ID")
+    or os.getenv("BUSINESS_ACCOUNT_ID")
+)
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
 META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FB_APP_ID", "")
@@ -5821,6 +5826,20 @@ async def list_whatsapp_templates():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch templates: {exc}")
+
+@app.get("/whatsapp/config")
+async def whatsapp_config():
+    """Diagnostic endpoint to inspect WhatsApp env/config detection (non-sensitive)."""
+    try:
+        detected_waba = await get_waba_id()
+        return {
+            "has_access_token": bool(ACCESS_TOKEN and ACCESS_TOKEN != "your_access_token_here"),
+            "phone_number_id_set": bool(PHONE_NUMBER_ID and PHONE_NUMBER_ID != "your_phone_number_id"),
+            "waba_env_present": bool(WABA_ID_ENV),
+            "resolved_waba_id": detected_waba or None,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
 
 class CatalogManager:
     # Simple in-memory cache for set products to speed up responses
