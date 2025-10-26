@@ -4895,23 +4895,23 @@ async def _run_order_confirmation_flow(
         # Check WhatsApp availability (skip for test gate to allow direct send attempt)
         has_wa = True
         if not is_test_gate:
-        try:
-            contact_res = await messenger.check_whatsapp_contact(phone_e164)
-            entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
-            wa_status = (entry.get("status") or "").lower()
-            has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
-            log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
-        except Exception as exc:
-            log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
-            await _persist_flow_nodes(flow_key, nodes)
-            return
+            try:
+                contact_res = await messenger.check_whatsapp_contact(phone_e164)
+                entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
+                wa_status = (entry.get("status") or "").lower()
+                has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
+                log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
+            except Exception as exc:
+                log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
+                await _persist_flow_nodes(flow_key, nodes)
+                return
 
-        # Tag and return if no WhatsApp
-        if not has_wa:
-            await _add_order_tag(order_id, "no_wtp")
-            log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
-            await _persist_flow_nodes(flow_key, nodes)
-            return
+            # Tag and return if no WhatsApp
+            if not has_wa:
+                await _add_order_tag(order_id, "no_wtp")
+                log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
+                await _persist_flow_nodes(flow_key, nodes)
+                return
         else:
             log_node("check_whatsapp", {"to": phone_e164, "skipped": True}, {"has_wa": True})
 
@@ -4921,12 +4921,12 @@ async def _run_order_confirmation_flow(
         template_lang = template_lang_override or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
         components = components_override
         if components is None:
-        components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
-        try:
-            if components_env:
-                components = json.loads(components_env)
-        except Exception:
-            components = None
+            components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
+            try:
+                if components_env:
+                    components = json.loads(components_env)
+            except Exception:
+                components = None
         try:
             send_res = await messenger.send_template_message(
                 to=phone_e164,
