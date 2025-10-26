@@ -4346,6 +4346,24 @@ async def webhook(request: Request):
                 data = await request.json()
         except Exception:
             return PlainTextResponse("Bad Request", status_code=400)
+        # Early filter by phone_number_id BEFORE verbose logging to avoid noisy logs
+        try:
+            value = (data.get("entry") or [{}])[0].get("changes", [{}])[0].get("value") or {}
+            meta = value.get("metadata") or {}
+            incoming_phone_id = str(meta.get("phone_number_id") or "")
+            configured_phone_id = str(PHONE_NUMBER_ID or "")
+            if (
+                incoming_phone_id
+                and configured_phone_id
+                and configured_phone_id != "your_phone_number_id"
+                and incoming_phone_id != configured_phone_id
+            ):
+                _vlog(
+                    f"⏭️ Skipping webhook for phone_number_id {incoming_phone_id} (configured {configured_phone_id})"
+                )
+                return {"ok": True}
+        except Exception:
+            pass
         _vlog("📥 Incoming Webhook Payload:")
         _vlog(json.dumps(data, indent=2))
 
