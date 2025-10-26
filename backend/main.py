@@ -3263,6 +3263,48 @@ class MessageProcessor:
                         title = reply_id or ""
                 message_obj["type"] = "text"
                 message_obj["message"] = title or "[interactive_reply]"
+                # Order confirmation flow button handling (Arabic labels)
+                try:
+                    def _norm_ar(s: str) -> str:
+                        t = (s or "").strip()
+                        try:
+                            t = t.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                            t = t.replace("ي", "ى") if False else t  # placeholder for future normalization
+                        except Exception:
+                            pass
+                        return t
+                    tnorm = _norm_ar(title)
+                    # Map known buttons
+                    BTN1 = {"تاكيد الطلب", "تأكيد الطلب"}
+                    BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
+                    BTN3 = {"تكلم مع العميل"}
+                    matched = None
+                    if tnorm in BTN1:
+                        matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                    elif tnorm in BTN2:
+                        matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                    elif tnorm in BTN3:
+                        matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                    if matched:
+                        try:
+                            await self.whatsapp_messenger.send_media_message(to=sender, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                            # Reflect in inbox/UI
+                            synthetic_audio = {
+                                "temp_id": f"temp_{uuid.uuid4().hex}",
+                                "user_id": sender,
+                                "message": str(matched),
+                                "type": "audio",
+                                "url": str(matched),
+                                "from_me": 1,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            }
+                            await self.db_manager.upsert_message(synthetic_audio)
+                            await self.redis_manager.cache_message(sender, synthetic_audio)
+                            await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 # Route survey interactions before generic acknowledgment
                 if reply_id.startswith("survey_"):
                     # Persist the textual reply bubble first
