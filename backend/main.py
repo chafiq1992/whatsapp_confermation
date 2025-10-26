@@ -4761,7 +4761,12 @@ def _normalize_ma_phone(phone: str) -> str:
     except Exception:
         return ""
 
-async def _run_order_confirmation_flow(order_id: str) -> None:
+async def _run_order_confirmation_flow(
+    order_id: str,
+    template_name_override: Optional[str] = None,
+    template_lang_override: Optional[str] = None,
+    components_override: list | None = None,
+) -> None:
     """Run order confirmation flow for test number only, with node logs in Redis."""
     TEST_NUMBER_RAW = "0618182056"
     try:
@@ -4819,15 +4824,17 @@ async def _run_order_confirmation_flow(order_id: str) -> None:
             return
 
         # Send order confirmation template
-        template_name = os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
-        template_lang = os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
-        components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
-        components = None
-        try:
-            if components_env:
-                components = json.loads(components_env)
-        except Exception:
-            components = None
+        # Allow per-call overrides; else read from environment
+        template_name = template_name_override or os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
+        template_lang = template_lang_override or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
+        components = components_override
+        if components is None:
+            components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
+            try:
+                if components_env:
+                    components = json.loads(components_env)
+            except Exception:
+                components = None
         try:
             send_res = await messenger.send_template_message(
                 to=phone_e164,

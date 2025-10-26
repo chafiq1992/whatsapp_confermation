@@ -1,7 +1,12 @@
 import httpx
 import logging
 import os
-from fastapi import APIRouter, Body, Query, HTTPException
+import asyncio
+import hmac
+import hashlib
+import base64
+import json
+from fastapi import APIRouter, Body, Query, HTTPException, Request
 
 # ================= CONFIG ==================
 
@@ -417,6 +422,61 @@ async def shopify_orders(customer_id: str, limit: int = 50):
                 "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
             })
         return simplified
+
+# =============== WEBHOOK: ORDERS CREATE ===============
+@router.post("/shopify/webhooks/orders/create")
+async def shopify_orders_create_webhook(request: Request):
+    """Receive Shopify Orders Create webhook and trigger order confirmation flow.
+
+    Verifies HMAC when SHOPIFY_WEBHOOK_SECRET (or IRRAKIDS_WEBHOOK_SECRET/IRRANOVA_WEBHOOK_SECRET) is set.
+    """
+    try:
+        body_bytes = await request.body()
+        # Verify HMAC if secret provided
+        secret = (
+            os.getenv("SHOPIFY_WEBHOOK_SECRET")
+            or os.getenv("IRRAKIDS_WEBHOOK_SECRET")
+            or os.getenv("IRRANOVA_WEBHOOK_SECRET")
+        )
+        if secret:
+            provided_hmac = request.headers.get("X-Shopify-Hmac-Sha256", "")
+            digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).digest()
+            computed = base64.b64encode(digest).decode()
+            if not provided_hmac or not hmac.compare_digest(provided_hmac, computed):
+                logging.getLogger(__name__).warning("Shopify webhook HMAC verification failed")
+                from fastapi.responses import PlainTextResponse
+                return PlainTextResponse("Unauthorized", status_code=401)
+
+        # Parse payload
+        try:
+            payload = json.loads(body_bytes.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+
+        # Orders/Create webhook sends the order object at the root
+        order_id = payload.get("id")
+        if not order_id:
+            # Some apps wrap under 'order'
+            order_id = (payload.get("order") or {}).get("id")
+
+        if order_id:
+            try:
+                # Lazy import to avoid circular imports at module load time
+                from . import main as backend_main  # type: ignore
+                # Use requested template/language for this flow run
+                asyncio.create_task(
+                    backend_main._run_order_confirmation_flow(
+                        str(order_id),
+                        template_name_override="order_confermation",
+                        template_lang_override="ar",
+                    )
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Failed to trigger order confirmation flow: %s", exc)
+
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Webhook handling failed: {exc}")
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():
