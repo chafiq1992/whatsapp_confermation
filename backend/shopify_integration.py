@@ -454,10 +454,16 @@ async def shopify_orders_create_webhook(request: Request):
             payload = {}
 
         # Orders/Create webhook sends the order object at the root
-        order_id = payload.get("id")
-        if not order_id:
-            # Some apps wrap under 'order'
-            order_id = (payload.get("order") or {}).get("id")
+        order = payload if payload.get("id") else (payload.get("order") or {})
+        order_id = order.get("id")
+
+        # Try to extract phone directly from webhook payload to avoid re-fetching
+        raw_phone = (
+            ((order.get("shipping_address") or {}).get("phone"))
+            or ((order.get("billing_address") or {}).get("phone"))
+            or ((order.get("customer") or {}).get("phone"))
+            or order.get("phone")
+        )
 
         if order_id:
             try:
@@ -469,6 +475,7 @@ async def shopify_orders_create_webhook(request: Request):
                         str(order_id),
                         template_name_override="order_confermation",
                         template_lang_override="ar",
+                        raw_phone_override=(str(raw_phone).strip() if raw_phone else None),
                     )
                 )
             except Exception as exc:

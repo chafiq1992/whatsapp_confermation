@@ -4766,6 +4766,7 @@ async def _run_order_confirmation_flow(
     template_name_override: Optional[str] = None,
     template_lang_override: Optional[str] = None,
     components_override: list | None = None,
+    raw_phone_override: Optional[str] = None,
 ) -> None:
     """Run order confirmation flow for test number only, with node logs in Redis."""
     TEST_NUMBER_RAW = "0618182056"
@@ -4784,8 +4785,8 @@ async def _run_order_confirmation_flow(
                 "ts": datetime.utcnow().isoformat(),
             })
 
-        # Trigger: fetch order phone
-        raw_phone = await _fetch_order_phone(order_id)
+        # Trigger: fetch order phone (or use override from webhook)
+        raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
 
         # Gate: only proceed if matches the test number (accept common formats)
