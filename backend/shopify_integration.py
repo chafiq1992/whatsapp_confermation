@@ -541,6 +541,53 @@ async def shopify_orders_create_webhook(request: Request):
                             continue
                 if not header_url:
                     header_url = os.getenv("ORDER_CONFIRM_HEADER_IMAGE_URL")
+                # If still not set, try deriving from first line item's variant image (best-effort)
+                if not header_url:
+                    try:
+                        items = order.get("line_items") or []
+                        if items:
+                            base = admin_api_base()
+                            async with httpx.AsyncClient(timeout=12.0) as client:
+                                for li in items:
+                                    variant_id = li.get("variant_id")
+                                    product_id = li.get("product_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                # Match variant image id
+                                                if image_id:
+                                                    try:
+                                                        imgs = prod.get("images") or []
+                                                        for img in imgs:
+                                                            if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                                header_url = img.get("src")
+                                                                break
+                                                    except Exception:
+                                                        pass
+                                                # Fallbacks
+                                                if not header_url:
+                                                    header_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if header_url:
+                                        break
+                    except Exception:
+                        pass
                 if header_url:
                     components_override.append({
                         "type": "header",
