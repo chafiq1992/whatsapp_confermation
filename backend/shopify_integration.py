@@ -469,8 +469,8 @@ async def shopify_orders_create_webhook(request: Request):
             "order_confirm webhook: order_id=%s raw_phone=%s", str(order_id or ""), str(raw_phone or "")
         )
 
-        # Build default body components (7 params) if template requires placeholders
-        # Params chosen best-effort from order fields; adjust in template to match your layout
+        # Build default body components (7 params) matching template placeholders
+        # 1) customer name, 2) order number, 3) phone, 4) city, 5) address, 6) items summary, 7) total
         components_override = None
         try:
             body_params: list[str] = []
@@ -489,18 +489,42 @@ async def shopify_orders_create_webhook(request: Request):
             total_with_currency = (f"{total_str} {currency}".strip()) if total_str != "-" else total_str
             city = str(shipping.get("city") or billing.get("city") or "-")
             address1 = str(shipping.get("address1") or billing.get("address1") or "-")
-            payment_status = str(order.get("financial_status") or "-")
-            support_phone = os.getenv("REACT_APP_SUPPORT_PHONE", "-")
+            # phone
+            phone_val = (
+                (shipping.get("phone") if isinstance(shipping.get("phone"), str) else None)
+                or (billing.get("phone") if isinstance(billing.get("phone"), str) else None)
+                or (customer.get("phone") if isinstance(customer.get("phone"), str) else None)
+                or (order.get("phone") if isinstance(order.get("phone"), str) else None)
+                or str(raw_phone or "-")
+            )
+            # items summary: "qty title" joined by " / "
+            items = order.get("line_items") or []
+            try:
+                parts = []
+                for li in items:
+                    qty = li.get("quantity")
+                    title = li.get("title") or ""
+                    try:
+                        qstr = str(int(qty)) if qty is not None else ""
+                    except Exception:
+                        qstr = str(qty or "")
+                    if qstr and title:
+                        parts.append(f"{qstr} {title}")
+                    elif title:
+                        parts.append(title)
+                items_summary = " / ".join([p for p in parts if p]) or "-"
+            except Exception:
+                items_summary = "-"
 
             # Fill exactly 7 params to satisfy template placeholders
             body_params = [
                 customer_name,
                 order_number,
-                total_with_currency,
+                phone_val,
                 city,
                 address1,
-                payment_status,
-                support_phone,
+                items_summary,
+                total_with_currency,
             ]
             components_override = [
                 {
