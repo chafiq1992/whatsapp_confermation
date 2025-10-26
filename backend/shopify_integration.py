@@ -526,12 +526,36 @@ async def shopify_orders_create_webhook(request: Request):
                 items_summary,
                 total_with_currency,
             ]
-            components_override = [
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": str(v)} for v in body_params],
-                }
-            ]
+            components_override = []
+            # Header IMAGE param: prefer order note_attributes.image_url, else env ORDER_CONFIRM_HEADER_IMAGE_URL
+            try:
+                header_url = None
+                note_attrs = order.get("note_attributes") or []
+                if isinstance(note_attrs, list):
+                    for na in note_attrs:
+                        try:
+                            if str(na.get("name")).lower() == "image_url" and na.get("value"):
+                                header_url = str(na.get("value"))
+                                break
+                        except Exception:
+                            continue
+                if not header_url:
+                    header_url = os.getenv("ORDER_CONFIRM_HEADER_IMAGE_URL")
+                if header_url:
+                    components_override.append({
+                        "type": "header",
+                        "parameters": [{
+                            "type": "image",
+                            "image": {"link": str(header_url)}
+                        }]
+                    })
+            except Exception:
+                pass
+
+            components_override.append({
+                "type": "body",
+                "parameters": [{"type": "text", "text": str(v)} for v in body_params],
+            })
             logging.getLogger(__name__).info(
                 "order_confirm webhook: built %d body params for template", len(body_params)
             )
