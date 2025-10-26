@@ -3248,6 +3248,19 @@ class MessageProcessor:
                 title = (btn.get("title") or lst.get("title") or "").strip()
                 # Capture id for workflow routing
                 reply_id = (btn.get("id") or lst.get("id") or "").strip()
+                # Extra fallbacks if title missing in payload variants
+                if not title:
+                    try:
+                        # Some clients may not include title; fallback to visible button text or body text
+                        title = (
+                            (inter.get("button") or {}).get("text")
+                            or inter.get("title")
+                            or (inter.get("body") or {}).get("text")
+                            or reply_id
+                            or ""
+                        ).strip()
+                    except Exception:
+                        title = reply_id or ""
                 message_obj["type"] = "text"
                 message_obj["message"] = title or "[interactive_reply]"
                 # Route survey interactions before generic acknowledgment
