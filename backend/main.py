@@ -3337,6 +3337,14 @@ class MessageProcessor:
             except Exception:
                 message_obj["type"] = "text"
                 message_obj["message"] = "[interactive_reply]"
+        elif msg_type == "button":
+            try:
+                btn = message.get("button", {}) or {}
+                title = (btn.get("text") or btn.get("payload") or "").strip()
+            except Exception:
+                title = "[button_reply]"
+            message_obj["type"] = "text"
+            message_obj["message"] = title or "[button_reply]"
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
@@ -4785,6 +4793,7 @@ async def _run_order_confirmation_flow(
     template_lang_override: Optional[str] = None,
     components_override: list | None = None,
     raw_phone_override: Optional[str] = None,
+    extra_image_links: Optional[list[str]] = None,
 ) -> None:
     """Run order confirmation flow for test number only, with node logs in Redis."""
     TEST_NUMBER_RAW = "0618182056"
@@ -4844,23 +4853,23 @@ async def _run_order_confirmation_flow(
         # Check WhatsApp availability (skip for test gate to allow direct send attempt)
         has_wa = True
         if not is_test_gate:
-            try:
-                contact_res = await messenger.check_whatsapp_contact(phone_e164)
-                entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
-                wa_status = (entry.get("status") or "").lower()
-                has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
-                log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
-            except Exception as exc:
-                log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
-                await _persist_flow_nodes(flow_key, nodes)
-                return
+        try:
+            contact_res = await messenger.check_whatsapp_contact(phone_e164)
+            entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
+            wa_status = (entry.get("status") or "").lower()
+            has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
+            log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
+        except Exception as exc:
+            log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
+            await _persist_flow_nodes(flow_key, nodes)
+            return
 
-            # Tag and return if no WhatsApp
-            if not has_wa:
-                await _add_order_tag(order_id, "no_wtp")
-                log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
-                await _persist_flow_nodes(flow_key, nodes)
-                return
+        # Tag and return if no WhatsApp
+        if not has_wa:
+            await _add_order_tag(order_id, "no_wtp")
+            log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
+            await _persist_flow_nodes(flow_key, nodes)
+            return
         else:
             log_node("check_whatsapp", {"to": phone_e164, "skipped": True}, {"has_wa": True})
 
@@ -4870,12 +4879,12 @@ async def _run_order_confirmation_flow(
         template_lang = template_lang_override or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
         components = components_override
         if components is None:
-            components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
-            try:
-                if components_env:
-                    components = json.loads(components_env)
-            except Exception:
-                components = None
+        components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
+        try:
+            if components_env:
+                components = json.loads(components_env)
+        except Exception:
+            components = None
         try:
             send_res = await messenger.send_template_message(
                 to=phone_e164,
@@ -4890,6 +4899,45 @@ async def _run_order_confirmation_flow(
                 pass
             await _add_order_tag(order_id, "ok_wtp")
             log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+            # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
+            try:
+                await db_manager.upsert_user(phone_e164)
+                synthetic = {
+                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                    "user_id": phone_e164,
+                    "message": f"[Template sent] {template_name}",
+                    "type": "text",
+                    "from_me": 1,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                await db_manager.upsert_message(synthetic)
+                await redis_manager.cache_message(phone_e164, synthetic)
+                await connection_manager.send_to_user(phone_e164, {"type": "message_sent", "data": synthetic})
+            except Exception:
+                pass
+            # Best-effort: send extra variant images if provided
+            try:
+                links = list(extra_image_links or [])
+                for link in links[:5]:
+                    try:
+                        await messenger.send_media_message(to=phone_e164, media_type="image", media_id_or_url=str(link))
+                        # Reflect in UI
+                        synthetic_img = {
+                            "temp_id": f"temp_{uuid.uuid4().hex}",
+                            "user_id": phone_e164,
+                            "message": str(link),
+                            "type": "image",
+                            "url": str(link),
+                            "from_me": 1,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                        await db_manager.upsert_message(synthetic_img)
+                        await redis_manager.cache_message(phone_e164, synthetic_img)
+                        await connection_manager.send_to_user(phone_e164, {"type": "message_sent", "data": synthetic_img})
+                    except Exception:
+                        continue
+            except Exception:
+                pass
         except Exception as exc:
             log_node("send_template", {"to": phone_e164, "template": template_name}, status="error", error=str(exc))
             try:

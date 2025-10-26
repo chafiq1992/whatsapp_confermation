@@ -516,15 +516,16 @@ async def shopify_orders_create_webhook(request: Request):
             except Exception:
                 items_summary = "-"
 
-            # Fill exactly 7 params to satisfy template placeholders
+            # Fill exactly 7 params to satisfy template placeholders in this exact order:
+            # 1 customer name, 2 order number, 3 items titles, 4 total, 5 city, 6 address, 7 phone
             body_params = [
                 customer_name,
                 order_number,
-                phone_val,
-                city,
-                address1,
                 items_summary,
                 total_with_currency,
+                city,
+                address1,
+                phone_val,
             ]
             components_override = []
             # Header IMAGE param: prefer order note_attributes.image_url, else env ORDER_CONFIRM_HEADER_IMAGE_URL
@@ -609,6 +610,52 @@ async def shopify_orders_create_webhook(request: Request):
         except Exception as _exc:
             components_override = None
 
+        # Collect additional variant image links for multi-item orders (best-effort, limit 5)
+        extra_image_links: list[str] | None = None
+        try:
+            items = order.get("line_items") or []
+            base = admin_api_base()
+            links: list[str] = []
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                for li in items:
+                    if len(links) >= 5:
+                        break
+                    product_id = li.get("product_id")
+                    variant_id = li.get("variant_id")
+                    image_id = None
+                    if variant_id:
+                        try:
+                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                            if v_resp.status_code == 200:
+                                variant = (v_resp.json() or {}).get("variant") or {}
+                                image_id = variant.get("image_id")
+                                if not product_id:
+                                    product_id = variant.get("product_id")
+                        except Exception:
+                            image_id = None
+                    if product_id:
+                        try:
+                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                            if p_resp.status_code == 200:
+                                prod = (p_resp.json() or {}).get("product") or {}
+                                img_url = None
+                                if image_id:
+                                    for img in (prod.get("images") or []):
+                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                            img_url = img.get("src")
+                                            break
+                                if not img_url:
+                                    img_url = (prod.get("image") or {}).get("src") or (
+                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                    )
+                                if img_url:
+                                    links.append(img_url)
+                        except Exception:
+                            pass
+            extra_image_links = links if links else None
+        except Exception:
+            extra_image_links = None
+
         if order_id:
             try:
                 # Lazy import to avoid circular imports at module load time
@@ -621,6 +668,7 @@ async def shopify_orders_create_webhook(request: Request):
                         template_lang_override="ar",
                         raw_phone_override=(str(raw_phone).strip() if raw_phone else None),
                         components_override=components_override,
+                        extra_image_links=extra_image_links,
                     )
                 )
             except Exception as exc:
