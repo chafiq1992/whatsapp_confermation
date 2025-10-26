@@ -465,6 +465,10 @@ async def shopify_orders_create_webhook(request: Request):
             or order.get("phone")
         )
 
+        logging.getLogger(__name__).info(
+            "order_confirm webhook: order_id=%s raw_phone=%s", str(order_id or ""), str(raw_phone or "")
+        )
+
         if order_id:
             try:
                 # Lazy import to avoid circular imports at module load time

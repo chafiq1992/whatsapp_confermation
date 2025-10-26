@@ -4805,6 +4805,10 @@ async def _run_order_confirmation_flow(
             {"raw_digits": raw_digits, "candidates": [gate_digits, gate_no0, gate_e164]},
             {"allowed": allowed},
         )
+        try:
+            logging.info("order_confirm flow: order_id=%s gate_allowed=%s phone_raw=%s", order_id, allowed, str(raw_phone))
+        except Exception:
+            pass
         if not allowed:
             # Store nodes and return
             await _persist_flow_nodes(flow_key, nodes)
@@ -4862,10 +4866,18 @@ async def _run_order_confirmation_flow(
                 components=components,
             )
             log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, {"response": send_res})
+            try:
+                logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
+            except Exception:
+                pass
             await _add_order_tag(order_id, "ok_wtp")
             log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
         except Exception as exc:
             log_node("send_template", {"to": phone_e164, "template": template_name}, status="error", error=str(exc))
+            try:
+                logging.warning("order_confirm flow: send template failed order_id=%s error=%s", order_id, str(exc))
+            except Exception:
+                pass
             # In test mode, reflect failure with no_wtp tag to keep visibility in admin
             if is_test_gate:
                 try:
