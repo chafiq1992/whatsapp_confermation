@@ -4788,10 +4788,23 @@ async def _run_order_confirmation_flow(
         raw_phone = await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
 
-        # Gate: only proceed if matches the test number
+        # Gate: only proceed if matches the test number (accept common formats)
         gate_digits = "".join(ch for ch in TEST_NUMBER_RAW if ch.isdigit())
         raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
-        if not raw_digits.endswith(gate_digits):
+        # Build candidate endings: exact, without leading 0, and E.164 MA with 212
+        gate_no0 = gate_digits[1:] if gate_digits.startswith("0") else gate_digits
+        gate_e164 = ("212" + gate_no0) if not gate_digits.startswith("212") else gate_digits
+        allowed = (
+            raw_digits.endswith(gate_digits)
+            or raw_digits.endswith(gate_no0)
+            or raw_digits.endswith(gate_e164)
+        )
+        log_node(
+            "gate:test_only",
+            {"raw_digits": raw_digits, "candidates": [gate_digits, gate_no0, gate_e164]},
+            {"allowed": allowed},
+        )
+        if not allowed:
             # Store nodes and return
             await _persist_flow_nodes(flow_key, nodes)
             return
