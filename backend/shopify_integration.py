@@ -469,6 +469,51 @@ async def shopify_orders_create_webhook(request: Request):
             "order_confirm webhook: order_id=%s raw_phone=%s", str(order_id or ""), str(raw_phone or "")
         )
 
+        # Build default body components (7 params) if template requires placeholders
+        # Params chosen best-effort from order fields; adjust in template to match your layout
+        components_override = None
+        try:
+            body_params: list[str] = []
+            shipping = (order.get("shipping_address") or {})
+            billing = (order.get("billing_address") or {})
+            customer = (order.get("customer") or {})
+            customer_name = (
+                shipping.get("name")
+                or f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
+                or f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip()
+                or "-"
+            )
+            order_number = str(order.get("name") or order.get("order_number") or order_id or "-")
+            total_str = str(order.get("total_price") or "-")
+            currency = str(order.get("currency") or "")
+            total_with_currency = (f"{total_str} {currency}".strip()) if total_str != "-" else total_str
+            city = str(shipping.get("city") or billing.get("city") or "-")
+            address1 = str(shipping.get("address1") or billing.get("address1") or "-")
+            payment_status = str(order.get("financial_status") or "-")
+            support_phone = os.getenv("REACT_APP_SUPPORT_PHONE", "-")
+
+            # Fill exactly 7 params to satisfy template placeholders
+            body_params = [
+                customer_name,
+                order_number,
+                total_with_currency,
+                city,
+                address1,
+                payment_status,
+                support_phone,
+            ]
+            components_override = [
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(v)} for v in body_params],
+                }
+            ]
+            logging.getLogger(__name__).info(
+                "order_confirm webhook: built %d body params for template", len(body_params)
+            )
+        except Exception as _exc:
+            components_override = None
+
         if order_id:
             try:
                 # Lazy import to avoid circular imports at module load time
@@ -480,6 +525,7 @@ async def shopify_orders_create_webhook(request: Request):
                         template_name_override="order_confermation",
                         template_lang_override="ar",
                         raw_phone_override=(str(raw_phone).strip() if raw_phone else None),
+                        components_override=components_override,
                     )
                 )
             except Exception as exc:
