@@ -709,6 +709,24 @@ function makePath(x1,y1,x2,y2){
 }
 
 function Inspector({ node, onUpdate }){
+  const [templates, setTemplates] = React.useState(null);
+  const [loadingTpl, setLoadingTpl] = React.useState(false);
+  React.useEffect(()=>{
+    const load = async ()=>{
+      try {
+        setLoadingTpl(true);
+        const mod = await import('./api');
+        const api = mod.default;
+        const res = await api.get('/whatsapp/templates');
+        const arr = Array.isArray(res.data) ? res.data : [];
+        setTemplates(arr);
+      } catch {
+        setTemplates([]);
+      } finally { setLoadingTpl(false); }
+    };
+    // Only load when inspector rendered for an Action node to reduce noise
+    if (node?.type === NODE_TYPES.ACTION) load();
+  }, [node?.id, node?.type]);
   if(node.type === NODE_TYPES.TRIGGER){
     const isShopify = String(node.data.source||'').toLowerCase() === 'shopify' || !node.data.source;
     const selected = SHOPIFY_EVENTS.find(ev => ev.topic === node.data.topic) || null;
@@ -824,13 +842,30 @@ function Inspector({ node, onUpdate }){
               <input className="w-full border rounded px-2 py-1" value={node.data.to||""} onChange={(e)=>onUpdate({to:e.target.value})} />
             </div>
             <div>
-              <div className="text-xs text-slate-500 mb-1">Template name</div>
-              <input className="w-full border rounded px-2 py-1" value={node.data.template_name||""} onChange={(e)=>onUpdate({template_name:e.target.value})} />
+              <div className="text-xs text-slate-500 mb-1">Template</div>
+              {templates && templates.length > 0 ? (
+                <select className="w-full border rounded px-2 py-1" value={`${node.data.template_name||''}|${node.data.language||''}`}
+                  onChange={(e)=>{
+                    const [name, lang] = String(e.target.value||'|').split('|');
+                    onUpdate({ template_name: name, language: lang });
+                  }}>
+                  <option value="|">Select template…</option>
+                  {templates.map((t)=>{
+                    const val = `${t.name||''}|${t.language||''}`;
+                    const label = `${t.name||''} (${t.language||''})`;
+                    return <option key={val} value={val}>{label}</option>;
+                  })}
+                </select>
+              ) : (
+                <input className="w-full border rounded px-2 py-1" placeholder={loadingTpl? 'Loading templates…' : 'Template name'} value={node.data.template_name||""} onChange={(e)=>onUpdate({template_name:e.target.value})} />
+              )}
             </div>
-            <div>
-              <div className="text-xs text-slate-500 mb-1">Language</div>
-              <input className="w-full border rounded px-2 py-1" value={node.data.language||"en"} onChange={(e)=>onUpdate({language:e.target.value})} />
-            </div>
+            {!templates && (
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Language</div>
+                <input className="w-full border rounded px-2 py-1" value={node.data.language||"en"} onChange={(e)=>onUpdate({language:e.target.value})} />
+              </div>
+            )}
             <div>
               <div className="text-xs text-slate-500 mb-1">Body variable 1</div>
               <input className="w-full border rounded px-2 py-1" placeholder="{{ order_number }}" onChange={(e)=>{
@@ -838,6 +873,22 @@ function Inspector({ node, onUpdate }){
                 onUpdate({ components: comps });
               }} />
             </div>
+            {Array.isArray(templates) && templates.length>0 && (
+              <details className="text-xs">
+                <summary className="cursor-pointer text-slate-500">Placeholders</summary>
+                <div className="mt-1 space-y-1">
+                  {(templates.find(t=> (t.name===node.data.template_name && t.language===node.data.language))?.components||[]).map((c, idx)=>{
+                    if ((c.type||'').toLowerCase() !== 'body') return null;
+                    const params = c.parameters||[];
+                    const count = params.length||1;
+                    const arr = Array.from({length: count}, (_,i)=>i+1);
+                    return (
+                      <div key={`comp-${idx}`}>Body variables: {arr.map(i=> <span key={i} className="inline-block px-1.5 py-0.5 m-0.5 rounded border text-[11px]">{{`{{ ${i} }}`}}</span>)}</div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
           </div>
         ) : (
           <div className="space-y-3">

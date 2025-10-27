@@ -127,6 +127,18 @@ export default function StudioPage() {
       const oid = orderIdInput && orderIdInput.trim() ? orderIdInput.trim() : `test_${Date.now()}`;
       const body = { order_id: oid };
       if (testPhone && testPhone.trim()) body.phone = testPhone.trim();
+      // Try to extract template settings from current flow (send_template action)
+      try {
+        const src = initialFlow || orderFlow || null;
+        if (src && Array.isArray(src.nodes)) {
+          const send = src.nodes.find(n => n?.type === 'action' && String(n?.data?.type||'') === 'send_whatsapp_template');
+          if (send && send.data) {
+            if (send.data.template_name) body.template_name = send.data.template_name;
+            if (send.data.language) body.language = send.data.language;
+            if (send.data.components) body.components = send.data.components;
+          }
+        }
+      } catch {}
       await api.post('/flows/order-confirmation/test-run', body);
       setOrderIdInput(oid);
       // Give backend a moment to persist

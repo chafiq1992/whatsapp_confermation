@@ -4836,6 +4836,7 @@ async def _run_order_confirmation_flow(
     components_override: list | None = None,
     raw_phone_override: Optional[str] = None,
     extra_image_links: Optional[list[str]] = None,
+    audio_url_override: Optional[str] = None,
 ) -> None:
     """Run order confirmation flow for test number only, with node logs in Redis."""
     TEST_NUMBER_RAW = "0618182056"
@@ -4916,10 +4917,23 @@ async def _run_order_confirmation_flow(
             log_node("check_whatsapp", {"to": phone_e164, "skipped": True}, {"has_wa": True})
 
         # Send order confirmation template
-        # Allow per-call overrides; else read from environment
-        template_name = template_name_override or os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
-        template_lang = template_lang_override or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
-        components = components_override
+        # Allow per-call overrides; else read from DB config; else env vars
+        cfg_name = None
+        cfg_lang = None
+        cfg_components = None
+        try:
+            cfg_raw = await db_manager.get_setting("order_confirm:template_config")
+            if cfg_raw:
+                cfg = json.loads(cfg_raw)
+                cfg_name = (cfg or {}).get("template_name")
+                cfg_lang = (cfg or {}).get("language")
+                cfg_components = (cfg or {}).get("components")
+        except Exception:
+            pass
+
+        template_name = template_name_override or cfg_name or os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
+        template_lang = template_lang_override or cfg_lang or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
+        components = components_override if components_override is not None else cfg_components
         if components is None:
             components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
             try:
@@ -4993,6 +5007,18 @@ async def _run_order_confirmation_flow(
                     log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
                 except Exception:
                     pass
+
+        # Optional: send audio (test/demo)
+        try:
+            audio_url = audio_url_override or os.getenv("ORDER_CONFIRM_AUDIO_URL", "")
+            if audio_url:
+                try:
+                    await messenger.send_media_message(to=phone_e164, media_type="audio", media_id_or_url=str(audio_url))
+                    log_node("send_audio", {"to": phone_e164, "url": audio_url}, {"ok": True})
+                except Exception as exc:
+                    log_node("send_audio", {"to": phone_e164, "url": audio_url}, status="error", error=str(exc))
+        except Exception:
+            pass
 
         # Persist all nodes
         await _persist_flow_nodes(flow_key, nodes)
@@ -5122,6 +5148,7 @@ async def start_order_confirmation_test_run(
     language: str | None = Body(None, embed=True),
     components: list | None = Body(None, embed=True),
     extra_image_links: list[str] | None = Body(None, embed=True),
+    audio_url: str | None = Body(None, embed=True),
 ):
     """Trigger a background test run of the order-confirmation flow.
 
@@ -5138,6 +5165,7 @@ async def start_order_confirmation_test_run(
                 components_override=components,
                 raw_phone_override=phone,
                 extra_image_links=extra_image_links,
+                audio_url_override=audio_url,
             )
         )
         return {"ok": True, "queued": True}
@@ -5145,6 +5173,51 @@ async def start_order_confirmation_test_run(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start test run: {exc}")
+
+@app.get("/flows/order-confirmation/template-config")
+async def get_order_confirm_template_config():
+    try:
+        raw = await db_manager.get_setting("order_confirm:template_config")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+@app.post("/flows/order-confirmation/template-config")
+async def set_order_confirm_template_config(payload: dict = Body(...)):
+    try:
+        name = (payload.get("template_name") or "").strip()
+        language = (payload.get("language") or "en").strip()
+        components = payload.get("components") or None
+        cfg = {"template_name": name, "language": language}
+        if components is not None:
+            cfg["components"] = components
+        await db_manager.set_setting("order_confirm:template_config", cfg)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save template config: {exc}")
+
+@app.post("/shopify/webhooks/orders/create")
+async def shopify_orders_create_webhook(payload: dict = Body(...)):
+    try:
+        # Shopify may post full order JSON
+        order = payload.get("order") or payload
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        if not order_id:
+            raise HTTPException(status_code=400, detail="order id missing")
+        # Try to get a phone from payload as early input
+        phone = (
+            (order.get("shipping_address") or {}).get("phone")
+            or (order.get("billing_address") or {}).get("phone")
+            or (order.get("customer") or {}).get("phone")
+            or order.get("phone")
+            or None
+        )
+        asyncio.create_task(_run_order_confirmation_flow(order_id=order_id, raw_phone_override=phone))
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Webhook failed: {exc}")
 
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):
