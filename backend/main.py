@@ -5037,6 +5037,11 @@ async def _persist_flow_nodes(flow_key: str, nodes: list[dict]):
             # Cap history size
             arr = arr[:200]
             await db_manager.set_setting(history_key, arr)
+            # Persist full run under a dedicated key too
+            try:
+                await db_manager.set_setting(f"order_confirm:run:{order_id}", {"nodes": nodes})
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:
@@ -5067,15 +5072,30 @@ async def get_last_order_confirmation_runs(limit: int = 20):
 async def get_order_confirmation_run(order_id: str):
     try:
         if not redis_manager.redis_client:
-            return {"nodes": []}
+            # Fallback to DB settings
+            try:
+                raw = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw) if raw else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
         key = f"flow_run:order_confirm:{order_id}"
         raw = await redis_manager.redis_client.get(key)
         if not raw:
-            return {"nodes": []}
+            # Fallback to DB settings
+            try:
+                raw2 = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw2) if raw2 else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
         try:
             return json.loads(raw)
         except Exception:
-            return {"nodes": []}
+            # Fallback to DB settings
+            try:
+                raw2 = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw2) if raw2 else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
     except Exception:
         return {"nodes": []}
 
