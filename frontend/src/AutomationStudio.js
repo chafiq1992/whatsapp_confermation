@@ -883,7 +883,7 @@ function Inspector({ node, onUpdate }){
                     const count = params.length||1;
                     const arr = Array.from({length: count}, (_,i)=>i+1);
                     return (
-                      <div key={`comp-${idx}`}>Body variables: {arr.map(i=> <span key={i} className="inline-block px-1.5 py-0.5 m-0.5 rounded border text-[11px]">{{`{{ ${i} }}`}}</span>)}</div>
+                      <div key={`comp-${idx}`}>Body variables: {arr.map(i=> <span key={i} className="inline-block px-1.5 py-0.5 m-0.5 rounded border text-[11px]">{`{{ ${i} }}`}</span>)}</div>
                     );
                   })}
                 </div>
