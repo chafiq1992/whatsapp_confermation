@@ -222,6 +222,27 @@ def _digits_only(value: str) -> str:
     except Exception:
         return str(value or "")
 
+# Canonical conversation key: digits-only, Morocco phones normalized to 212XXXXXXXXX
+def _normalize_user_id(value: str) -> str:
+    try:
+        s = str(value or "").strip()
+        # Internal channels should pass through unchanged
+        if s.startswith(("team:", "agent:", "dm:")):
+            return s
+        digits = _digits_only(s)
+        if not digits:
+            return s
+        # If starts with 0 -> convert to 212...
+        if digits.startswith("0"):
+            return "212" + digits[1:]
+        # If already starts with 212 -> keep
+        if digits.startswith("212"):
+            return digits
+        # Fallback: assume it's a country code without plus
+        return digits
+    except Exception:
+        return str(value or "")
+
 _TEST_NUMBERS_RAW = os.getenv("AUTO_REPLY_TEST_NUMBERS", "")
 AUTO_REPLY_TEST_NUMBERS: Set[str] = set(
     _digits_only(n.strip()) for n in _TEST_NUMBERS_RAW.split(",") if n.strip()
@@ -2558,11 +2579,16 @@ class MessageProcessor:
             return
         
         try:
+            # Normalize destination for WhatsApp API (E.164 with plus) except internal channels
+            if isinstance(user_id, str) and not user_id.startswith(("team:", "agent:", "dm:")):
+                wa_to = _normalize_ma_phone(user_id)
+            else:
+                wa_to = user_id
             # Send to WhatsApp API with concurrency guard
             async with wa_semaphore:
                 if message["type"] == "text":
                     wa_response = await self.whatsapp_messenger.send_text_message(
-                        user_id, message["message"], context_message_id=message.get("reply_to")
+                        wa_to, message["message"], context_message_id=message.get("reply_to")
                     )
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
@@ -2576,7 +2602,7 @@ class MessageProcessor:
                         raise Exception("Missing product_retailer_id for catalog_item")
                     try:
                         wa_response = await self.whatsapp_messenger.send_single_catalog_item(
-                            user_id, str(retailer_id), caption
+                            wa_to, str(retailer_id), caption
                         )
                         # After interactive is delivered, optionally send bilingual prompt as a reply
                         if message.get("needs_bilingual_prompt"):
@@ -2646,7 +2672,7 @@ class MessageProcessor:
                         if img_url:
                             # Send as image with caption if interactive fails
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, "image", img_url, caption or (price and f"{price} MAD" or "")
+                                wa_to, "image", img_url, caption or (price and f"{price} MAD" or "")
                             )
                             if message.get("needs_bilingual_prompt"):
                                 wa_msg_id = None
@@ -2679,7 +2705,7 @@ class MessageProcessor:
                         else:
                             # Final fallback to text
                             wa_response = await self.whatsapp_messenger.send_text_message(
-                                user_id, caption or str(retailer_id)
+                                wa_to, caption or str(retailer_id)
                             )
                             if message.get("needs_bilingual_prompt"):
                                 wa_msg_id = None
@@ -2715,11 +2741,11 @@ class MessageProcessor:
                     if not isinstance(buttons, list) or not buttons:
                         # Fallback to text to avoid hard failure
                         wa_response = await self.whatsapp_messenger.send_text_message(
-                            user_id, body_text or ""
+                            wa_to, body_text or ""
                         )
                     else:
                         wa_response = await self.whatsapp_messenger.send_reply_buttons(
-                            user_id, body_text, buttons
+                            wa_to, body_text, buttons
                         )
                 elif message["type"] in ("list", "interactive_list"):
                     body_text = message.get("message") or ""
@@ -2729,11 +2755,11 @@ class MessageProcessor:
                     footer_text = message.get("footer_text") or None
                     if not isinstance(sections, list) or not sections:
                         wa_response = await self.whatsapp_messenger.send_text_message(
-                            user_id, body_text or ""
+                            wa_to, body_text or ""
                         )
                     else:
                         wa_response = await self.whatsapp_messenger.send_list_message(
-                            user_id,
+                            wa_to,
                             body_text,
                             button_text,
                             sections,
@@ -2744,7 +2770,7 @@ class MessageProcessor:
                     # For now send order payload as text to ensure delivery speed
                     payload = message.get("message")
                     wa_response = await self.whatsapp_messenger.send_text_message(
-                        user_id, payload if isinstance(payload, str) else json.dumps(payload or {})
+                        wa_to, payload if isinstance(payload, str) else json.dumps(payload or {})
                     )
                 else:
                     # For media messages: support either local path upload or direct link
@@ -2802,7 +2828,7 @@ class MessageProcessor:
                             await asyncio.sleep(0.5)
                         if message.get("reply_to"):
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id,
+                                wa_to,
                                 message["type"],
                                 media_info["id"],
                                 message.get("caption", ""),
@@ -2811,7 +2837,7 @@ class MessageProcessor:
                             )
                         else:
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id,
+                                wa_to,
                                 message["type"],
                                 media_info["id"],
                                 message.get("caption", ""),
@@ -2868,7 +2894,7 @@ class MessageProcessor:
                                 await asyncio.sleep(0.5)
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id,
+                                    wa_to,
                                     message["type"],
                                     media_info["id"],
                                     message.get("caption", ""),
@@ -2877,7 +2903,7 @@ class MessageProcessor:
                                 )
                             else:
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id,
+                                    wa_to,
                                     message["type"],
                                     media_info["id"],
                                     message.get("caption", ""),
@@ -2898,11 +2924,11 @@ class MessageProcessor:
                             print(f"URL fetch→upload fallback failed, sending link: {_exc}")
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                    wa_to, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
                                 )
                             else:
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_url, message.get("caption", "")
+                                    wa_to, message["type"], media_url, message.get("caption", "")
                                 )
                     else:
                         raise Exception("No media found: require url http(s) or valid media_path")
@@ -3163,9 +3189,10 @@ class MessageProcessor:
         print("📨 _handle_incoming_message CALLED")
         print(json.dumps(message, indent=2))
         
-        sender = message.get("from") or (message.get("contact_info") or {}).get("wa_id")
-        if not sender:
+        sender_raw = message.get("from") or (message.get("contact_info") or {}).get("wa_id")
+        if not sender_raw:
             raise RuntimeError("incoming message missing sender id")
+        sender = _normalize_user_id(sender_raw)
         msg_type = message["type"]
         wa_message_id = message.get("id")
         timestamp = datetime.utcfromtimestamp(int(message.get("timestamp", 0))).isoformat()
@@ -3287,7 +3314,7 @@ class MessageProcessor:
                         matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
                     if matched:
                         try:
-                            await self.whatsapp_messenger.send_media_message(to=sender, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                            await self.whatsapp_messenger.send_media_message(to=_normalize_ma_phone(sender), media_type="audio", media_id_or_url=str(matched), audio_voice=True)
                             # Reflect in inbox/UI
                             synthetic_audio = {
                                 "temp_id": f"temp_{uuid.uuid4().hex}",
@@ -3387,6 +3414,45 @@ class MessageProcessor:
                 title = "[button_reply]"
             message_obj["type"] = "text"
             message_obj["message"] = title or "[button_reply]"
+            # Order confirmation quick-reply buttons (non-interactive payloads)
+            try:
+                def _norm_ar_btn(s: str) -> str:
+                    t = (s or "").strip()
+                    try:
+                        t = t.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                    except Exception:
+                        pass
+                    return t
+                tnorm = _norm_ar_btn(title)
+                BTN1 = {"تاكيد الطلب", "تأكيد الطلب"}
+                BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
+                BTN3 = {"تكلم مع العميل"}
+                matched = None
+                if tnorm in BTN1:
+                    matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                elif tnorm in BTN2:
+                    matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                elif tnorm in BTN3:
+                    matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                if matched:
+                    try:
+                        await self.whatsapp_messenger.send_media_message(to=_normalize_ma_phone(sender), media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                        synthetic_audio = {
+                            "temp_id": f"temp_{uuid.uuid4().hex}",
+                            "user_id": sender,
+                            "message": str(matched),
+                            "type": "audio",
+                            "url": str(matched),
+                            "from_me": 1,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }
+                        await self.db_manager.upsert_message(synthetic_audio)
+                        await self.redis_manager.cache_message(sender, synthetic_audio)
+                        await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
@@ -4957,18 +5023,19 @@ async def _run_order_confirmation_flow(
             log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
             # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
             try:
-                await db_manager.upsert_user(phone_e164)
+                uid = _normalize_user_id(phone_e164)
+                await db_manager.upsert_user(uid)
                 synthetic = {
                     "temp_id": f"temp_{uuid.uuid4().hex}",
-                    "user_id": phone_e164,
+                    "user_id": uid,
                     "message": f"[Template sent] {template_name}",
                     "type": "text",
                     "from_me": 1,
                     "timestamp": datetime.utcnow().isoformat(),
                 }
                 await db_manager.upsert_message(synthetic)
-                await redis_manager.cache_message(phone_e164, synthetic)
-                await connection_manager.send_to_user(phone_e164, {"type": "message_sent", "data": synthetic})
+                await redis_manager.cache_message(uid, synthetic)
+                await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
             except Exception:
                 pass
             # Best-effort: send extra variant images if provided
@@ -4978,9 +5045,10 @@ async def _run_order_confirmation_flow(
                     try:
                         await messenger.send_media_message(to=phone_e164, media_type="image", media_id_or_url=str(link))
                         # Reflect in UI
+                        uid = _normalize_user_id(phone_e164)
                         synthetic_img = {
                             "temp_id": f"temp_{uuid.uuid4().hex}",
-                            "user_id": phone_e164,
+                            "user_id": uid,
                             "message": str(link),
                             "type": "image",
                             "url": str(link),
@@ -4988,8 +5056,8 @@ async def _run_order_confirmation_flow(
                             "timestamp": datetime.utcnow().isoformat(),
                         }
                         await db_manager.upsert_message(synthetic_img)
-                        await redis_manager.cache_message(phone_e164, synthetic_img)
-                        await connection_manager.send_to_user(phone_e164, {"type": "message_sent", "data": synthetic_img})
+                        await redis_manager.cache_message(uid, synthetic_img)
+                        await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic_img})
                     except Exception:
                         continue
             except Exception:
