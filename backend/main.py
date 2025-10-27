@@ -5011,6 +5011,34 @@ async def _persist_flow_nodes(flow_key: str, nodes: list[dict]):
             # Also push to recent list
             await redis_manager.redis_client.lpush("flow_run:order_confirm:list", flow_key)
             await redis_manager.redis_client.ltrim("flow_run:order_confirm:list", 0, 49)
+        # Persist a bounded history in DB settings for long-term preview
+        try:
+            order_id = str(flow_key.split(":")[-1]) if flow_key else ""
+            summarized_status = (nodes[-1].get("status") if nodes else None) or "ok"
+            summarized_name = (nodes[-1].get("name") if nodes else None) or ""
+            history_key = "order_confirm:runs"
+            raw = await db_manager.get_setting(history_key)
+            arr = []
+            try:
+                arr = json.loads(raw) if raw else []
+                if not isinstance(arr, list):
+                    arr = []
+            except Exception:
+                arr = []
+            entry = {
+                "order_id": order_id,
+                "flow_key": flow_key,
+                "ts": datetime.utcnow().isoformat(),
+                "last": {"name": summarized_name, "status": summarized_status},
+            }
+            # Drop previous entry for same order_id to avoid duplicates
+            arr = [e for e in arr if str(e.get("order_id")) != order_id]
+            arr.insert(0, entry)
+            # Cap history size
+            arr = arr[:200]
+            await db_manager.set_setting(history_key, arr)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -5050,6 +5078,53 @@ async def get_order_confirmation_run(order_id: str):
             return {"nodes": []}
     except Exception:
         return {"nodes": []}
+
+@app.get("/flows/order-confirmation/history")
+async def get_order_confirmation_history(limit: int = 50):
+    try:
+        raw = await db_manager.get_setting("order_confirm:runs")
+        arr = []
+        try:
+            arr = json.loads(raw) if raw else []
+            if not isinstance(arr, list):
+                arr = []
+        except Exception:
+            arr = []
+        return arr[: max(1, min(int(limit), 200))]
+    except Exception:
+        return []
+
+@app.post("/flows/order-confirmation/test-run")
+async def start_order_confirmation_test_run(
+    order_id: str = Body("", embed=True),
+    phone: str | None = Body(None, embed=True),
+    template_name: str | None = Body(None, embed=True),
+    language: str | None = Body(None, embed=True),
+    components: list | None = Body(None, embed=True),
+    extra_image_links: list[str] | None = Body(None, embed=True),
+):
+    """Trigger a background test run of the order-confirmation flow.
+
+    If `phone` is provided, it overrides the Shopify fetch and will be used as the raw phone.
+    """
+    try:
+        if not order_id:
+            raise HTTPException(status_code=400, detail="order_id is required")
+        asyncio.create_task(
+            _run_order_confirmation_flow(
+                order_id=order_id,
+                template_name_override=template_name,
+                template_lang_override=language,
+                components_override=components,
+                raw_phone_override=phone,
+                extra_image_links=extra_image_links,
+            )
+        )
+        return {"ok": True, "queued": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start test run: {exc}")
 
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):

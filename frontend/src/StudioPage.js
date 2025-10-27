@@ -6,9 +6,12 @@ export default function StudioPage() {
   const [allowed, setAllowed] = useState(false);
   const [list, setList] = useState([]);
   const [orderIdInput, setOrderIdInput] = useState('');
+  const [testPhone, setTestPhone] = useState('');
   const [orderFlow, setOrderFlow] = useState(null);
   const [flowVersion, setFlowVersion] = useState(0);
   const [loadingOrder, setLoadingOrder] = useState(false);
+  const [runs, setRuns] = useState([]);
+  const [loadingRuns, setLoadingRuns] = useState(false);
 
   const getFlowIdFromUrl = () => {
     try {
@@ -92,6 +95,7 @@ export default function StudioPage() {
       } catch {}
       finally { setLoadingOrder(false); }
     })();
+    fetchRunsHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
@@ -108,6 +112,31 @@ export default function StudioPage() {
       setFlowVersion(v=>v+1);
     } catch {}
     finally { setLoadingOrder(false); }
+  };
+  const fetchRunsHistory = async () => {
+    try {
+      setLoadingRuns(true);
+      const res = await api.get('/flows/order-confirmation/history?limit=50');
+      const arr = Array.isArray(res.data) ? res.data : [];
+      setRuns(arr);
+    } catch {}
+    finally { setLoadingRuns(false); }
+  };
+  const runTest = async () => {
+    try {
+      const oid = orderIdInput && orderIdInput.trim() ? orderIdInput.trim() : `test_${Date.now()}`;
+      const body = { order_id: oid };
+      if (testPhone && testPhone.trim()) body.phone = testPhone.trim();
+      await api.post('/flows/order-confirmation/test-run', body);
+      setOrderIdInput(oid);
+      // Give backend a moment to persist
+      setTimeout(async () => {
+        await fetchOrderRun(oid);
+        await fetchRunsHistory();
+      }, 1200);
+    } catch {
+      alert('Failed to start test run');
+    }
   };
 
   const hasOrderConfirmation = list.some(x => x?.id === 'order_confirmation');
@@ -210,6 +239,12 @@ export default function StudioPage() {
                 value={orderIdInput}
                 onChange={(e)=>setOrderIdInput(e.target.value)}
               />
+              <input
+                className="px-2 py-1 text-sm border rounded w-44"
+                placeholder="Test phone (optional)"
+                value={testPhone}
+                onChange={(e)=>setTestPhone(e.target.value)}
+              />
               <button
                 className="px-2 py-1 text-sm border rounded"
                 onClick={()=>{ if (orderIdInput) { fetchOrderRun(orderIdInput); } }}
@@ -232,6 +267,10 @@ export default function StudioPage() {
                   finally { setLoadingOrder(false); }
                 }}
               >Latest</button>
+              <button
+                className="px-2 py-1 text-sm bg-blue-600 text-white rounded"
+                onClick={runTest}
+              >Run Test</button>
             </>
           ) : (
             <button
@@ -243,7 +282,7 @@ export default function StudioPage() {
           )}
         </div>
       </div>
-      <div className="h-[calc(100vh-3rem)]">
+      <div className="h-[calc(100vh-14rem)]">
         <AutomationStudio
           key={`flow-${selectedId}-${flowVersion}`}
           initialFlow={initialFlow}
@@ -260,6 +299,33 @@ export default function StudioPage() {
           }}
         />
       </div>
+      {selectedId === 'order_confirmation' && (
+        <div className="h-44 border-t bg-white">
+          <div className="h-10 border-b flex items-center justify-between px-3">
+            <div className="text-sm font-medium">Flow history</div>
+            <button className="px-2 py-1 text-sm border rounded" onClick={fetchRunsHistory} disabled={loadingRuns}>{loadingRuns ? 'Refreshing…' : 'Refresh'}</button>
+          </div>
+          <div className="h-[calc(100%-2.5rem)] overflow-x-auto overflow-y-hidden">
+            <div className="flex items-stretch gap-2 px-3 py-2 min-w-max">
+              {runs.map((r)=>{
+                const status = (r?.last?.status||'ok');
+                const pill = status === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                return (
+                  <button key={`${r.order_id}:${r.ts}`} onClick={()=>{ setOrderIdInput(r.order_id||''); fetchOrderRun(r.order_id||''); }} className="border rounded-lg p-3 bg-white hover:shadow text-left min-w-[240px]">
+                    <div className={`inline-block text-[11px] px-1.5 py-0.5 rounded border ${pill}`}>{status}</div>
+                    <div className="text-sm font-medium mt-1">Order {String(r.order_id||'')}</div>
+                    <div className="text-xs text-slate-500 mt-1">{String(r.last?.name||'')}</div>
+                    <div className="text-[11px] text-slate-400 mt-2">{String(r.ts||'')}</div>
+                  </button>
+                );
+              })}
+              {(!runs || runs.length===0) && (
+                <div className="text-sm text-slate-500 px-3 py-2">No runs yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
