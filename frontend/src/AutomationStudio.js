@@ -784,6 +784,7 @@ function Inspector({ node, onUpdate }){
             </div>
           </>
         )}
+        {runtimeSection(node)}
       </div>
     );
   }
@@ -804,6 +805,7 @@ function Inspector({ node, onUpdate }){
             <input className="w-full border rounded px-2 py-1" value={node.data.falseLabel||"No"} onChange={(e)=>onUpdate({falseLabel:e.target.value})} />
           </div>
         </div>
+        {runtimeSection(node)}
       </div>
     );
   }
@@ -849,6 +851,7 @@ function Inspector({ node, onUpdate }){
             </div>
           </div>
         )}
+        {runtimeSection(node)}
       </div>
     );
   }
@@ -859,10 +862,40 @@ function Inspector({ node, onUpdate }){
           <div className="text-xs text-slate-500 mb-1">Minutes</div>
           <input type="number" className="w-full border rounded px-2 py-1" value={node.data.minutes||0} onChange={(e)=>onUpdate({minutes:Number(e.target.value||0)})} />
         </div>
+        {runtimeSection(node)}
       </div>
     );
   }
   return <div className="text-sm text-slate-500">No settings.</div>;
 }
 
+function runtimeSection(node){
+  const log = node?.data?.runtime;
+  if(!log) return null;
+  return (
+    <div className="mt-4 space-y-2 text-xs">
+      <div className="font-medium text-slate-600">Runtime</div>
+      <div className="flex items-center gap-2">
+        <span className={`px-1.5 py-0.5 rounded border ${log.status==='error' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>{String(log.status||'ok')}</span>
+        {log.error && <span className="text-rose-600">{String(log.error)}</span>}
+      </div>
+      {log.input && (
+        <div>
+          <div className="text-slate-500 mb-1">Input</div>
+          <pre className="bg-slate-50 p-2 rounded overflow-x-auto">{safeJson(log.input)}</pre>
+        </div>
+      )}
+      {log.output && (
+        <div>
+          <div className="text-slate-500 mb-1">Output</div>
+          <pre className="bg-slate-50 p-2 rounded overflow-x-auto">{safeJson(log.output)}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function safeJson(obj){
+  try { return JSON.stringify(obj||{}, null, 2); } catch { return String(obj||''); }
+}
 

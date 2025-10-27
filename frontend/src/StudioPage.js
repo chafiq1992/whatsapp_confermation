@@ -5,6 +5,10 @@ import AutomationStudio from './AutomationStudio';
 export default function StudioPage() {
   const [allowed, setAllowed] = useState(false);
   const [list, setList] = useState([]);
+  const [orderIdInput, setOrderIdInput] = useState('');
+  const [orderFlow, setOrderFlow] = useState(null);
+  const [flowVersion, setFlowVersion] = useState(0);
+  const [loadingOrder, setLoadingOrder] = useState(false);
 
   const getFlowIdFromUrl = () => {
     try {
@@ -24,7 +28,10 @@ export default function StudioPage() {
 
   const [selectedId, setSelectedId] = useState(getFlowIdFromUrl());
   const selectedAutomation = useMemo(() => list.find(x => x?.id === selectedId) || null, [list, selectedId]);
-  const initialFlow = useMemo(() => (selectedAutomation && selectedAutomation.flow) ? selectedAutomation.flow : null, [selectedAutomation]);
+  const initialFlow = useMemo(() => {
+    if (selectedId === 'order_confirmation') return orderFlow;
+    return (selectedAutomation && selectedAutomation.flow) ? selectedAutomation.flow : null;
+  }, [selectedAutomation, selectedId, orderFlow]);
 
   const persist = async (arr) => {
     try { await api.post('/automations', arr); } catch {}
@@ -61,10 +68,47 @@ export default function StudioPage() {
     };
   }, []);
 
+  // When selecting Order Confirmation, fetch latest run and build a live visualization
+  useEffect(() => {
+    if (selectedId !== 'order_confirmation') return;
+    (async () => {
+      try {
+        setLoadingOrder(true);
+        // Fetch last run key to get an order id, then fetch that run
+        const last = await api.get('/flows/order-confirmation/last?limit=1');
+        const first = Array.isArray(last.data) && last.data.length ? last.data[0] : null;
+        let oid = orderIdInput;
+        if (!oid && first && first.key) {
+          const parts = String(first.key).split(':');
+          oid = parts[parts.length - 1] || '';
+        }
+        if (oid) {
+          setOrderIdInput(oid);
+          await fetchOrderRun(oid);
+        } else {
+          // Clear flow if none available yet
+          setOrderFlow(buildOrderFlowFromLogs([]));
+        }
+      } catch {}
+      finally { setLoadingOrder(false); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
   if (!allowed) return null;
 
   const goHome = () => { window.location.href = '/#/automation-studio'; };
   const openFlow = (id) => { window.location.href = '/#/automation-studio/' + encodeURIComponent(id); };
+  const fetchOrderRun = async (oid) => {
+    try {
+      setLoadingOrder(true);
+      const res = await api.get(`/flows/order-confirmation/${encodeURIComponent(oid)}`);
+      const logs = (res?.data && Array.isArray(res.data.nodes)) ? res.data.nodes : [];
+      setOrderFlow(buildOrderFlowFromLogs(logs));
+      setFlowVersion(v=>v+1);
+    } catch {}
+    finally { setLoadingOrder(false); }
+  };
 
   const hasOrderConfirmation = list.some(x => x?.id === 'order_confirmation');
   const homeFlows = [
@@ -158,16 +202,50 @@ export default function StudioPage() {
           <div className="font-medium">{selectedAutomation?.name || (selectedId === 'order_confirmation' ? 'Shopify: Order Confirmation' : selectedId)}</div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            className="px-2 py-1 text-sm border rounded"
-            onClick={async ()=>{
-              try { await persist(list); alert('Automations saved'); } catch { alert('Failed to save'); }
-            }}
-          >Save</button>
+          {selectedId === 'order_confirmation' ? (
+            <>
+              <input
+                className="px-2 py-1 text-sm border rounded w-48"
+                placeholder="Order ID"
+                value={orderIdInput}
+                onChange={(e)=>setOrderIdInput(e.target.value)}
+              />
+              <button
+                className="px-2 py-1 text-sm border rounded"
+                onClick={()=>{ if (orderIdInput) { fetchOrderRun(orderIdInput); } }}
+                disabled={!orderIdInput || loadingOrder}
+              >{loadingOrder ? 'Loading…' : 'Load'}</button>
+              <button
+                className="px-2 py-1 text-sm border rounded"
+                onClick={async ()=>{
+                  try {
+                    setLoadingOrder(true);
+                    const last = await api.get('/flows/order-confirmation/last?limit=1');
+                    const first = Array.isArray(last.data) && last.data.length ? last.data[0] : null;
+                    let oid = '';
+                    if (first && first.key) {
+                      const parts = String(first.key).split(':');
+                      oid = parts[parts.length - 1] || '';
+                    }
+                    if (oid) { setOrderIdInput(oid); await fetchOrderRun(oid); }
+                  } catch {}
+                  finally { setLoadingOrder(false); }
+                }}
+              >Latest</button>
+            </>
+          ) : (
+            <button
+              className="px-2 py-1 text-sm border rounded"
+              onClick={async ()=>{
+                try { await persist(list); alert('Automations saved'); } catch { alert('Failed to save'); }
+              }}
+            >Save</button>
+          )}
         </div>
       </div>
       <div className="h-[calc(100vh-3rem)]">
         <AutomationStudio
+          key={`flow-${selectedId}-${flowVersion}`}
           initialFlow={initialFlow}
           onSaveFlow={async (flow)=>{
             try {
@@ -184,6 +262,64 @@ export default function StudioPage() {
       </div>
     </div>
   );
+}
+
+// Build a visual flow from backend logs
+function buildOrderFlowFromLogs(nodesLogs) {
+  // Index logs by name for convenience
+  const byName = {};
+  for (const n of nodesLogs || []) {
+    byName[n?.name || ''] = n;
+  }
+
+  let idSeq = 1; const nextId = () => 'n' + (idSeq++);
+  const N = [];
+  const E = [];
+
+  // Positions
+  const baseY = 160; const yFalse = 300; const dx = 260; let x = 120;
+
+  // Trigger
+  const trigInput = byName['trigger:order_created']?.input || {};
+  const trigger = { id: nextId(), type: 'trigger', x, y: baseY, data: { source: 'shopify', topic: 'orders/create', sample: safeJson(trigInput), runtime: byName['trigger:order_created'] } };
+  N.push(trigger); x += dx;
+
+  // Normalize phone
+  const normalizeLog = byName['normalize_phone'] || {};
+  const normalize = { id: nextId(), type: 'action', x, y: baseY, data: { type: 'normalize_phone', text: `e164: ${String((normalizeLog.output||{}).e164||'')}`, runtime: normalizeLog } };
+  N.push(normalize); E.push({ id: nextId(), from: trigger.id, fromPort: 'out', to: normalize.id, toPort: 'in' }); x += dx;
+
+  // Check WhatsApp
+  const checkLog = byName['check_whatsapp'] || {};
+  const hasWa = (checkLog.output && typeof checkLog.output.has_wa !== 'undefined') ? !!checkLog.output.has_wa : true;
+  const cond = { id: nextId(), type: 'condition', x, y: baseY, data: { expression: 'has WhatsApp?', trueLabel: 'Yes', falseLabel: 'No', runtime: checkLog } };
+  N.push(cond); E.push({ id: nextId(), from: normalize.id, fromPort: 'out', to: cond.id, toPort: 'in' });
+
+  // False branch: tag no_wtp
+  const tagNo = { id: nextId(), type: 'action', x: x + dx, y: yFalse, data: { type: 'shopify_tag', text: 'add tag: no_wtp', runtime: byName['tag:no_wtp'] } };
+  N.push(tagNo); E.push({ id: nextId(), from: cond.id, fromPort: 'false', to: tagNo.id, toPort: 'in' });
+
+  // True branch: send template -> tag ok_wtp
+  const sendLog = byName['send_template'] || {};
+  const send = { id: nextId(), type: 'action', x: x + dx, y: baseY, data: { type: 'send_whatsapp_template', template_name: String((sendLog.input||{}).template||'order_confirmed'), language: String((sendLog.input||{}).language||'en'), runtime: sendLog } };
+  N.push(send); E.push({ id: nextId(), from: cond.id, fromPort: 'true', to: send.id, toPort: 'in' });
+
+  const tagOk = { id: nextId(), type: 'action', x: x + 2*dx, y: baseY, data: { type: 'shopify_tag', text: 'add tag: ok_wtp', runtime: byName['tag:ok_wtp'] } };
+  N.push(tagOk); E.push({ id: nextId(), from: send.id, fromPort: 'out', to: tagOk.id, toPort: 'in' });
+
+  // Exit node summarizing result
+  const resultStatus = (sendLog.status||'ok') === 'ok' ? 'Message sent' : `Error: ${String(sendLog.error||'unknown')}`;
+  const exit = { id: nextId(), type: 'exit', x: x + 3*dx, y: baseY, data: { text: resultStatus } };
+  N.push(exit);
+  // Connect both branches to exit
+  E.push({ id: nextId(), from: tagOk.id, fromPort: 'out', to: exit.id, toPort: 'in' });
+  E.push({ id: nextId(), from: tagNo.id, fromPort: 'out', to: exit.id, toPort: 'in' });
+
+  return { nodes: N, edges: E };
+}
+
+function safeJson(obj) {
+  try { return JSON.stringify(obj || {}, null, 2); } catch { return String(obj || ''); }
 }
 
 
