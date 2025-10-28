@@ -529,9 +529,20 @@ async def shopify_orders_create_webhook(request: Request):
                 or "-"
             )
             order_number = str(order.get("name") or order.get("order_number") or order_id or "-")
-            total_str = str(order.get("total_price") or "-")
-            currency = str(order.get("currency") or "")
-            total_with_currency = (f"{total_str} {currency}".strip()) if total_str != "-" else total_str
+            total_str = str(order.get("total_price") or "").strip()
+            currency = str(order.get("currency") or "").strip()
+            if not total_str:
+                total_with_currency = "-"
+            else:
+                s = total_str
+                if currency:
+                    # Avoid duplicating the currency if already present (case-insensitive)
+                    if currency.lower() in s.lower():
+                        total_with_currency = s
+                    else:
+                        total_with_currency = f"{s} {currency}"
+                else:
+                    total_with_currency = s
             city = str(shipping.get("city") or billing.get("city") or "-")
             address1 = str(shipping.get("address1") or billing.get("address1") or "-")
             # phone
