@@ -497,10 +497,10 @@ async def shopify_orders_create_webhook(request: Request):
                 or (order.get("phone") if isinstance(order.get("phone"), str) else None)
                 or str(raw_phone or "-")
             )
-            # items summary: "qty title" joined by " / "
+            # items summary: Arabic item lines with size, color, and quantity
             items = order.get("line_items") or []
             try:
-                parts = []
+                lines = []
                 for li in items:
                     qty = li.get("quantity")
                     title = li.get("title") or ""
@@ -508,11 +508,40 @@ async def shopify_orders_create_webhook(request: Request):
                         qstr = str(int(qty)) if qty is not None else ""
                     except Exception:
                         qstr = str(qty or "")
-                    if qstr and title:
-                        parts.append(f"{qstr} {title}")
-                    elif title:
-                        parts.append(title)
-                items_summary = " / ".join([p for p in parts if p]) or "-"
+                    # Extract size/color from properties or variant_title
+                    props = {}
+                    try:
+                        for p in (li.get("properties") or []):
+                            n = str(p.get("name") or "").strip().lower()
+                            v = str(p.get("value") or "").strip()
+                            if n:
+                                props[n] = v
+                    except Exception:
+                        props = {}
+                    size = props.get("size") or props.get("المقاس") or None
+                    color = props.get("color") or props.get("اللون") or None
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            if len(parts) >= 1 and not size:
+                                size = parts[0]
+                            if len(parts) >= 2 and not color:
+                                color = parts[1]
+                    # Compose Arabic one-line summary per item
+                    arabic_parts = []
+                    if title:
+                        arabic_parts.append(f"المنتج: {title}")
+                    if size:
+                        arabic_parts.append(f"المقاس: {size}")
+                    if color:
+                        arabic_parts.append(f"اللون: {color}")
+                    if qstr:
+                        arabic_parts.append(f"الكمية: {qstr}")
+                    line = " | ".join(arabic_parts)
+                    if line:
+                        lines.append(line)
+                items_summary = "\n".join(lines) or "-"
             except Exception:
                 items_summary = "-"
 
