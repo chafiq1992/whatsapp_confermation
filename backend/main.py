@@ -4438,6 +4438,10 @@ class MessageProcessor:
                 caption = "\n".join(lines)
                 try:
                     res = await self.whatsapp_messenger.send_single_catalog_item(to, str(variant_id), caption)
+                    # Treat missing messages or explicit error as failure to trigger image fallback
+                    msgs = (res or {}).get("messages") if isinstance(res, dict) else None
+                    if not msgs:
+                        raise RuntimeError("catalog_send_failed")
                     # Build synthetic interactive entry for UI
                     synthetic = {
                         "temp_id": f"temp_{uuid.uuid4().hex}",
@@ -4450,7 +4454,7 @@ class MessageProcessor:
                     }
                     # attach WA id if present
                     try:
-                        arr = (res or {}).get("messages") or []
+                        arr = msgs or []
                         if isinstance(arr, list) and arr:
                             synthetic["wa_message_id"] = str((arr[0] or {}).get("id") or "")
                             synthetic["status"] = "sent"
@@ -4462,7 +4466,10 @@ class MessageProcessor:
                     sent += 1
                     await asyncio.sleep(0.2)
                 except Exception:
-                    continue
+                    # Bubble up to allow full image fallback when catalog not usable
+                    raise
+            if sent <= 0:
+                raise RuntimeError("no_catalog_items_sent")
         except Exception:
             return
 
