@@ -286,6 +286,7 @@ except Exception:
 
 # Allow sending order confirmation to all numbers (bypass whitelist)
 ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+ORDER_CONFIRM_SEND_CATALOG = (os.getenv("ORDER_CONFIRM_SEND_CATALOG", "0") or "0").strip() not in ("0", "false", "False")
 
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -4095,6 +4096,14 @@ class MessageProcessor:
     async def _send_pending_variant_media(self, user_id: str) -> None:
         """Send up to 10 cached variant images with Arabic captions, then clear the cache."""
         try:
+            # Prefer sending catalog items when enabled
+            if ORDER_CONFIRM_SEND_CATALOG:
+                try:
+                    await self._send_order_variants_as_catalog_items(user_id)
+                    return
+                except Exception:
+                    # Fallback to images below
+                    pass
             key = f"pending_variant_media:{user_id}"
             data = await redis_manager.get_json(key)
             items = []
@@ -4341,6 +4350,119 @@ class MessageProcessor:
                     await redis_manager.redis_client.delete(key)
             except Exception:
                 pass
+        except Exception:
+            return
+
+    async def _send_order_variants_as_catalog_items(self, user_id: str) -> None:
+        """Send order variants as interactive catalog items with captions (size/color/qty).
+        Uses pinned order_id when available, otherwise falls back to last order.
+        """
+        try:
+            # Resolve phone and uid
+            to = _normalize_ma_phone(user_id)
+            uid = _normalize_user_id(to)
+            # Try pinned order first
+            order_id = None
+            try:
+                ref = await redis_manager.get_json(f"pending_variant_order:{uid}")
+                if isinstance(ref, dict) and ref.get("order_id"):
+                    order_id = str(ref.get("order_id")).strip()
+            except Exception:
+                order_id = None
+            from .shopify_integration import admin_api_base, _client_args, fetch_customer_by_phone  # type: ignore
+            import httpx  # type: ignore
+            base = admin_api_base()
+            line_items = []
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                if order_id:
+                    resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                    if resp.status_code == 200:
+                        order_payload = (resp.json() or {}).get("order") or {}
+                        line_items = order_payload.get("line_items") or []
+                if not line_items:
+                    cust = await fetch_customer_by_phone(uid)
+                    if cust and cust.get("last_order"):
+                        # Pull full order by parsing name if possible not supported; fallback to list orders
+                        params = {
+                            "customer_id": cust.get("customer_id"),
+                            "status": "any",
+                            "order": "created_at desc",
+                            "limit": 1,
+                        }
+                        r = await client.get(f"{base}/orders.json", params=params, **_client_args())
+                        if r.status_code == 200:
+                            orders = (r.json() or {}).get("orders") or []
+                            if orders:
+                                line_items = (orders[0] or {}).get("line_items") or []
+            if not line_items:
+                return
+            sent = 0
+            for li in line_items:
+                if sent >= 10:
+                    break
+                variant_id = li.get("variant_id")
+                if not variant_id:
+                    continue
+                # Build Arabic caption
+                qty = li.get("quantity")
+                try:
+                    qstr = str(int(qty)) if qty is not None else ""
+                except Exception:
+                    qstr = str(qty or "")
+                props = {}
+                try:
+                    for p in (li.get("properties") or []):
+                        n = str(p.get("name") or "").strip().lower()
+                        v = str(p.get("value") or "").strip()
+                        if n:
+                            props[n] = v
+                except Exception:
+                    props = {}
+                size = props.get("size") or props.get("المقاس") or None
+                color = props.get("color") or props.get("اللون") or None
+                if not (size and color):
+                    vt = (li.get("variant_title") or "").strip()
+                    if vt and "/" in vt and not (size and color):
+                        parts = [s.strip() for s in vt.split("/") if s.strip()]
+                        if len(parts) >= 1 and not size:
+                            size = parts[0]
+                        if len(parts) >= 2 and not color:
+                            color = parts[1]
+                lines = []
+                if size:
+                    lines.append(f"المقاس: {size}")
+                if color:
+                    lines.append(f"اللون: {color}")
+                if qstr:
+                    lines.append(f"الكمية: {qstr}")
+                caption = "\n".join(lines)
+                try:
+                    res = await self.whatsapp_messenger.send_single_catalog_item(to, str(variant_id), caption)
+                    # Build synthetic interactive entry for UI
+                    synthetic = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": uid,
+                        "type": "catalog_item",
+                        "product_retailer_id": str(variant_id),
+                        "caption": caption,
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    # attach WA id if present
+                    try:
+                        arr = (res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            synthetic["wa_message_id"] = str((arr[0] or {}).get("id") or "")
+                            synthetic["status"] = "sent"
+                    except Exception:
+                        pass
+                    await self.db_manager.upsert_message(synthetic)
+                    await self.redis_manager.cache_message(uid, synthetic)
+                    await self.connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
+                    sent += 1
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    continue
         except Exception:
             return
 

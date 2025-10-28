@@ -779,7 +779,13 @@ async def shopify_orders_create_webhook(request: Request):
                     if qstr:
                         lines.append(f"الكمية: {qstr}")
                     caption = "\n".join(lines)
-                    entries.append({"url": img_url, "caption": caption})
+                    entry = {"url": img_url, "caption": caption}
+                    try:
+                        if variant_id:
+                            entry["retailer_id"] = str(variant_id)
+                    except Exception:
+                        pass
+                    entries.append(entry)
             # Maintain legacy extra_image_links for flow (now cached, not sent)
             extra_image_links = [e.get("url") for e in entries if e.get("url")] or None
             # Cache detailed entries for sending after confirm
