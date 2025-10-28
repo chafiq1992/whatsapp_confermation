@@ -5450,40 +5450,40 @@ async def _add_order_tag(order_id: str, tag: str) -> None:
         return
 
 async def _order_has_tag(order_id: str, required_tag: str) -> bool:
-	try:
-		from .shopify_integration import admin_api_base, _client_args  # type: ignore
-		import httpx as _httpx  # type: ignore
-		base = admin_api_base()
-		url = f"{base}/orders/{order_id}.json"
-		async with _httpx.AsyncClient(timeout=20.0) as client:
-			resp = await client.get(url, **_client_args())
-			if resp.status_code >= 400:
-				return False
-			data = resp.json() or {}
-			order = data.get("order") or {}
-			tags_str = str(order.get("tags") or "")
-			tags = [t.strip().lower() for t in tags_str.split(",") if t and t.strip()]
-			return str(required_tag or "").strip().lower() in tags
-	except Exception:
-		return False
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return False
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            tags_str = str(order.get("tags") or "")
+            tags = [t.strip().lower() for t in tags_str.split(",") if t and t.strip()]
+            return str(required_tag or "").strip().lower() in tags
+    except Exception:
+        return False
 
 async def _is_online_store_order(order_id: str) -> bool:
-	try:
-		from .shopify_integration import admin_api_base, _client_args  # type: ignore
-		import httpx as _httpx  # type: ignore
-		base = admin_api_base()
-		url = f"{base}/orders/{order_id}.json"
-		async with _httpx.AsyncClient(timeout=20.0) as client:
-			resp = await client.get(url, **_client_args())
-			if resp.status_code >= 400:
-				return False
-			order = (resp.json() or {}).get("order") or {}
-			source_name = str(order.get("source_name") or order.get("source") or "").strip().lower()
-			channel = str(order.get("channel") or order.get("channel_type") or "").strip().lower()
-			# Shopify Online Store orders usually have source_name == 'web'
-			return source_name in {"web", "online", "online_store"} or channel in {"online", "online_store"}
-	except Exception:
-		return False
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return False
+            order = (resp.json() or {}).get("order") or {}
+            source_name = str(order.get("source_name") or order.get("source") or "").strip().lower()
+            channel = str(order.get("channel") or order.get("channel_type") or "").strip().lower()
+            # Shopify Online Store orders usually have source_name == 'web'
+            return source_name in {"web", "online", "online_store"} or channel in {"online", "online_store"}
+    except Exception:
+        return False
 
 def _normalize_ma_phone(phone: str) -> str:
     """Normalize Moroccan phone to E.164 (+212...)."""
@@ -5541,29 +5541,29 @@ async def _run_order_confirmation_flow(
         raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
 
-		# Gate: proceed when order has required tag OR is an Online Store order
-		required_tag = os.getenv("ORDER_CONFIRM_REQUIRED_TAG", "easysell_cod_form")
-		include_online_store_env = os.getenv("ORDER_CONFIRM_INCLUDE_ONLINE_STORE", "1").strip().lower()
-		include_online_store = include_online_store_env not in {"0", "false", "no", "off"}
-		try:
-			has_required_tag = True if not required_tag else await _order_has_tag(order_id, required_tag)
-		except Exception:
-			has_required_tag = False
-		is_online_store = False
-		if not has_required_tag and include_online_store:
-			try:
-				is_online_store = await _is_online_store_order(order_id)
-			except Exception:
-				is_online_store = False
-		allowed_by_entry_gate = bool(has_required_tag or (include_online_store and is_online_store))
-		log_node(
-			"gate:required_tag_or_online_store",
-			{"order_id": order_id, "tag": required_tag, "include_online_store": include_online_store},
-			{"has_tag": has_required_tag, "is_online_store": is_online_store, "allowed": allowed_by_entry_gate},
-		)
-		if not allowed_by_entry_gate:
-			await _persist_flow_nodes(flow_key, nodes)
-			return
+        # Gate: proceed when order has required tag OR is an Online Store order
+        required_tag = os.getenv("ORDER_CONFIRM_REQUIRED_TAG", "easysell_cod_form")
+        include_online_store_env = os.getenv("ORDER_CONFIRM_INCLUDE_ONLINE_STORE", "1").strip().lower()
+        include_online_store = include_online_store_env not in {"0", "false", "no", "off"}
+        try:
+            has_required_tag = True if not required_tag else await _order_has_tag(order_id, required_tag)
+        except Exception:
+            has_required_tag = False
+        is_online_store = False
+        if not has_required_tag and include_online_store:
+            try:
+                is_online_store = await _is_online_store_order(order_id)
+            except Exception:
+                is_online_store = False
+        allowed_by_entry_gate = bool(has_required_tag or (include_online_store and is_online_store))
+        log_node(
+            "gate:required_tag_or_online_store",
+            {"order_id": order_id, "tag": required_tag, "include_online_store": include_online_store},
+            {"has_tag": has_required_tag, "is_online_store": is_online_store, "allowed": allowed_by_entry_gate},
+        )
+        if not allowed_by_entry_gate:
+            await _persist_flow_nodes(flow_key, nodes)
+            return
 
         # Gate: only proceed if phone matches allowed numbers (env + defaults)
         raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
