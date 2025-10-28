@@ -610,15 +610,15 @@ async def shopify_orders_create_webhook(request: Request):
         except Exception as _exc:
             components_override = None
 
-        # Collect additional variant image links for multi-item orders (best-effort, limit 5)
+        # Collect additional variant media entries for multi-item orders (best-effort, limit 10)
         extra_image_links: list[str] | None = None
         try:
             items = order.get("line_items") or []
             base = admin_api_base()
-            links: list[str] = []
+            entries: list[dict] = []
             async with httpx.AsyncClient(timeout=12.0) as client:
                 for li in items:
-                    if len(links) >= 5:
+                    if len(entries) >= 10:
                         break
                     product_id = li.get("product_id")
                     variant_id = li.get("variant_id")
@@ -633,12 +633,12 @@ async def shopify_orders_create_webhook(request: Request):
                                     product_id = variant.get("product_id")
                         except Exception:
                             image_id = None
+                    img_url = None
                     if product_id:
                         try:
                             p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
                             if p_resp.status_code == 200:
                                 prod = (p_resp.json() or {}).get("product") or {}
-                                img_url = None
                                 if image_id:
                                     for img in (prod.get("images") or []):
                                         if str(img.get("id")) == str(image_id) and img.get("src"):
@@ -648,11 +648,63 @@ async def shopify_orders_create_webhook(request: Request):
                                     img_url = (prod.get("image") or {}).get("src") or (
                                         (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
                                     )
-                                if img_url:
-                                    links.append(img_url)
                         except Exception:
                             pass
-            extra_image_links = links if links else None
+                    if not img_url:
+                        continue
+                    # Build Arabic caption: size, color, quantity (best-effort)
+                    qty = li.get("quantity")
+                    try:
+                        qstr = str(int(qty)) if qty is not None else ""
+                    except Exception:
+                        qstr = str(qty or "")
+                    props = {}
+                    try:
+                        for p in (li.get("properties") or []):
+                            n = str(p.get("name") or "").strip().lower()
+                            v = str(p.get("value") or "").strip()
+                            if n:
+                                props[n] = v
+                    except Exception:
+                        props = {}
+                    size = props.get("size") or props.get("المقاس") or None
+                    color = props.get("color") or props.get("اللون") or None
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            if len(parts) >= 1 and not size:
+                                size = parts[0]
+                            if len(parts) >= 2 and not color:
+                                color = parts[1]
+                    lines = []
+                    if size:
+                        lines.append(f"المقاس: {size}")
+                    if color:
+                        lines.append(f"اللون: {color}")
+                    if qstr:
+                        lines.append(f"الكمية: {qstr}")
+                    caption = "\n".join(lines)
+                    entries.append({"url": img_url, "caption": caption})
+            # Maintain legacy extra_image_links for flow (now cached, not sent)
+            extra_image_links = [e.get("url") for e in entries if e.get("url")] or None
+            # Cache detailed entries for sending after confirm
+            try:
+                from . import main as backend_main  # type: ignore
+                uid = None
+                try:
+                    phone_e164 = backend_main._normalize_ma_phone(str(raw_phone or ""))  # type: ignore[attr-defined]
+                    uid = backend_main._normalize_user_id(phone_e164)  # type: ignore[attr-defined]
+                except Exception:
+                    uid = None
+                if uid and entries:
+                    await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
+                        f"pending_variant_media:{uid}",
+                        {"items": entries, "ts": datetime.utcnow().isoformat()},
+                        ttl=3 * 24 * 3600,
+                    )
+            except Exception:
+                pass
         except Exception:
             extra_image_links = None
 

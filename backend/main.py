@@ -13,6 +13,7 @@ from collections import defaultdict
 import time
 import os
 import re
+import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
@@ -272,6 +273,17 @@ _vlog(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
 # Feature flags / tunables
 AUDIO_VOICE_ENABLED = (os.getenv("WA_AUDIO_VOICE", "1") or "1").strip() not in ("0", "false", "False")
 
+# Order confirmation: allowed numbers
+_ORDER_CONFIRM_ALLOWED_RAW = os.getenv("ORDER_CONFIRM_ALLOWED_NUMBERS", "")
+ORDER_CONFIRM_ALLOWED_NUMBERS: Set[str] = set(
+    _digits_only(n.strip()) for n in _ORDER_CONFIRM_ALLOWED_RAW.split(",") if n.strip()
+)
+# Always include these defaults
+try:
+    ORDER_CONFIRM_ALLOWED_NUMBERS.update({"212650161162", "212606315335"})
+except Exception:
+    pass
+
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
 APP_STARTED_AT = datetime.utcnow().isoformat()
@@ -280,6 +292,15 @@ def chunk_list(items: List[str], size: int):
     """Yield successive chunks from a list."""
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+def _format_price_mad(value: str) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    # Avoid duplicating MAD if already present
+    if re.search(r"\bMAD\b", s, re.IGNORECASE):
+        return s
+    return f"{s} MAD"
 
 async def convert_webm_to_ogg(src_path: Path) -> Path:
     """
@@ -2671,8 +2692,9 @@ class MessageProcessor:
                                 pass
                         if img_url:
                             # Send as image with caption if interactive fails
+                            safe_caption = caption or (price and _format_price_mad(price) or "")
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                wa_to, "image", img_url, caption or (price and f"{price} MAD" or "")
+                                wa_to, "image", img_url, safe_caption
                             )
                             if message.get("needs_bilingual_prompt"):
                                 wa_msg_id = None
@@ -3330,6 +3352,11 @@ class MessageProcessor:
                             await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
                         except Exception:
                             pass
+                        # After audio auto-reply, send any pending variant images
+                        try:
+                            await self._send_pending_variant_media(sender)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 # Route survey interactions before generic acknowledgment
@@ -3449,6 +3476,11 @@ class MessageProcessor:
                         await self.db_manager.upsert_message(synthetic_audio)
                         await self.redis_manager.cache_message(sender, synthetic_audio)
                         await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                    except Exception:
+                        pass
+                    # After audio auto-reply, send any pending variant images
+                    try:
+                        await self._send_pending_variant_media(sender)
                     except Exception:
                         pass
             except Exception:
@@ -3867,7 +3899,13 @@ class MessageProcessor:
                 if resolved_variant:
                     t = resolved_variant.get("title") or ""
                     pr = resolved_variant.get("price") or ""
-                    cap = (f"{t} - {pr} MAD").strip(" -")
+                    pr_fmt = _format_price_mad(pr) if pr else ""
+                    parts: list[str] = []
+                    if t:
+                        parts.append(t)
+                    if pr_fmt:
+                        parts.append(pr_fmt)
+                    cap = (" - ".join(parts)).strip(" -")
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "catalog_item",
@@ -3898,6 +3936,53 @@ class MessageProcessor:
         caption = " - ".join(caption_parts)
         # Removed automatic image auto-reply on name-based match
         return
+
+    async def _send_pending_variant_media(self, user_id: str) -> None:
+        """Send up to 10 cached variant images with Arabic captions, then clear the cache."""
+        try:
+            key = f"pending_variant_media:{user_id}"
+            data = await redis_manager.get_json(key)
+            items = []
+            if isinstance(data, dict):
+                items = data.get("items") or []
+            if not items:
+                return
+            to = _normalize_ma_phone(user_id)
+            count = 0
+            for it in items[:10]:
+                try:
+                    url = (it.get("url") or it.get("link") or "").strip()
+                    caption = str(it.get("caption") or "")
+                except Exception:
+                    continue
+                if not url:
+                    continue
+                try:
+                    await self.whatsapp_messenger.send_media_message(to=to, media_type="image", media_id_or_url=url, caption=caption)
+                    synthetic_img = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": user_id,
+                        "message": url,
+                        "type": "image",
+                        "url": url,
+                        "caption": caption,
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    await self.db_manager.upsert_message(synthetic_img)
+                    await self.redis_manager.cache_message(user_id, synthetic_img)
+                    await self.connection_manager.send_to_user(user_id, {"type": "message_sent", "data": synthetic_img})
+                    count += 1
+                except Exception:
+                    continue
+            # Clear the cache after sending
+            try:
+                if redis_manager.redis_client:
+                    await redis_manager.redis_client.delete(key)
+            except Exception:
+                pass
+        except Exception:
+            return
 
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
         """Download media from WhatsApp and upload it to Google Cloud Storage.
@@ -4904,7 +4989,7 @@ async def _run_order_confirmation_flow(
     extra_image_links: Optional[list[str]] = None,
     audio_url_override: Optional[str] = None,
 ) -> None:
-    """Run order confirmation flow for test number only, with node logs in Redis."""
+    """Run order confirmation flow for allowed numbers, with node logs in Redis."""
     TEST_NUMBER_RAW = "0618182056"
     try:
         # Node log structure helper
@@ -4925,20 +5010,34 @@ async def _run_order_confirmation_flow(
         raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
 
-        # Gate: only proceed if matches the test number (accept common formats)
-        gate_digits = "".join(ch for ch in TEST_NUMBER_RAW if ch.isdigit())
+        # Gate: only proceed if phone matches allowed numbers (env + defaults)
         raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
-        # Build candidate endings: exact, without leading 0, and E.164 MA with 212
-        gate_no0 = gate_digits[1:] if gate_digits.startswith("0") else gate_digits
-        gate_e164 = ("212" + gate_no0) if not gate_digits.startswith("212") else gate_digits
-        allowed = (
-            raw_digits.endswith(gate_digits)
-            or raw_digits.endswith(gate_no0)
-            or raw_digits.endswith(gate_e164)
-        )
+        candidates: list[str] = []
+        # include legacy test number
+        try:
+            gate_digits = "".join(ch for ch in TEST_NUMBER_RAW if ch.isdigit())
+            gate_no0 = gate_digits[1:] if gate_digits.startswith("0") else gate_digits
+            gate_e164 = ("212" + gate_no0) if not gate_digits.startswith("212") else gate_digits
+            candidates.extend([gate_digits, gate_no0, gate_e164])
+        except Exception:
+            pass
+        for n in list(ORDER_CONFIRM_ALLOWED_NUMBERS or set()):
+            try:
+                d = "".join(ch for ch in str(n) if ch.isdigit())
+                if not d:
+                    continue
+                candidates.append(d)
+                if d.startswith("0"):
+                    candidates.append(d[1:])
+                if not d.startswith("212"):
+                    no0 = d[1:] if d.startswith("0") else d
+                    candidates.append("212" + no0)
+            except Exception:
+                continue
+        allowed = any(raw_digits.endswith(c) for c in candidates if c)
         log_node(
-            "gate:test_only",
-            {"raw_digits": raw_digits, "candidates": [gate_digits, gate_no0, gate_e164]},
+            "gate:allowed_numbers",
+            {"raw_digits": raw_digits, "candidates": candidates},
             {"allowed": allowed},
         )
         try:
@@ -5038,28 +5137,27 @@ async def _run_order_confirmation_flow(
                 await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
             except Exception:
                 pass
-            # Best-effort: send extra variant images if provided
+            # Cache extra variant images (do not send yet). They will be sent on confirm.
             try:
-                links = list(extra_image_links or [])
-                for link in links[:5]:
-                    try:
-                        await messenger.send_media_message(to=phone_e164, media_type="image", media_id_or_url=str(link))
-                        # Reflect in UI
-                        uid = _normalize_user_id(phone_e164)
-                        synthetic_img = {
-                            "temp_id": f"temp_{uuid.uuid4().hex}",
-                            "user_id": uid,
-                            "message": str(link),
-                            "type": "image",
-                            "url": str(link),
-                            "from_me": 1,
-                            "timestamp": datetime.utcnow().isoformat(),
-                        }
-                        await db_manager.upsert_message(synthetic_img)
-                        await redis_manager.cache_message(uid, synthetic_img)
-                        await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic_img})
-                    except Exception:
-                        continue
+                uid = _normalize_user_id(phone_e164)
+                items: list[dict] = []
+                if isinstance(extra_image_links, list):
+                    for link in extra_image_links[:10]:
+                        try:
+                            if isinstance(link, dict):
+                                url = link.get("url") or link.get("link") or ""
+                                cap = str(link.get("caption") or "")
+                            else:
+                                url = str(link)
+                                cap = ""
+                            if not url:
+                                continue
+                            items.append({"url": url, "caption": cap})
+                        except Exception:
+                            continue
+                if items:
+                    await redis_manager.set_json(f"pending_variant_media:{uid}", {"items": items, "ts": datetime.utcnow().isoformat()}, ttl=3 * 24 * 3600)
+                    log_node("cache_variant_media", {"uid": uid, "count": len(items)}, {"cached": True})
             except Exception:
                 pass
         except Exception as exc:

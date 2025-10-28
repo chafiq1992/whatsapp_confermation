@@ -581,7 +581,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                         <span className="flex items-center">
                           <span className="font-medium text-blue-700">Price:</span>
                           <span className="ml-1 font-semibold">
-                            {item.item_price} {item.currency || "MAD"}
+                            {(() => { const s = String(item.item_price ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${item.currency || "MAD"}`; })()}
                           </span>
                         </span>
                         {finalSize && (
@@ -607,7 +607,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                       {product.price && product.price !== item.item_price && (
                         <div className="mt-2">
                           <span className="inline-block text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full border border-blue-100">
-                            <span className="font-medium">Catalog Price:</span> {product.price} {item.currency || "MAD"}
+                            <span className="font-medium">Catalog Price:</span> {(() => { const s = String(product.price ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${item.currency || "MAD"}`; })()}
                           </span>
                         </div>
                       )}
@@ -643,7 +643,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         {order.total && (
           <div className="mt-3 pt-2 border-t border-yellow-200">
             <div className="text-right font-semibold text-yellow-800">
-              Total: {order.total} {order.currency || "MAD"}
+              Total: {(() => { const s = String(order.total ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${order.currency || "MAD"}`; })()}
             </div>
           </div>
         )}
