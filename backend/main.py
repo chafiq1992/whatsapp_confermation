@@ -5449,6 +5449,24 @@ async def _add_order_tag(order_id: str, tag: str) -> None:
     except Exception:
         return
 
+async def _order_has_tag(order_id: str, required_tag: str) -> bool:
+	try:
+		from .shopify_integration import admin_api_base, _client_args  # type: ignore
+		import httpx as _httpx  # type: ignore
+		base = admin_api_base()
+		url = f"{base}/orders/{order_id}.json"
+		async with _httpx.AsyncClient(timeout=20.0) as client:
+			resp = await client.get(url, **_client_args())
+			if resp.status_code >= 400:
+				return False
+			data = resp.json() or {}
+			order = data.get("order") or {}
+			tags_str = str(order.get("tags") or "")
+			tags = [t.strip().lower() for t in tags_str.split(",") if t and t.strip()]
+			return str(required_tag or "").strip().lower() in tags
+	except Exception:
+		return False
+
 def _normalize_ma_phone(phone: str) -> str:
     """Normalize Moroccan phone to E.164 (+212...)."""
     try:
@@ -5504,6 +5522,17 @@ async def _run_order_confirmation_flow(
         # Trigger: fetch order phone (or use override from webhook)
         raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
+
+		# Gate: only proceed if the order has the required tag
+		required_tag = os.getenv("ORDER_CONFIRM_REQUIRED_TAG", "easysell_cod_form")
+		try:
+			has_required_tag = True if not required_tag else await _order_has_tag(order_id, required_tag)
+		except Exception:
+			has_required_tag = False
+		log_node("gate:required_tag", {"order_id": order_id, "tag": required_tag}, {"has_tag": has_required_tag})
+		if not has_required_tag:
+			await _persist_flow_nodes(flow_key, nodes)
+			return
 
         # Gate: only proceed if phone matches allowed numbers (env + defaults)
         raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
