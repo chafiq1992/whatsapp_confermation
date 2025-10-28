@@ -284,6 +284,9 @@ try:
 except Exception:
     pass
 
+# Allow sending order confirmation to all numbers (bypass whitelist)
+ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
 APP_STARTED_AT = datetime.utcnow().isoformat()
@@ -3332,9 +3335,15 @@ class MessageProcessor:
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
-                                ok = await self._send_audio_via_upload(to, str(audio_url))
-                                if not ok:
-                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                wa_id = await self._send_audio_via_upload(to, str(audio_url))
+                                if not wa_id:
+                                    res = await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                    try:
+                                        arr = (res or {}).get("messages") or []
+                                        if isinstance(arr, list) and arr:
+                                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                                    except Exception:
+                                        wa_id = None
                                 synthetic_audio = {
                                     "temp_id": f"temp_{uuid.uuid4().hex}",
                                     "user_id": sender,
@@ -3343,6 +3352,8 @@ class MessageProcessor:
                                     "url": str(audio_url),
                                     "from_me": 1,
                                     "timestamp": datetime.utcnow().isoformat(),
+                                    **({"wa_message_id": wa_id} if wa_id else {}),
+                                    "status": "sent",
                                 }
                                 await self.db_manager.upsert_message(synthetic_audio)
                                 await self.redis_manager.cache_message(sender, synthetic_audio)
@@ -3505,9 +3516,15 @@ class MessageProcessor:
                 if matched:
                     try:
                         to = _normalize_ma_phone(sender)
-                        ok = await self._send_audio_via_upload(to, str(matched))
-                        if not ok:
-                            await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                        wa_id = await self._send_audio_via_upload(to, str(matched))
+                        if not wa_id:
+                            res = await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                            try:
+                                arr = (res or {}).get("messages") or []
+                                if isinstance(arr, list) and arr:
+                                    wa_id = str((arr[0] or {}).get("id") or "") or None
+                            except Exception:
+                                wa_id = None
                         synthetic_audio = {
                             "temp_id": f"temp_{uuid.uuid4().hex}",
                             "user_id": sender,
@@ -3516,6 +3533,8 @@ class MessageProcessor:
                             "url": str(matched),
                             "from_me": 1,
                             "timestamp": datetime.utcnow().isoformat(),
+                            **({"wa_message_id": wa_id} if wa_id else {}),
+                            "status": "sent",
                         }
                         await self.db_manager.upsert_message(synthetic_audio)
                         await self.redis_manager.cache_message(sender, synthetic_audio)
@@ -3983,9 +4002,9 @@ class MessageProcessor:
         # Removed automatic image auto-reply on name-based match
         return
 
-    async def _send_audio_via_upload(self, to_e164: str, audio_url: str) -> bool:
+    async def _send_audio_via_upload(self, to_e164: str, audio_url: str) -> Optional[str]:
         """Download remote audio and upload to WhatsApp, then send as voice note.
-        Returns True on success, False otherwise.
+        Returns WhatsApp message id on success, or None on failure.
         """
         try:
             import tempfile
@@ -4024,7 +4043,7 @@ class MessageProcessor:
                 except Exception:
                     data = None
             if not data:
-                return False
+                return None
             # Persist downloaded bytes then convert to m4a (robust across WA clients)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_raw:
                 tmp_raw.write(data)
@@ -4039,10 +4058,16 @@ class MessageProcessor:
             try:
                 media_info = await self._upload_media_to_whatsapp(Path(tmp_path), "audio")
                 await asyncio.sleep(0.5)
-                await self.whatsapp_messenger.send_media_message(
+                res = await self.whatsapp_messenger.send_media_message(
                     to_e164, "audio", media_info.get("id") or "", audio_voice=True
                 )
-                return True
+                try:
+                    mid = (res or {}).get("messages") or []
+                    if isinstance(mid, list) and mid:
+                        return str((mid[0] or {}).get("id") or "") or None
+                except Exception:
+                    pass
+                return None
             finally:
                 try:
                     if tmp_path and os.path.exists(tmp_path):
@@ -4055,7 +4080,7 @@ class MessageProcessor:
                 except Exception:
                     pass
         except Exception:
-            return False
+            return None
 
     async def _send_pending_variant_media(self, user_id: str) -> None:
         """Send up to 10 cached variant images with Arabic captions, then clear the cache."""
@@ -5254,7 +5279,11 @@ async def _run_order_confirmation_flow(
                     candidates.append("212" + no0)
             except Exception:
                 continue
-        allowed = any(raw_digits.endswith(c) for c in candidates if c)
+        # Env override: allow all numbers
+        if ORDER_CONFIRM_ALLOW_ALL:
+            allowed = True
+        else:
+            allowed = any(raw_digits.endswith(c) for c in candidates if c)
         log_node(
             "gate:allowed_numbers",
             {"raw_digits": raw_digits, "candidates": candidates},
@@ -5268,7 +5297,8 @@ async def _run_order_confirmation_flow(
             # Store nodes and return
             await _persist_flow_nodes(flow_key, nodes)
             return
-        is_test_gate = True
+        # Test-gate mode controls whether to skip WA contact checks; disable when allowing all
+        is_test_gate = not ORDER_CONFIRM_ALLOW_ALL
 
         # Normalize phone
         phone_e164 = _normalize_ma_phone(raw_phone)
@@ -5352,13 +5382,51 @@ async def _run_order_confirmation_flow(
                 try:
                     uid = _normalize_user_id(phone_e164)
                     await db_manager.upsert_user(uid)
+                    # Extract WhatsApp message id if present in response
+                    wa_id = None
+                    try:
+                        arr = (send_res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                    except Exception:
+                        wa_id = None
+                    # Extract header media link from components if any
+                    header_link = ""
+                    body_params: list[str] = []
+                    try:
+                        for comp in (components or []):
+                            t = str((comp or {}).get("type") or "").upper()
+                            if t == "HEADER":
+                                params = (comp or {}).get("parameters") or []
+                                if params and isinstance(params, list):
+                                    p0 = params[0] or {}
+                                    # handle image/video/document
+                                    for k in ("image", "video", "document"):
+                                        if k in p0 and isinstance(p0[k], dict):
+                                            header_link = str((p0[k] or {}).get("link") or "")
+                                            break
+                            if t == "BODY":
+                                for p in ((comp or {}).get("parameters") or []):
+                                    if isinstance(p, dict) and p.get("type") == "text":
+                                        body_params.append(str(p.get("text") or ""))
+                    except Exception:
+                        header_link = header_link or ""
                     synthetic = {
                         "temp_id": f"temp_{uuid.uuid4().hex}",
                         "user_id": uid,
-                        "message": f"[Template sent] {template_name}",
-                        "type": "text",
+                        "message": f"[Template] {template_name}",
+                        "type": "template",
                         "from_me": 1,
                         "timestamp": datetime.utcnow().isoformat(),
+                        **({"wa_message_id": wa_id} if wa_id else {}),
+                        "status": "sent",
+                        "template": {
+                            "name": template_name,
+                            "language": template_lang,
+                            "components": components or [],
+                        },
+                        **({"template_header_link": header_link} if header_link else {}),
+                        **({"template_body_params": body_params} if body_params else {}),
                     }
                     await db_manager.upsert_message(synthetic)
                     await redis_manager.cache_message(uid, synthetic)
@@ -5386,6 +5454,96 @@ async def _run_order_confirmation_flow(
                 if items:
                     await redis_manager.set_json(f"pending_variant_media:{uid}", {"items": items, "ts": datetime.utcnow().isoformat()}, ttl=3 * 24 * 3600)
                     log_node("cache_variant_media", {"uid": uid, "count": len(items)}, {"cached": True})
+                # If we still have nothing cached, build from the specific Shopify order line items
+                if not items:
+                    try:
+                        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+                        import httpx  # type: ignore
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            o_resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                            if o_resp.status_code == 200:
+                                order_payload = (o_resp.json() or {}).get("order") or {}
+                                line_items = order_payload.get("line_items") or []
+                                entries: list[dict] = []
+                                for li in line_items:
+                                    if len(entries) >= 10:
+                                        break
+                                    product_id = li.get("product_id")
+                                    variant_id = li.get("variant_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    img_url = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                if image_id:
+                                                    for img in (prod.get("images") or []):
+                                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                            img_url = img.get("src")
+                                                            break
+                                                if not img_url:
+                                                    img_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if not img_url:
+                                        continue
+                                    # Caption in Arabic: size, color, quantity
+                                    qty = li.get("quantity")
+                                    try:
+                                        qstr = str(int(qty)) if qty is not None else ""
+                                    except Exception:
+                                        qstr = str(qty or "")
+                                    props = {}
+                                    try:
+                                        for p in (li.get("properties") or []):
+                                            n = str(p.get("name") or "").strip().lower()
+                                            v = str(p.get("value") or "").strip()
+                                            if n:
+                                                props[n] = v
+                                    except Exception:
+                                        props = {}
+                                    size = props.get("size") or props.get("المقاس") or None
+                                    color = props.get("color") or props.get("اللون") or None
+                                    if not (size and color):
+                                        vt = (li.get("variant_title") or "").strip()
+                                        if vt and "/" in vt and not (size and color):
+                                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                            if len(parts) >= 1 and not size:
+                                                size = parts[0]
+                                            if len(parts) >= 2 and not color:
+                                                color = parts[1]
+                                    lines = []
+                                    if size:
+                                        lines.append(f"المقاس: {size}")
+                                    if color:
+                                        lines.append(f"اللون: {color}")
+                                    if qstr:
+                                        lines.append(f"الكمية: {qstr}")
+                                    caption = "\n".join(lines)
+                                    entries.append({"url": img_url, "caption": caption})
+                                if entries:
+                                    await redis_manager.set_json(
+                                        f"pending_variant_media:{uid}",
+                                        {"items": entries, "ts": datetime.utcnow().isoformat()},
+                                        ttl=3 * 24 * 3600,
+                                    )
+                                    log_node("cache_variant_media_from_order", {"uid": uid, "count": len(entries)}, {"cached": True})
+                    except Exception:
+                        pass
             except Exception:
                 pass
         except Exception as exc:
