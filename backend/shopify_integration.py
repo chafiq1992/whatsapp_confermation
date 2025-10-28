@@ -786,6 +786,16 @@ async def shopify_orders_create_webhook(request: Request):
                         {"items": entries, "ts": datetime.utcnow().isoformat()},
                         ttl=3 * 24 * 3600,
                     )
+                # Persist the order id to strengthen fallback resolution on confirm
+                if uid and order_id:
+                    try:
+                        await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
+                            f"pending_variant_order:{uid}",
+                            {"order_id": str(order_id), "ts": datetime.utcnow().isoformat()},
+                            ttl=3 * 24 * 3600,
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
         except Exception:

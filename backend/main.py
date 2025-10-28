@@ -4096,6 +4096,92 @@ class MessageProcessor:
             if isinstance(data, dict):
                 items = data.get("items") or []
             # Fallback: if nothing cached, try to build from customer's last order
+            # Priority 1: if we have a recent order_id pinned for this user, build from that exact order
+            if not items:
+                try:
+                    order_ref = await redis_manager.get_json(f"pending_variant_order:{user_id}")
+                    order_id = None
+                    if isinstance(order_ref, dict):
+                        order_id = str(order_ref.get("order_id") or "").strip()
+                    if order_id:
+                        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+                        import httpx  # type: ignore
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            o_resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                            if o_resp.status_code == 200:
+                                order_payload = (o_resp.json() or {}).get("order") or {}
+                                line_items = order_payload.get("line_items") or []
+                                for li in line_items:
+                                    if len(items) >= 10:
+                                        break
+                                    product_id = li.get("product_id")
+                                    variant_id = li.get("variant_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    img_url = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                if image_id:
+                                                    for img in (prod.get("images") or []):
+                                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                            img_url = img.get("src")
+                                                            break
+                                                if not img_url:
+                                                    img_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if not img_url:
+                                        continue
+                                    qty = li.get("quantity")
+                                    try:
+                                        qstr = str(int(qty)) if qty is not None else ""
+                                    except Exception:
+                                        qstr = str(qty or "")
+                                    props = {}
+                                    try:
+                                        for p in (li.get("properties") or []):
+                                            n = str(p.get("name") or "").strip().lower()
+                                            v = str(p.get("value") or "").strip()
+                                            if n:
+                                                props[n] = v
+                                    except Exception:
+                                        props = {}
+                                    size = props.get("size") or props.get("المقاس") or None
+                                    color = props.get("color") or props.get("اللون") or None
+                                    if not (size and color):
+                                        vt = (li.get("variant_title") or "").strip()
+                                        if vt and "/" in vt and not (size and color):
+                                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                            if len(parts) >= 1 and not size:
+                                                size = parts[0]
+                                            if len(parts) >= 2 and not color:
+                                                color = parts[1]
+                                    lines = []
+                                    if size:
+                                        lines.append(f"المقاس: {size}")
+                                    if color:
+                                        lines.append(f"اللون: {color}")
+                                    if qstr:
+                                        lines.append(f"الكمية: {qstr}")
+                                    caption = "\n".join(lines)
+                                    items.append({"url": img_url, "caption": caption})
+                except Exception:
+                    pass
             if not items:
                 try:
                     from .shopify_integration import fetch_customer_by_phone, admin_api_base, _client_args  # type: ignore
@@ -5465,6 +5551,15 @@ async def _run_order_confirmation_flow(
                 if items:
                     await redis_manager.set_json(f"pending_variant_media:{uid}", {"items": items, "ts": datetime.utcnow().isoformat()}, ttl=3 * 24 * 3600)
                     log_node("cache_variant_media", {"uid": uid, "count": len(items)}, {"cached": True})
+                # Also store order id for stronger fallback resolution
+                try:
+                    await redis_manager.set_json(
+                        f"pending_variant_order:{uid}",
+                        {"order_id": str(order_id), "ts": datetime.utcnow().isoformat()},
+                        ttl=3 * 24 * 3600,
+                    )
+                except Exception:
+                    pass
                 # If we still have nothing cached, build from the specific Shopify order line items
                 if not items:
                     try:
