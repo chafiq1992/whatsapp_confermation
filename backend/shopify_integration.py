@@ -497,13 +497,12 @@ async def shopify_orders_create_webhook(request: Request):
                 or (order.get("phone") if isinstance(order.get("phone"), str) else None)
                 or str(raw_phone or "-")
             )
-            # items summary: Arabic item lines with size, color, and quantity
+            # items summary: only quantity, size, and color (no product title), e.g. "1x 25 blue + 3x 21 brown"
             items = order.get("line_items") or []
             try:
-                lines = []
+                fragments = []
                 for li in items:
                     qty = li.get("quantity")
-                    title = li.get("title") or ""
                     try:
                         qstr = str(int(qty)) if qty is not None else ""
                     except Exception:
@@ -528,21 +527,19 @@ async def shopify_orders_create_webhook(request: Request):
                                 size = parts[0]
                             if len(parts) >= 2 and not color:
                                 color = parts[1]
-                    # Compose Arabic one-line summary per item
-                    arabic_parts = []
-                    if title:
-                        arabic_parts.append(f"المنتج: {title}")
-                    if size:
-                        arabic_parts.append(f"المقاس: {size}")
-                    if color:
-                        arabic_parts.append(f"اللون: {color}")
+                    # Compose fragment: "Qx SIZE COLOR" (omit missing fields)
+                    parts_out = []
                     if qstr:
-                        arabic_parts.append(f"الكمية: {qstr}")
-                    line = " | ".join(arabic_parts)
-                    if line:
-                        lines.append(line)
-                # WhatsApp template param cannot include newlines/tabs; join inline
-                items_summary = " | ".join(lines) or "-"
+                        parts_out.append(f"{qstr}x")
+                    if size:
+                        parts_out.append(str(size))
+                    if color:
+                        parts_out.append(str(color))
+                    frag = " ".join(p for p in parts_out if p)
+                    if frag:
+                        fragments.append(frag)
+                # Join fragments with ' + ' and sanitize later
+                items_summary = " + ".join(fragments) or "-"
             except Exception:
                 items_summary = "-"
 
