@@ -541,7 +541,8 @@ async def shopify_orders_create_webhook(request: Request):
                     line = " | ".join(arabic_parts)
                     if line:
                         lines.append(line)
-                items_summary = "\n".join(lines) or "-"
+                # WhatsApp template param cannot include newlines/tabs; join inline
+                items_summary = " | ".join(lines) or "-"
             except Exception:
                 items_summary = "-"
 
@@ -629,9 +630,20 @@ async def shopify_orders_create_webhook(request: Request):
             except Exception:
                 pass
 
+            # Sanitize all text params: remove newlines/tabs and collapse spaces
+            def _sanitize_text(s: str) -> str:
+                try:
+                    t = str(s or "")
+                    t = t.replace("\n", " ").replace("\t", " ")
+                    # collapse multiple spaces to one
+                    while "  " in t:
+                        t = t.replace("  ", " ")
+                    return t.strip()
+                except Exception:
+                    return str(s or "")
             components_override.append({
                 "type": "body",
-                "parameters": [{"type": "text", "text": str(v)} for v in body_params],
+                "parameters": [{"type": "text", "text": _sanitize_text(str(v))} for v in body_params],
             })
             logging.getLogger(__name__).info(
                 "order_confirm webhook: built %d body params for template", len(body_params)

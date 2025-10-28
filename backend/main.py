@@ -5333,30 +5333,38 @@ async def _run_order_confirmation_flow(
                 language=template_lang,
                 components=components,
             )
-            log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, {"response": send_res})
-            try:
-                logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
-            except Exception:
-                pass
-            await _add_order_tag(order_id, "ok_wtp")
-            log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
-            # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
-            try:
-                uid = _normalize_user_id(phone_e164)
-                await db_manager.upsert_user(uid)
-                synthetic = {
-                    "temp_id": f"temp_{uuid.uuid4().hex}",
-                    "user_id": uid,
-                    "message": f"[Template sent] {template_name}",
-                    "type": "text",
-                    "from_me": 1,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-                await db_manager.upsert_message(synthetic)
-                await redis_manager.cache_message(uid, synthetic)
-                await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
-            except Exception:
-                pass
+            # Detect Graph API errors and branch accordingly
+            if isinstance(send_res, dict) and send_res.get("error"):
+                log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, status="error", error=str(send_res.get("error")))
+                try:
+                    logging.info("order_confirm flow: template error order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
+                except Exception:
+                    pass
+            else:
+                log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, {"response": send_res})
+                try:
+                    logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
+                except Exception:
+                    pass
+                await _add_order_tag(order_id, "ok_wtp")
+                log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
+                try:
+                    uid = _normalize_user_id(phone_e164)
+                    await db_manager.upsert_user(uid)
+                    synthetic = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": uid,
+                        "message": f"[Template sent] {template_name}",
+                        "type": "text",
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    await db_manager.upsert_message(synthetic)
+                    await redis_manager.cache_message(uid, synthetic)
+                    await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
+                except Exception:
+                    pass
             # Cache extra variant images (do not send yet). They will be sent on confirm.
             try:
                 uid = _normalize_user_id(phone_e164)
