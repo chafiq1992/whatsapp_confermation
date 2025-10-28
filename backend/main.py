@@ -5213,6 +5213,12 @@ def _normalize_ma_phone(phone: str) -> str:
             return ""
         # If already e164
         if s.startswith("+"):
+            # Fix common mistake: "+2120XXXXXXXX" -> "+212XXXXXXXX"
+            try:
+                if s.startswith("+2120") and len(s) >= 5:
+                    return "+212" + s[5:]
+            except Exception:
+                pass
             return s
         # Strip all non-digits, then normalize
         digits = "".join(ch for ch in s if ch.isdigit())

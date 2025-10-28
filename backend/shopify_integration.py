@@ -88,12 +88,57 @@ def normalize_phone(phone):
         return ""
     phone = str(phone).replace(" ", "").replace("-", "")
     if phone.startswith("+"):
+        # Fix common mistake: +2120XXXXXXXX -> +212XXXXXXXX (remove national trunk '0')
+        try:
+            if phone.startswith("+2120") and len(phone) >= 5:
+                return "+212" + phone[5:]
+        except Exception:
+            pass
         return phone
     if len(phone) == 12 and phone.startswith("212"):
         return "+" + phone
     if len(phone) == 10 and phone.startswith("06"):
         return "+212" + phone[1:]
     return phone
+
+def format_phone_for_template_display(phone: str) -> str:
+    """Format phone for template placeholder:
+    - Morocco (+212...): display as 0XXXXXXXXX (national format, no country code)
+    - Non-Morocco: display with +<country><number>
+    """
+    try:
+        s = "".join(ch for ch in str(phone or "") if ch.isdigit() or ch == "+")
+        if not s:
+            return "-"
+        # Normalize +2120XXXX to +212XXXX for consistency
+        if s.startswith("+2120"):
+            s = "+212" + s[5:]
+        # If E.164 Morocco
+        if s.startswith("+212"):
+            local = "".join(ch for ch in s if ch.isdigit())[3:]
+            if not local:
+                return "-"
+            # Ensure single leading 0 in display
+            if not local.startswith("0"):
+                return "0" + local
+            return local
+        # Raw digits path
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if digits.startswith("212"):
+            local = digits[3:]
+            return ("0" + local) if not local.startswith("0") else local
+        if digits.startswith("0") and len(digits) >= 9:
+            # Already in national form
+            return digits
+        # Likely missing trunk 0 for MA mobile (9 digits starting with 6/7)
+        if len(digits) == 9 and digits[0] in ("5","6","7","8","9"):
+            return "0" + digits
+        # Non-Morocco: return E.164 style
+        if s.startswith("+"):
+            return s
+        return "+" + digits if digits else "-"
+    except Exception:
+        return str(phone or "-")
 
 def _split_name(full_name: str) -> tuple[str, str]:
     full = (full_name or "").strip()
@@ -552,7 +597,7 @@ async def shopify_orders_create_webhook(request: Request):
                 total_with_currency,
                 city,
                 address1,
-                phone_val,
+                format_phone_for_template_display(phone_val),
             ]
             components_override = []
             # Header IMAGE param: prefer order note_attributes.image_url, else env ORDER_CONFIRM_HEADER_IMAGE_URL
