@@ -3327,36 +3327,77 @@ class MessageProcessor:
                     BTN1 = {"تاكيد الطلب", "تأكيد الطلب"}
                     BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
                     BTN3 = {"تكلم مع العميل"}
-                    matched = None
                     if tnorm in BTN1:
-                        matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
-                    elif tnorm in BTN2:
-                        matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
-                    elif tnorm in BTN3:
-                        matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
-                    if matched:
-                        try:
-                            await self.whatsapp_messenger.send_media_message(to=_normalize_ma_phone(sender), media_type="audio", media_id_or_url=str(matched), audio_voice=True)
-                            # Reflect in inbox/UI
-                            synthetic_audio = {
-                                "temp_id": f"temp_{uuid.uuid4().hex}",
-                                "user_id": sender,
-                                "message": str(matched),
-                                "type": "audio",
-                                "url": str(matched),
-                                "from_me": 1,
-                                "timestamp": datetime.utcnow().isoformat(),
-                            }
-                            await self.db_manager.upsert_message(synthetic_audio)
-                            await self.redis_manager.cache_message(sender, synthetic_audio)
-                            await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
-                        except Exception:
-                            pass
-                        # After audio auto-reply, send any pending variant images
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                ok = await self._send_audio_via_upload(to, str(audio_url))
+                                if not ok:
+                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
+                        # Always send pending variant images after confirm
                         try:
                             await self._send_pending_variant_media(sender)
                         except Exception:
                             pass
+                    elif tnorm in BTN2:
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                ok = await self._send_audio_via_upload(to, str(audio_url))
+                                if not ok:
+                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
+                    elif tnorm in BTN3:
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                ok = await self._send_audio_via_upload(to, str(audio_url))
+                                if not ok:
+                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 # Route survey interactions before generic acknowledgment
@@ -3463,7 +3504,10 @@ class MessageProcessor:
                     matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
                 if matched:
                     try:
-                        await self.whatsapp_messenger.send_media_message(to=_normalize_ma_phone(sender), media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                        to = _normalize_ma_phone(sender)
+                        ok = await self._send_audio_via_upload(to, str(matched))
+                        if not ok:
+                            await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
                         synthetic_audio = {
                             "temp_id": f"temp_{uuid.uuid4().hex}",
                             "user_id": sender,
@@ -3478,11 +3522,13 @@ class MessageProcessor:
                         await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
                     except Exception:
                         pass
-                    # After audio auto-reply, send any pending variant images
-                    try:
+                # Only send pending images on explicit confirm BTN1 (by text matching)
+                try:
+                    tnorm = _norm_ar_btn(title)
+                    if tnorm in {"تاكيد الطلب", "تأكيد الطلب"}:
                         await self._send_pending_variant_media(sender)
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
             except Exception:
                 pass
         elif msg_type == "image":
@@ -3936,6 +3982,35 @@ class MessageProcessor:
         caption = " - ".join(caption_parts)
         # Removed automatic image auto-reply on name-based match
         return
+
+    async def _send_audio_via_upload(self, to_e164: str, audio_url: str) -> bool:
+        """Download remote audio and upload to WhatsApp, then send as voice note.
+        Returns True on success, False otherwise.
+        """
+        try:
+            import tempfile
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(audio_url)
+                if resp.status_code >= 400:
+                    return False
+                data = await resp.aread()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            try:
+                media_info = await self._upload_media_to_whatsapp(tmp_path, "audio")
+                await asyncio.sleep(0.5)
+                await self.whatsapp_messenger.send_media_message(
+                    to_e164, "audio", media_info.get("id") or "", audio_voice=True
+                )
+                return True
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+        except Exception:
+            return False
 
     async def _send_pending_variant_media(self, user_id: str) -> None:
         """Send up to 10 cached variant images with Arabic captions, then clear the cache."""
