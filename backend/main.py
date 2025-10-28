@@ -3989,11 +3989,42 @@ class MessageProcessor:
         """
         try:
             import tempfile
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(audio_url)
-                if resp.status_code >= 400:
-                    return False
-                data = await resp.aread()
+            # Prefer signed URL for GCS objects
+            fetch_url = audio_url
+            try:
+                signed = maybe_signed_url_for(audio_url, ttl_seconds=600)
+                if signed:
+                    fetch_url = signed
+            except Exception:
+                pass
+            data: bytes | None = None
+            # Try HTTP download first
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(fetch_url)
+                    if resp.status_code < 400:
+                        data = await resp.aread()
+            except Exception:
+                data = None
+            # If HTTP failed and looks like GCS, try SDK download using service account
+            if data is None:
+                try:
+                    bucket, blob = _parse_gcs_url(audio_url)
+                    if blob:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_local:
+                            tmp_path_dl = tmp_local.name
+                        # When blob lacks bucket, download uses default bucket
+                        download_file_from_gcs(blob if bucket is None else f"{blob}", tmp_path_dl)
+                        with open(tmp_path_dl, "rb") as fh:
+                            data = fh.read()
+                        try:
+                            os.remove(tmp_path_dl)
+                        except Exception:
+                            pass
+                except Exception:
+                    data = None
+            if not data:
+                return False
             with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
                 tmp.write(data)
                 tmp_path = tmp.name
