@@ -3545,6 +3545,11 @@ class MessageProcessor:
                 try:
                     tnorm = _norm_ar_btn(title)
                     if tnorm in {"تاكيد الطلب", "تأكيد الطلب"}:
+                        try:
+                            # small delay to ensure previous audio send settles in WA
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            pass
                         await self._send_pending_variant_media(sender)
                 except Exception:
                     pass
@@ -4095,6 +4100,10 @@ class MessageProcessor:
             items = []
             if isinstance(data, dict):
                 items = data.get("items") or []
+            try:
+                logging.info("variant_media: cache lookup user=%s count=%s", user_id, len(items) if items else 0)
+            except Exception:
+                pass
             # Fallback: if nothing cached, try to build from customer's last order
             # Priority 1: if we have a recent order_id pinned for this user, build from that exact order
             if not items:
@@ -4104,6 +4113,10 @@ class MessageProcessor:
                     if isinstance(order_ref, dict):
                         order_id = str(order_ref.get("order_id") or "").strip()
                     if order_id:
+                        try:
+                            logging.info("variant_media: using pinned order_id=%s for user=%s", order_id, user_id)
+                        except Exception:
+                            pass
                         from .shopify_integration import admin_api_base, _client_args  # type: ignore
                         import httpx  # type: ignore
                         base = admin_api_base()
@@ -4180,8 +4193,11 @@ class MessageProcessor:
                                         lines.append(f"الكمية: {qstr}")
                                     caption = "\n".join(lines)
                                     items.append({"url": img_url, "caption": caption})
-                except Exception:
-                    pass
+                except Exception as exc:
+                    try:
+                        logging.warning("variant_media: pinned order fallback failed user=%s error=%s", user_id, exc)
+                    except Exception:
+                        pass
             if not items:
                 try:
                     from .shopify_integration import fetch_customer_by_phone, admin_api_base, _client_args  # type: ignore
@@ -4284,6 +4300,10 @@ class MessageProcessor:
             if not items:
                 return
             to = _normalize_ma_phone(user_id)
+            try:
+                logging.info("variant_media: sending %s images to=%s", len(items[:10]), to)
+            except Exception:
+                pass
             count = 0
             for it in items[:10]:
                 try:
@@ -4295,6 +4315,10 @@ class MessageProcessor:
                     continue
                 try:
                     await self.whatsapp_messenger.send_media_message(to=to, media_type="image", media_id_or_url=url, caption=caption)
+                    try:
+                        logging.info("variant_media: sent image ok to=%s url=%s", to, url)
+                    except Exception:
+                        pass
                     synthetic_img = {
                         "temp_id": f"temp_{uuid.uuid4().hex}",
                         "user_id": user_id,
