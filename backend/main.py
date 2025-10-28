@@ -4025,11 +4025,19 @@ class MessageProcessor:
                     data = None
             if not data:
                 return False
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
+            # Persist downloaded bytes then convert to m4a (robust across WA clients)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_raw:
+                tmp_raw.write(data)
+                tmp_raw_path = tmp_raw.name
+            # Convert to m4a/aac regardless of source to avoid codec mismatch
+            tmp_path = None
             try:
-                media_info = await self._upload_media_to_whatsapp(tmp_path, "audio")
+                tmp_path = str(await convert_any_to_m4a(Path(tmp_raw_path)))
+            except Exception:
+                # Fallback: use raw if conversion failed
+                tmp_path = tmp_raw_path
+            try:
+                media_info = await self._upload_media_to_whatsapp(Path(tmp_path), "audio")
                 await asyncio.sleep(0.5)
                 await self.whatsapp_messenger.send_media_message(
                     to_e164, "audio", media_info.get("id") or "", audio_voice=True
@@ -4037,7 +4045,13 @@ class MessageProcessor:
                 return True
             finally:
                 try:
-                    os.remove(tmp_path)
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                try:
+                    if tmp_raw_path and os.path.exists(tmp_raw_path):
+                        os.remove(tmp_raw_path)
                 except Exception:
                     pass
         except Exception:
@@ -4051,6 +4065,106 @@ class MessageProcessor:
             items = []
             if isinstance(data, dict):
                 items = data.get("items") or []
+            # Fallback: if nothing cached, try to build from customer's last order
+            if not items:
+                try:
+                    from .shopify_integration import fetch_customer_by_phone, admin_api_base, _client_args  # type: ignore
+                    import httpx  # type: ignore
+                    cust = await fetch_customer_by_phone(user_id)
+                    last = (cust or {}).get("last_order") if isinstance(cust, dict) else None
+                    line_items = (last or {}).get("line_items") or []
+                    # line_items from fetch_customer_by_phone lacks product/variant ids, so best-effort fetch recent orders directly
+                    if not line_items:
+                        # Pull most recent order fully by phone
+                        # Use search again to get customer_id, then fetch orders with expanded line_items
+                        if cust and cust.get("customer_id"):
+                            params = {
+                                "customer_id": str(cust["customer_id"]),
+                                "status": "any",
+                                "order": "created_at desc",
+                                "limit": 1,
+                            }
+                            async with httpx.AsyncClient(timeout=12.0) as client:
+                                resp = await client.get(f"{admin_api_base()}/orders.json", params=params, **_client_args())
+                                if resp.status_code == 200:
+                                    orders = (resp.json() or {}).get("orders") or []
+                                    if orders:
+                                        line_items = (orders[0] or {}).get("line_items") or []
+                    # Build entries with image URLs and Arabic captions
+                    if line_items:
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=12.0) as client:
+                            for li in line_items:
+                                if len(items) >= 10:
+                                    break
+                                product_id = li.get("product_id")
+                                variant_id = li.get("variant_id")
+                                image_id = None
+                                if variant_id:
+                                    try:
+                                        v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                        if v_resp.status_code == 200:
+                                            variant = (v_resp.json() or {}).get("variant") or {}
+                                            image_id = variant.get("image_id")
+                                            if not product_id:
+                                                product_id = variant.get("product_id")
+                                    except Exception:
+                                        image_id = None
+                                img_url = None
+                                if product_id:
+                                    try:
+                                        p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                        if p_resp.status_code == 200:
+                                            prod = (p_resp.json() or {}).get("product") or {}
+                                            if image_id:
+                                                for img in (prod.get("images") or []):
+                                                    if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                        img_url = img.get("src")
+                                                        break
+                                            if not img_url:
+                                                img_url = (prod.get("image") or {}).get("src") or (
+                                                    (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                )
+                                    except Exception:
+                                        pass
+                                if not img_url:
+                                    continue
+                                # Arabic caption from size/color/qty if available
+                                qty = li.get("quantity")
+                                try:
+                                    qstr = str(int(qty)) if qty is not None else ""
+                                except Exception:
+                                    qstr = str(qty or "")
+                                props = {}
+                                try:
+                                    for p in (li.get("properties") or []):
+                                        n = str(p.get("name") or "").strip().lower()
+                                        v = str(p.get("value") or "").strip()
+                                        if n:
+                                            props[n] = v
+                                except Exception:
+                                    props = {}
+                                size = props.get("size") or props.get("المقاس") or None
+                                color = props.get("color") or props.get("اللون") or None
+                                if not (size and color):
+                                    vt = (li.get("variant_title") or "").strip()
+                                    if vt and "/" in vt and not (size and color):
+                                        parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                        if len(parts) >= 1 and not size:
+                                            size = parts[0]
+                                        if len(parts) >= 2 and not color:
+                                            color = parts[1]
+                                lines = []
+                                if size:
+                                    lines.append(f"المقاس: {size}")
+                                if color:
+                                    lines.append(f"اللون: {color}")
+                                if qstr:
+                                    lines.append(f"الكمية: {qstr}")
+                                caption = "\n".join(lines)
+                                items.append({"url": img_url, "caption": caption})
+                except Exception:
+                    items = []
             if not items:
                 return
             to = _normalize_ma_phone(user_id)
