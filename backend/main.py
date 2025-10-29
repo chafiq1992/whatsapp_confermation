@@ -6246,6 +6246,26 @@ async def favicon():
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
+@app.get("/broken-image.png")
+async def broken_image():
+    try:
+        p = ROOT_DIR / "frontend" / "build" / "broken-image.png"
+        if p.exists():
+            return FileResponse(str(p), media_type="image/png")
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+@app.get("/placeholder-product.png")
+async def placeholder_product():
+    try:
+        p = ROOT_DIR / "frontend" / "build" / "broken-image.png"
+        if p.exists():
+            return FileResponse(str(p), media_type="image/png")
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
 @app.get("/")
 async def index_page():
     try:

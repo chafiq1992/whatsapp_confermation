@@ -507,21 +507,26 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   );
 
   // Enhanced video renderer
-  const renderVideo = () => (
-    videoError ? (
+  const renderVideo = () => {
+    const videoSrc =
+      mediaUrl && /^https?:\/\//i.test(mediaUrl)
+        ? `${API_BASE}/proxy-media?url=${encodeURIComponent(mediaUrl)}`
+        : mediaUrl;
+
+    return videoError ? (
       <div className="text-xs text-red-300 italic">Video file missing or failed to load</div>
     ) : (
       <video
         controls
-        src={mediaUrl ? `${API_BASE}/proxy-media?url=${encodeURIComponent(mediaUrl)}` : ""}
+        src={videoSrc || ""}
         className="mb-1 max-w-[250px] rounded-xl bg-gray-100"
         onError={() => setVideoError(true)}
         preload="metadata"
       >
         Your browser does not support the video element.
       </video>
-    )
-  );
+    );
+  };
 
   // Enhanced order renderer
   const renderOrder = () => (
@@ -812,7 +817,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :
-         isImage ? renderSingleImage(mediaUrl ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}` : mediaUrl, "Product", msg.caption || msg.price) :
+         isImage ? renderSingleImage(
+           mediaUrl && /^https?:\/\//i.test(mediaUrl)
+             ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}`
+             : mediaUrl,
+           "Product",
+           msg.caption || msg.price
+         ) :
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
          isTemplate ? renderTemplate() :
