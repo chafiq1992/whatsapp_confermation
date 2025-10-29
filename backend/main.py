@@ -3228,7 +3228,7 @@ class MessageProcessor:
                 if isinstance(mapping, dict) and mapping.get("order_id"):
                     order_id = str(mapping.get("order_id"))
                     st = str(status).lower()
-                    if st in {"sent", "delivered"}:
+                    if st in {"sent", "delivered", "read"}:
                         await _add_order_tag(order_id, "ok_wtp")
                         # Ensure no_wtp removed if it was added earlier
                         await _remove_order_tag(order_id, "no_wtp")
@@ -5763,10 +5763,13 @@ async def _run_order_confirmation_flow(
                         await redis_manager.set_json(f"oc:wa2order:{wa_id}", {"order_id": str(order_id)}, ttl=3 * 24 * 3600)
                 except Exception:
                     pass
-                # If we are not skipping contact check, tag ok_wtp immediately; otherwise defer to status callback
-                if not ORDER_CONFIRM_SKIP_CONTACT_CHECK:
+                # Optimistic tag: mark ok_wtp immediately; status callback will correct if it fails
+                try:
                     await _add_order_tag(order_id, "ok_wtp")
+                    await _remove_order_tag(order_id, "no_wtp")
                     log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                except Exception:
+                    pass
                 # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
                 try:
                     uid = _normalize_user_id(phone_e164)
