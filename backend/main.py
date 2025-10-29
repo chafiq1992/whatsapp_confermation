@@ -5335,6 +5335,14 @@ async def auth_me(request: Request):
 async def assign_conversation(user_id: str, payload: dict = Body(...)):
     agent = payload.get("agent")  # string or None
     await db_manager.set_conversation_assignment(user_id, agent)
+    # Broadcast realtime update to all admin dashboards so lists refresh instantly
+    try:
+        await connection_manager.broadcast_to_admins({
+            "type": "conversation_assignment_updated",
+            "data": {"user_id": user_id, "assigned_agent": agent},
+        })
+    except Exception:
+        pass
     return {"ok": True, "user_id": user_id, "assigned_agent": agent}
 
 @app.post("/conversations/{user_id}/tags")
