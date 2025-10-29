@@ -1339,6 +1339,8 @@ class DatabaseManager:
                 await db.commit()
 
             # Ensure newer columns exist for deployments created before they were added
+            # Agents table: optional color for per-agent tag color in UI
+            await self._add_column_if_missing(db, "agents", "color", "TEXT")
             await self._add_column_if_missing(db, "messages", "temp_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "url", "TEXT")
             # reply/reactions columns (idempotent)
@@ -1372,19 +1374,20 @@ class DatabaseManager:
                 await db.commit()
 
     # ── Agents management ──────────────────────────────────────────
-    async def create_agent(self, username: str, name: str, password_hash: str, is_admin: int = 0):
+    async def create_agent(self, username: str, name: str, password_hash: Optional[str], is_admin: int = 0, color: Optional[str] = None):
         async with self._conn() as db:
             query = self._convert(
                 """
-                INSERT INTO agents (username, name, password_hash, is_admin)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO agents (username, name, password_hash, is_admin, color)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(username) DO UPDATE SET
                     name=EXCLUDED.name,
-                    password_hash=EXCLUDED.password_hash,
-                    is_admin=EXCLUDED.is_admin
+                    password_hash=COALESCE(EXCLUDED.password_hash, agents.password_hash),
+                    is_admin=EXCLUDED.is_admin,
+                    color=EXCLUDED.color
                 """
             )
-            params = (username, name, password_hash, int(is_admin))
+            params = (username, name, password_hash, int(is_admin), color)
             if self.use_postgres:
                 await db.execute(query, *params)
             else:
@@ -1394,11 +1397,11 @@ class DatabaseManager:
     async def list_agents(self) -> List[dict]:
         async with self._conn() as db:
             if self.use_postgres:
-                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY created_at DESC")
+                query = self._convert("SELECT username, name, is_admin, color, created_at FROM agents ORDER BY created_at DESC")
                 rows = await db.fetch(query)
                 return [dict(r) for r in rows]
             else:
-                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
+                query = self._convert("SELECT username, name, is_admin, color, created_at FROM agents ORDER BY datetime(created_at) DESC")
                 cur = await db.execute(query)
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
@@ -5299,9 +5302,19 @@ async def create_agent_endpoint(payload: dict = Body(...)):
     name = (payload.get("name") or username).strip()
     password = payload.get("password") or ""
     is_admin = int(bool(payload.get("is_admin", False)))
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="username and password are required")
-    await db_manager.create_agent(username=username, name=name, password_hash=hash_password(password), is_admin=is_admin)
+    color = (payload.get("color") or None)
+    if not username:
+        raise HTTPException(status_code=400, detail="username is required")
+    password_hash = None
+    if password:
+        password_hash = hash_password(password)
+    else:
+        # For updates without password, ensure the agent already exists
+        existing = await db_manager.get_agent_password_hash(username)
+        if not existing:
+            raise HTTPException(status_code=400, detail="password is required for new agents")
+        # Leave password_hash as None to keep existing via COALESCE in upsert
+    await db_manager.create_agent(username=username, name=name, password_hash=password_hash, is_admin=is_admin, color=color)
     return {"ok": True}
 
 @app.delete("/admin/agents/{username}")

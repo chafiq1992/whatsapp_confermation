@@ -4,7 +4,7 @@ const AnalyticsPanel = React.lazy(() => import('./AnalyticsPanel'));
 
 export default function AdminDashboard({ onClose, isAdmin = false, currentAgent = '' }) {
   const [agents, setAgents] = useState([]);
-  const [form, setForm] = useState({ username: '', name: '', password: '', is_admin: false });
+  const [form, setForm] = useState({ username: '', name: '', password: '', is_admin: false, color: '' });
   const [loading, setLoading] = useState(false);
   const [tagOptions, setTagOptions] = useState([]);
   const [savingTags, setSavingTags] = useState(false);
@@ -32,11 +32,11 @@ export default function AdminDashboard({ onClose, isAdmin = false, currentAgent 
 
   const createAgent = async (e) => {
     e.preventDefault();
-    if (!form.username || !form.password) return;
+    if (!form.username) return;
     setLoading(true);
     try {
       await api.post('/admin/agents', form);
-      setForm({ username: '', name: '', password: '', is_admin: false });
+      setForm({ username: '', name: '', password: '', is_admin: false, color: '' });
       await loadAgents();
     } finally {
       setLoading(false);
@@ -91,10 +91,15 @@ export default function AdminDashboard({ onClose, isAdmin = false, currentAgent 
         {isAdmin && tab === 'agents' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="border border-gray-800 rounded p-3">
-            <h3 className="font-medium mb-2">Add Agent</h3>
+            <h3 className="font-medium mb-2">Add / Edit Agent</h3>
             <form onSubmit={createAgent} className="flex flex-col gap-2">
               <input className="p-2 bg-gray-800 rounded" placeholder="username" value={form.username} onChange={(e)=>setForm({ ...form, username: e.target.value })} />
               <input className="p-2 bg-gray-800 rounded" placeholder="name (optional)" value={form.name} onChange={(e)=>setForm({ ...form, name: e.target.value })} />
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-300 w-28">Tag color</label>
+                <input className="p-1 bg-gray-800 rounded w-12 h-8" type="color" value={form.color || '#4f46e5'} onChange={(e)=>setForm({ ...form, color: e.target.value })} title="Agent tag color" />
+                <input className="flex-1 p-2 bg-gray-800 rounded" placeholder="#hex (optional)" value={form.color || ''} onChange={(e)=>setForm({ ...form, color: e.target.value })} />
+              </div>
               <input className="p-2 bg-gray-800 rounded" type="password" placeholder="password" value={form.password} onChange={(e)=>setForm({ ...form, password: e.target.value })} />
               <label className="text-sm flex items-center gap-2">
                 <input type="checkbox" checked={form.is_admin} onChange={(e)=>setForm({ ...form, is_admin: e.target.checked })} />
@@ -109,11 +114,19 @@ export default function AdminDashboard({ onClose, isAdmin = false, currentAgent 
             <div className="space-y-2 max-h-64 overflow-auto">
               {agents.map(a => (
                 <div key={a.username} className="flex items-center justify-between bg-gray-800 rounded p-2">
-                  <div>
-                    <div className="font-medium">{a.name || a.username}</div>
-                    <div className="text-xs text-gray-400">{a.username}{a.is_admin ? ' · admin' : ''}</div>
+                  <div className="flex items-center gap-3">
+                    <span className="inline-block w-4 h-4 rounded-full" style={{ backgroundColor: a.color || '#4f46e5' }} title={a.color || '#4f46e5'} />
+                    <div>
+                      <div className="font-medium">{a.name || a.username}</div>
+                      <div className="text-xs text-gray-400">{a.username}{a.is_admin ? ' · admin' : ''}</div>
+                    </div>
                   </div>
-                  <button className="px-2 py-1 bg-red-600 rounded" onClick={()=>deleteAgent(a.username)}>Delete</button>
+                  <div className="flex items-center gap-2">
+                    <button className="px-2 py-1 bg-gray-700 rounded" onClick={()=>{
+                      setForm({ username: a.username, name: a.name || '', password: '', is_admin: !!a.is_admin, color: a.color || '' });
+                    }}>Edit</button>
+                    <button className="px-2 py-1 bg-red-600 rounded" onClick={()=>deleteAgent(a.username)}>Delete</button>
+                  </div>
                 </div>
               ))}
               {agents.length === 0 && (

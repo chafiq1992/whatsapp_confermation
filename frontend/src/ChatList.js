@@ -670,12 +670,17 @@ const ConversationRow = memo(function Row({
             })()}
           </span>
           <div className="flex gap-2 ml-2 items-center">
-            {selectedAgent && (
-              <span className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-base flex items-center gap-1">
-                <FiUser className="opacity-90" />
-                {agents.find(a => a.username === selectedAgent)?.name || selectedAgent}
-              </span>
-            )}
+            {selectedAgent && (() => {
+              const ag = agents.find(a => a.username === selectedAgent);
+              const bg = ag?.color || '#4f46e5';
+              const label = ag?.name || selectedAgent;
+              return (
+                <span className="px-2 py-0.5 text-xs text-white rounded-full flex items-center gap-1" style={{ backgroundColor: bg }}>
+                  <FiUser className="opacity-90" size={12} />
+                  {label}
+                </span>
+              );
+            })()}
             {(tags || []).slice(0,3).map(t => (
               <span key={t} className="w-8 h-8 rounded-full bg-[#004AAD] text-white flex items-center justify-center text-sm ring-2 ring-white/20">
                 {(() => {
