@@ -1457,12 +1457,15 @@ class DatabaseManager:
                 d["tags"] = []
             return d
 
-    async def upsert_conversation_meta(self, user_id: str, assigned_agent: Optional[str] = None, tags: Optional[List[str]] = None, avatar_url: Optional[str] = None):
+    # Sentinel values to distinguish "argument omitted" from "explicitly set to None"
+    _SENTINEL = object()
+
+    async def upsert_conversation_meta(self, user_id: str, assigned_agent: Optional[str] = _SENTINEL, tags: Optional[List[str]] = _SENTINEL, avatar_url: Optional[str] = _SENTINEL):
         async with self._conn() as db:
             existing = await self.get_conversation_meta(user_id)
-            new_tags = tags if tags is not None else existing.get("tags")
-            new_assignee = assigned_agent if assigned_agent is not None else existing.get("assigned_agent")
-            new_avatar = avatar_url if avatar_url is not None else existing.get("avatar_url")
+            new_tags = existing.get("tags") if tags is self._SENTINEL else tags
+            new_assignee = existing.get("assigned_agent") if assigned_agent is self._SENTINEL else assigned_agent
+            new_avatar = existing.get("avatar_url") if avatar_url is self._SENTINEL else avatar_url
 
             query = self._convert(
                 """
