@@ -286,6 +286,9 @@ except Exception:
 
 # Allow sending order confirmation to all numbers (bypass whitelist)
 ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+# Optionally skip WhatsApp contacts pre-check regardless of allow-all/whitelist mode
+# When enabled, the flow will attempt sending templates without tagging no_wtp first
+ORDER_CONFIRM_SKIP_CONTACT_CHECK = (os.getenv("ORDER_CONFIRM_SKIP_CONTACT_CHECK", "0") or "0").strip() not in ("0", "false", "False")
 ORDER_CONFIRM_SEND_CATALOG = (os.getenv("ORDER_CONFIRM_SEND_CATALOG", "0") or "0").strip() not in ("0", "false", "False")
 
 # Build/version identifiers for frontend refresh banner
@@ -5607,8 +5610,10 @@ async def _run_order_confirmation_flow(
             # Store nodes and return
             await _persist_flow_nodes(flow_key, nodes)
             return
-        # Test-gate mode controls whether to skip WA contact checks; disable when allowing all
+        # Test-gate mode historically skipped WA contact checks when not allowing all
+        # Now decouple with ORDER_CONFIRM_SKIP_CONTACT_CHECK to allow global bypass
         is_test_gate = not ORDER_CONFIRM_ALLOW_ALL
+        skip_contact_check = ORDER_CONFIRM_SKIP_CONTACT_CHECK or is_test_gate
 
         # Normalize phone
         phone_e164 = _normalize_ma_phone(raw_phone)
@@ -5618,9 +5623,9 @@ async def _run_order_confirmation_flow(
             await _persist_flow_nodes(flow_key, nodes)
             return
 
-        # Check WhatsApp availability (skip for test gate to allow direct send attempt)
+        # Check WhatsApp availability (skip when explicitly configured)
         has_wa = True
-        if not is_test_gate:
+        if not skip_contact_check:
             try:
                 contact_res = await messenger.check_whatsapp_contact(phone_e164)
                 entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
