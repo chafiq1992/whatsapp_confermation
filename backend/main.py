@@ -3607,11 +3607,6 @@ class MessageProcessor:
             message_obj["message"] = audio_path
             message_obj["url"] = drive_url
             message_obj["transcription"] = ""
-            # If customer sends an audio after order confirmation, try sending pending variant images
-            try:
-                await self._send_pending_variant_media(sender)
-            except Exception:
-                pass
         elif msg_type == "video":
             video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
