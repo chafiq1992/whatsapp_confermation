@@ -3216,6 +3216,26 @@ class MessageProcessor:
                 }
             })
 
+            # Order confirmation: adjust Shopify tags based on delivery outcome when mapping exists
+            try:
+                mapping = await redis_manager.get_json(f"oc:wa2order:{wa_id}") if redis_manager else None
+            except Exception:
+                mapping = None
+            try:
+                if isinstance(mapping, dict) and mapping.get("order_id"):
+                    order_id = str(mapping.get("order_id"))
+                    st = str(status).lower()
+                    if st in {"sent", "delivered"}:
+                        await _add_order_tag(order_id, "ok_wtp")
+                        # Ensure no_wtp removed if it was added earlier
+                        await _remove_order_tag(order_id, "no_wtp")
+                    elif st == "failed":
+                        await _add_order_tag(order_id, "no_wtp")
+                        # Optionally remove optimistic ok_wtp if present
+                        await _remove_order_tag(order_id, "ok_wtp")
+            except Exception:
+                pass
+
 
     async def _handle_incoming_message(self, message: dict):
         print("📨 _handle_incoming_message CALLED")
@@ -5463,6 +5483,26 @@ async def _add_order_tag(order_id: str, tag: str) -> None:
     except Exception:
         return
 
+async def _remove_order_tag(order_id: str, tag: str) -> None:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            current_tags = order.get("tags") or ""
+            tags = [t.strip() for t in str(current_tags).split(",") if t and t.strip()]
+            new_tags = [t for t in tags if t.lower() != str(tag or "").strip().lower()]
+            payload = {"order": {"id": order_id, "tags": ", ".join(new_tags)}}
+            await client.put(url, json=payload, **_client_args())
+    except Exception:
+        return
+
 async def _order_has_tag(order_id: str, required_tag: str) -> bool:
     try:
         from .shopify_integration import admin_api_base, _client_args  # type: ignore
@@ -5702,8 +5742,23 @@ async def _run_order_confirmation_flow(
                     logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
                 except Exception:
                     pass
-                await _add_order_tag(order_id, "ok_wtp")
-                log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                # Map wa_message_id -> order_id for later status-based tagging
+                try:
+                    wa_id = None
+                    try:
+                        arr = (send_res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                    except Exception:
+                        wa_id = None
+                    if wa_id and redis_manager:
+                        await redis_manager.set_json(f"oc:wa2order:{wa_id}", {"order_id": str(order_id)}, ttl=3 * 24 * 3600)
+                except Exception:
+                    pass
+                # If we are not skipping contact check, tag ok_wtp immediately; otherwise defer to status callback
+                if not ORDER_CONFIRM_SKIP_CONTACT_CHECK:
+                    await _add_order_tag(order_id, "ok_wtp")
+                    log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
                 # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
                 try:
                     uid = _normalize_user_id(phone_e164)
