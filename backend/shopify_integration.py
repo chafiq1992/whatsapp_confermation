@@ -464,6 +464,8 @@ async def shopify_orders(customer_id: str, limit: int = 50):
                 "fulfillment_status": o.get("fulfillment_status"),
                 "total_price": o.get("total_price"),
                 "currency": o.get("currency"),
+                # Comma-separated string in Shopify; expose as array for UI clarity
+                "tags": [t.strip() for t in str(o.get("tags") or "").split(",") if t and t.strip()],
                 "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
             })
         return simplified
@@ -839,6 +841,43 @@ async def shopify_orders_create_webhook(request: Request):
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Webhook handling failed: {exc}")
+
+# --- Add or set order tags ---
+@router.post("/shopify-orders/{order_id}/tags")
+async def add_order_tag(order_id: str, payload: dict = Body(...)):
+    """Add a single tag to a Shopify order. Returns updated tags list.
+
+    Body: { "tag": "new-tag" }
+    """
+    base = admin_api_base()
+    tag = (payload.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Missing tag")
+    if "," in tag:
+        raise HTTPException(status_code=400, detail="Tag cannot contain comma")
+
+    get_endpoint = f"{base}/orders/{order_id}.json"
+    async with httpx.AsyncClient() as client:
+        # Fetch existing order to read current tags
+        resp = await client.get(get_endpoint, **_client_args())
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        resp.raise_for_status()
+        order = (resp.json() or {}).get("order") or {}
+        existing_s = str(order.get("tags") or "")
+        existing = [t.strip() for t in existing_s.split(",") if t and t.strip()]
+        # Avoid case-insensitive duplicates
+        lower_set = {t.lower() for t in existing}
+        if tag.lower() not in lower_set:
+            existing.append(tag)
+
+        put_endpoint = f"{base}/orders/{order_id}.json"
+        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "tags": ", ".join(existing)}}
+        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
+        if upd.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        upd.raise_for_status()
+        return {"order_id": order_id, "tags": existing}
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():

@@ -81,6 +81,7 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
   const [selectedAddressIdx, setSelectedAddressIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState([]);
+  const [orderTagInputs, setOrderTagInputs] = useState({});
   const ordersCooldownRef = useRef(0);
   const fetchOrdersWithCooldown = async (customerId) => {
     if (!customerId) return;
@@ -101,6 +102,16 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
       }
       setOrders([]);
     }
+  };
+
+  const handleAddOrderTag = async (orderId) => {
+    try {
+      const tag = (orderTagInputs[orderId] || "").trim();
+      if (!tag) return;
+      await api.post(`${API_BASE}/shopify-orders/${orderId}/tags`, { tag });
+      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, tags: Array.from(new Set([...(o.tags || []), tag])) } : o));
+      setOrderTagInputs((m) => ({ ...m, [orderId]: "" }));
+    } catch (e) {}
   };
 
   const normalizePhone = (phone) => {
@@ -973,7 +984,7 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
                 {Array.isArray(orders) && orders.length > 0 && (
                   <div className="mt-2">
                     <div className="font-semibold mb-1">Orders</div>
-                    <ul className="space-y-1 max-h-40 overflow-auto pr-1">
+                    <ul className="space-y-1 max-h-80 overflow-auto pr-1">
                       {orders.map((o) => (
                         <li key={o.id} className="text-sm flex justify-between gap-2 border-b border-gray-600 py-1">
                           <div className="min-w-0">
@@ -996,6 +1007,36 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
                         </li>
                       ))}
                     </ul>
+                    {orders[0] && (
+                      <div className="mt-3">
+                        <div className="font-semibold mb-1">Latest Order Tags</div>
+                        <div className="flex flex-wrap gap-2">
+                          {(orders[0].tags && orders[0].tags.length > 0) ? (
+                            orders[0].tags.map((t, idx) => (
+                              <span key={`${orders[0].id}-tag-${idx}`} className="inline-flex items-center text-xs bg-gray-800 text-gray-200 px-2 py-0.5 rounded-full border border-gray-600">
+                                {t}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-gray-400">No tags</span>
+                          )}
+                        </div>
+                        <div className="mt-2 flex gap-2">
+                          <input
+                            className="flex-1 p-1 rounded bg-gray-900 text-white text-xs"
+                            placeholder="Add a tag"
+                            value={orderTagInputs[orders[0].id] || ''}
+                            onChange={(e) => setOrderTagInputs(m => ({ ...m, [orders[0].id]: e.target.value }))}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddOrderTag(orders[0].id); } }}
+                          />
+                          <button
+                            type="button"
+                            className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-white text-xs"
+                            onClick={() => handleAddOrderTag(orders[0].id)}
+                          >Add</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 {/* Copy address to clipboard for quick reply */}
