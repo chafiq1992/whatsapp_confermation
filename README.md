@@ -1,6 +1,6 @@
 # WhatsApp Shopify Integration 
 
-This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores.
+This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores. 
 
 **Note:** File upload endpoints require the `python-multipart` package. Make sure this dependency is installed when deploying the backend.
 
