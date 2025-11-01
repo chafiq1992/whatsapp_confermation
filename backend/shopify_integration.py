@@ -783,13 +783,44 @@ async def shopify_orders_create_webhook(request: Request):
                                 size = parts[0]
                             if len(parts) >= 2 and not color:
                                 color = parts[1]
+                    # Try to improve size/color inference when variant_title has mixed info
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            def _is_size_token(tok: str) -> bool:
+                                t = (tok or "").strip().lower()
+                                if t.isdigit():
+                                    return True
+                                return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
+                            for part in parts:
+                                if not color and not part.isdigit() and not _is_size_token(part):
+                                    color = part
+                                    continue
+                                if not size and _is_size_token(part):
+                                    size = part
+                    price_val = None
+                    try:
+                        price_val = li.get("price")
+                    except Exception:
+                        price_val = None
+                    if price_val is not None:
+                        try:
+                            num = float(str(price_val).replace(",","."))
+                            price_str = f"{num:.2f}"
+                        except Exception:
+                            price_str = str(price_val)
+                    else:
+                        price_str = ""
                     lines = []
-                    if size:
-                        lines.append(f"المقاس: {size}")
                     if color:
                         lines.append(f"اللون: {color}")
+                    if size:
+                        lines.append(f"المقاس: {size}")
                     if qstr:
                         lines.append(f"الكمية: {qstr}")
+                    if price_str:
+                        lines.append(f"السعر: {price_str}")
                     caption = "\n".join(lines)
                     entry = {"url": img_url, "caption": caption}
                     try:
