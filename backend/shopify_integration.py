@@ -286,12 +286,20 @@ async def fetch_customer_by_phone(phone_number: str):
                 }
 
             # Build response
+            # Safely pick the first address1 if present
+            try:
+                addr_list = c.get("addresses") or []
+                primary_addr = addr_list[0] if isinstance(addr_list, list) and addr_list else {}
+                address1 = (primary_addr or {}).get("address1") or ""
+            except Exception:
+                address1 = ""
+
             return {
-                "customer_id": c["id"],   # <--- ADD THIS LINE
+                "customer_id": c.get("id"),
                 "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
                 "email": c.get("email") or "",
                 "phone": c.get("phone") or "",
-                "address": (c["addresses"][0]["address1"] if c.get("addresses") and c["addresses"] else ""),
+                "address": address1,
                 "total_orders": total_orders,
                 "last_order": last_order
             }
