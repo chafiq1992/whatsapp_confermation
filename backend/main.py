@@ -6276,6 +6276,34 @@ async def index_page():
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
+# Runtime app configuration for the frontend (allows Cloud Run env-based overrides)
+@app.get("/app-config")
+async def app_config():
+    try:
+        def read_filter(suffix: str):
+            label = os.getenv(f"CATALOG_FILTER_{suffix}_LABEL", "")
+            query = os.getenv(f"CATALOG_FILTER_{suffix}_QUERY", "")
+            match = (os.getenv(f"CATALOG_FILTER_{suffix}_MATCH", "includes") or "").strip().lower()
+            if label and query:
+                return {
+                    "label": label,
+                    "query": query,
+                    "match": "startsWith" if match in ("start", "startswith", "starts_with") else "includes",
+                }
+            return None
+
+        fA = read_filter("A") or {"label": "Girls", "query": "girls", "match": "includes"}
+        fB = read_filter("B") or {"label": "Boys", "query": "boys", "match": "includes"}
+        fall = {"label": os.getenv("CATALOG_FILTER_ALL_LABEL", "All"), "type": "all"}
+        return {"catalogFilters": [fA, fB, fall]}
+    except Exception:
+        # On any error, return safe defaults
+        return {"catalogFilters": [
+            {"label": "Girls", "query": "girls", "match": "includes"},
+            {"label": "Boys", "query": "boys", "match": "includes"},
+            {"label": "All", "type": "all"},
+        ]}
+
 # Serve hashed main bundle filenames for safety even if HTML references are stale
 @app.get("/static/js/{filename}")
 async def serve_js(filename: str):

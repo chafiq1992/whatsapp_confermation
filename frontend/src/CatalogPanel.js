@@ -57,6 +57,11 @@ export default function CatalogPanel({
   const [modalMode, setModalMode] = useState('products'); // 'folders' | 'products'
   const [folderSets, setFolderSets] = useState([]); // sets shown as folders in folder view
   const [activeFilter, setActiveFilter] = useState(null); // 'girls' | 'boys' | 'all'
+  const [catalogFilters, setCatalogFilters] = useState([
+    { key: 'A', label: 'Girls', query: 'girls', match: 'includes' },
+    { key: 'B', label: 'Boys', query: 'boys', match: 'includes' },
+    { key: 'ALL', label: 'All', type: 'all' },
+  ]);
 
   // All selections send as images (product toggle removed per requirements)
 
@@ -442,6 +447,29 @@ export default function CatalogPanel({
   // Initial load of sets
   useEffect(() => { fetchSets(); }, []);
 
+  // Load runtime config for catalog filters (from backend env via /app-config)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get(`${API_BASE}/app-config`);
+        const arr = (res?.data && Array.isArray(res.data.catalogFilters)) ? res.data.catalogFilters : null;
+        if (arr && arr.length >= 2) {
+          const norm = arr.slice(0, 3).map((f, idx) => {
+            if (f && f.type === 'all') return { key: 'ALL', label: f.label || 'All', type: 'all' };
+            const key = idx === 0 ? 'A' : (idx === 1 ? 'B' : 'C');
+            return { key, label: String(f.label || ''), query: String(f.query || ''), match: (f.match || 'includes') };
+          });
+          const ensured = [
+            norm[0] || { key: 'A', label: 'Girls', query: 'girls', match: 'includes' },
+            norm[1] || { key: 'B', label: 'Boys', query: 'boys', match: 'includes' },
+            norm.find(x => x.type === 'all') || { key: 'ALL', label: 'All', type: 'all' },
+          ];
+          setCatalogFilters(ensured);
+        }
+      } catch {}
+    })();
+  }, []);
+
   // Minimal refresh catalog control (icon button)
   function RefreshCatalogButton({ onRefresh }) {
     const [loading, setLoading] = useState(false);
@@ -521,10 +549,22 @@ export default function CatalogPanel({
   }, [modalOpen, modalMode, products.length]);
 
   // Helpers: filter sets by prefix (case-insensitive)
-  const filterSetsByPrefix = (prefix) => {
-    const p = String(prefix || '').trim().toLowerCase();
-    const has = (txt) => (txt || '').toString().toLowerCase().includes(p);
-    return sets.filter(s => has(s?.name) || has(s?.id));
+  const filterSetsByPrefix = (filter) => {
+    const f = filter;
+    if (typeof f === 'string') {
+      const p = String(f || '').trim().toLowerCase();
+      const has = (txt) => (txt || '').toString().toLowerCase().includes(p);
+      return sets.filter(s => has(s?.name) || has(s?.id));
+    }
+    if (!f || f.type === 'all') return sets.filter(s => s?.id);
+    const q = String(f.query || '').trim().toLowerCase();
+    const mode = String(f.match || 'includes').toLowerCase();
+    const nameOrId = (s) => ((s?.name || s?.id || '') + '').toLowerCase().trim();
+    if (!q) return sets.filter(s => s?.id);
+    if (mode === 'startswith' || mode === 'startsWith') {
+      return sets.filter(s => nameOrId(s).startsWith(q));
+    }
+    return sets.filter(s => nameOrId(s).includes(q));
   };
 
   // Sorting helpers for folder view: order by age ranges, then shoes sizes
@@ -575,20 +615,21 @@ export default function CatalogPanel({
     });
   };
 
-  // Open folder view modal for a filter (girls/boys/all)
+  // Open folder view modal for a filter (runtime-configurable)
   const openFolderModal = async (filter) => {
     setActiveFilter(filter);
-    const title = filter === 'girls' ? 'Girls' : filter === 'boys' ? 'Boys' : 'All Sets';
+    const title = typeof filter === 'object' && filter && filter.label
+      ? String(filter.label)
+      : (filter === 'girls' ? 'Girls' : filter === 'boys' ? 'Boys' : 'All Sets');
     setModalTitle(title);
     setModalMode('folders');
     setSelectedImages([]);
     setProducts([]);
     setModalOpen(true);
 
-    let fsets = filter === 'all' ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
-    if (filter === 'girls' || filter === 'boys') {
-      fsets = sortFolderSets(fsets);
-    }
+    const isAll = (typeof filter === 'object' && filter && filter.type === 'all') || filter === 'all';
+    let fsets = isAll ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
+    if (!isAll) { fsets = sortFolderSets(fsets); }
     setFolderSets(fsets);
 
     // Prefetch first few sets in the background for instant entry
@@ -639,7 +680,7 @@ export default function CatalogPanel({
         </div>
       )}
 
-      {/* Filter buttons: Girls / Boys / All */}
+      {/* Filter buttons (runtime configurable via /app-config) */}
       <div className="catalog-sets grid grid-cols-3 gap-2 max-h-[84px]">
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
@@ -650,27 +691,16 @@ export default function CatalogPanel({
           </div>
         ) : (
           <>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('girls')}
-            >
-              Girls
-            </button>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('boys')}
-            >
-              Boys
-            </button>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('all')}
-            >
-              All
-            </button>
+            {catalogFilters.map((f) => (
+              <button
+                key={f.key || f.label}
+                className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
+                type="button"
+                onClick={() => openFolderModal(f)}
+              >
+                {String(f.label || '').trim() || 'Filter'}
+              </button>
+            ))}
           </>
         )}
       </div>
