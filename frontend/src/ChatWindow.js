@@ -706,7 +706,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         : (append ? mergeAndDedupe(prev, data) : sortByTime(data))
       );
       try { saveMessages(uid, (append ? mergeAndDedupe(messagesRef.current, data) : data)); } catch {}
-      const firstUnreadIndex = data.findIndex(msg => !msg.from_me && !msg.read);
+      const firstUnreadIndex = data.findIndex(msg => !msg.from_me && (msg.status !== 'read'));
       setUnreadSeparatorIndex(firstUnreadIndex !== -1 ? firstUnreadIndex : null);
       if (append) {
         setOffset(off + data.length);
@@ -994,6 +994,9 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
   // Mark incoming messages as read when they appear
   useEffect(() => {
     if (!activeUser?.user_id) return;
+    try {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    } catch {}
     const unreadIds = messages
       .filter(m => !m.from_me && m.status !== 'read' && m.wa_message_id)
       .map(m => m.wa_message_id);

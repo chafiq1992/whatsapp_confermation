@@ -88,6 +88,7 @@ function ChatList({
   /* ─── Local state ─── */
   const [search, setSearch] = useState("");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [showReadOnly, setShowReadOnly] = useState(false);
   const [conversations, setConversations] = useState(initialConversations);
   // wsConnected is now controlled by parent App via admin WS
   const [agents, setAgents] = useState([]);
@@ -246,6 +247,7 @@ function ChatList({
       const txt = (c.name || c.user_id || "").toLowerCase();
       const matches = txt.includes(search.toLowerCase());
       const unreadOK = !showUnreadOnly || c.unread_count > 0;
+      const readOK = !showReadOnly || (c.unread_count || 0) === 0;
       const assignedOK =
         assignedFilter === 'all' ||
         (assignedFilter === 'unassigned' && !c.assigned_agent) ||
@@ -254,11 +256,11 @@ function ChatList({
       const needsReplyOK = !needsReplyOnly || (c.unresponded_count || 0) > 0;
       const isDone = (c.tags || []).some(t => String(t || '').toLowerCase() === 'done');
       const archiveOK = showArchive ? isDone : !isDone;
-      return matches && unreadOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
+      return matches && unreadOK && readOK && assignedOK && tagsOK && needsReplyOK && archiveOK;
     });
     // Sort by most recent activity (desc), using normalized parsing
     return filtered.sort((a, b) => toMsNormalized(b.last_message_time) - toMsNormalized(a.last_message_time));
-  }, [conversations, search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
+  }, [conversations, search, showUnreadOnly, showReadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
 
 
   /* ─── Helpers ─── */
@@ -390,9 +392,17 @@ function ChatList({
             type="button"
             className={`p-1.5 rounded-lg text-sm ${showUnreadOnly ? 'bg-[#004AAD] text-white' : 'text-gray-300 hover:bg-gray-700'}`}
             title="Unread only"
-            onClick={() => setShowUnreadOnly(p => !p)}
+            onClick={() => setShowUnreadOnly(p => { const next = !p; if (next) setShowReadOnly(false); return next; })}
           >
             <FiMail />
+          </button>
+          <button
+            type="button"
+            className={`p-1.5 rounded-lg text-sm ${showReadOnly ? 'bg-green-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}
+            title="Read only"
+            onClick={() => setShowReadOnly(p => { const next = !p; if (next) setShowUnreadOnly(false); return next; })}
+          >
+            <Check size={14} />
           </button>
           <button
             type="button"
