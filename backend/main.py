@@ -1919,7 +1919,7 @@ class DatabaseManager:
                       LIMIT 1
                     ) last_msg ON TRUE
                     LEFT JOIN conversation_meta cm ON cm.user_id = m.user_id
-                    WHERE ($1::timestamp IS NULL OR last_msg.ts >= $1)
+                    WHERE ($1 IS NULL OR last_msg.ts >= CAST($1 AS timestamp))
                     ORDER BY last_msg.ts DESC NULLS LAST
                     LIMIT $2 OFFSET $3
                     """
