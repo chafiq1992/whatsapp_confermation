@@ -1873,7 +1873,7 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
-    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 200, offset: int = 0) -> List[dict]:
+    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, since_iso: Optional[str] = None, limit: int = 200, offset: int = 0) -> List[dict]:
         """Return conversation summaries for chat list with optional filters.
 
         Optimized single-query plan for Postgres; SQLite uses existing per-user aggregation.
@@ -1919,11 +1919,12 @@ class DatabaseManager:
                       LIMIT 1
                     ) last_msg ON TRUE
                     LEFT JOIN conversation_meta cm ON cm.user_id = m.user_id
+                    WHERE ($1::timestamp IS NULL OR last_msg.ts >= $1)
                     ORDER BY last_msg.ts DESC NULLS LAST
-                    LIMIT ? OFFSET ?
+                    LIMIT $2 OFFSET $3
                     """
                 )
-                rows = await db.fetch(base, limit, offset)
+                rows = await db.fetch(base, since_iso, limit, offset)
                 conversations: List[dict] = []
                 for r in rows:
                     # Normalize tags JSON to list
@@ -1988,6 +1989,9 @@ class DatabaseManager:
                 last_type = last["type"] if last else None
                 last_from_me = bool(last["from_me"]) if last and ("from_me" in last) else None
                 last_status = last["status"] if last else None
+                # Time window filter (SQLite): skip conversations older than since_iso if provided
+                if since_iso and last_time and str(last_time) < str(since_iso):
+                    continue
 
                 cur = await db.execute(
                     self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
@@ -5319,11 +5323,17 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, limit: int = 200, offset: int = 0):
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, since_hours: int = 72, limit: Optional[int] = None, offset: int = 0):
     """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, limit=max(1, min(limit, 500)), offset=max(0, offset))
+        # Compute default time window (last 3 days) unless caller overrides via since_hours
+        since_hours = max(1, int(since_hours or 72))
+        since_iso = (datetime.utcnow() - timedelta(hours=since_hours)).isoformat()
+        # Effective limit: if not provided, allow a generous cap to accommodate 3-day window
+        cap = 5000
+        effective_limit = max(1, min(int(limit), cap)) if isinstance(limit, int) else cap
+        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, since_iso=since_iso, limit=effective_limit, offset=max(0, offset))
         if unresponded_only:
             conversations = [c for c in conversations if (c.get("unresponded_count") or 0) > 0]
         return conversations
