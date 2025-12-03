@@ -81,8 +81,8 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
   const [selectedAddressIdx, setSelectedAddressIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [orders, setOrders] = useState([]);
-  const [orderTagInputs, setOrderTagInputs] = useState({});
-  const [orderNoteInputs, setOrderNoteInputs] = useState({});
+  const [newOrderTag, setNewOrderTag] = useState("");
+  const [newOrderNote, setNewOrderNote] = useState("");
   const ordersCooldownRef = useRef(0);
   const fetchOrdersWithCooldown = async (customerId) => {
     if (!customerId) return;
@@ -103,42 +103,6 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
       }
       setOrders([]);
     }
-  };
-
-  const handleAddOrderTag = async (orderId) => {
-    try {
-      const tag = (orderTagInputs[orderId] || "").trim();
-      if (!tag) return;
-      await api.post(`${API_BASE}/shopify-orders/${orderId}/tags`, { tag });
-      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, tags: Array.from(new Set([...(o.tags || []), tag])) } : o));
-      setOrderTagInputs((m) => ({ ...m, [orderId]: "" }));
-    } catch (e) {}
-  };
-
-  const handleRemoveOrderTag = async (orderId, tag) => {
-    try {
-      if (!tag) return;
-      await api.post(`${API_BASE}/shopify-orders/${orderId}/tags/remove`, { tag });
-      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, tags: (o.tags || []).filter(t => String(t).toLowerCase() !== String(tag).toLowerCase()) } : o));
-    } catch (e) {}
-  };
-
-  const handleAppendOrderNote = async (orderId) => {
-    try {
-      const text = (orderNoteInputs[orderId] || "").trim();
-      if (!text) return;
-      const res = await api.post(`${API_BASE}/shopify-orders/${orderId}/note`, { note: text });
-      const updated = (res?.data?.note ?? null);
-      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, note: typeof updated === 'string' ? updated : (o.note || '') + (o.note ? "\n" : "") + text } : o));
-      setOrderNoteInputs((m) => ({ ...m, [orderId]: "" }));
-    } catch (e) {}
-  };
-
-  const handleClearOrderNote = async (orderId) => {
-    try {
-      await api.delete(`${API_BASE}/shopify-orders/${orderId}/note`);
-      setOrders((prev) => prev.map((o) => o.id === orderId ? { ...o, note: "" } : o));
-    } catch (e) {}
   };
 
   const normalizePhone = (phone) => {
@@ -1034,67 +998,127 @@ export default function ShopifyIntegrationsPanel({ activeUser, currentAgent }) {
                         </li>
                       ))}
                     </ul>
-                    {orders[0] && (
-                      <div className="mt-3">
+                    {/* Latest Order Tags */}
+                    {orders.length > 0 && (
+                      <div className="mt-2">
                         <div className="font-semibold mb-1">Latest Order Tags</div>
-                        <div className="flex flex-wrap gap-2">
-                          {(orders[0].tags && orders[0].tags.length > 0) ? (
-                            orders[0].tags.map((t, idx) => (
-                              <span key={`${orders[0].id}-tag-${idx}`} className="inline-flex items-center text-xs bg-gray-800 text-gray-200 px-2 py-0.5 rounded-full border border-gray-600">
-                                {t}
+                        <div className="flex flex-wrap gap-1 mb-2">
+                          {Array.isArray(orders[0].tags) && orders[0].tags.length > 0 ? (
+                            orders[0].tags.map((t, i) => (
+                              <span key={`${t}-${i}`} className="text-xs bg-gray-600 text-white rounded-full inline-flex items-center">
+                                <span className="px-2 py-0.5">{t}</span>
                                 <button
                                   type="button"
-                                  className="ml-1 text-gray-400 hover:text-red-400"
-                                  title="Remove tag"
-                                  onClick={() => handleRemoveOrderTag(orders[0].id, t)}
+                                  className="px-1 py-0.5 text-white hover:bg-gray-700 rounded-r"
+                                  aria-label={`Remove tag ${t}`}
+                                  onClick={async () => {
+                                    try {
+                                      const latest = orders[0];
+                                      await api.delete(`${API_BASE}/shopify-orders/${latest.id}/tags`, { data: { tag: t } });
+                                      setOrders(prev => {
+                                        const next = Array.isArray(prev) ? [...prev] : [];
+                                        if (next.length > 0) {
+                                          const tags = (Array.isArray(next[0].tags) ? next[0].tags : []).filter(x => x !== t);
+                                          next[0] = { ...next[0], tags };
+                                        }
+                                        return next;
+                                      });
+                                    } catch {}
+                                  }}
                                 >×</button>
                               </span>
                             ))
                           ) : (
-                            <span className="text-xs text-gray-400">No tags</span>
+                            <span className="text-xs text-gray-400">No tags yet.</span>
                           )}
                         </div>
-                        <div className="mt-2 flex gap-2">
+                        <div className="flex gap-2">
                           <input
-                            className="flex-1 p-1 rounded bg-gray-900 text-white text-xs"
+                            className="flex-1 p-1 rounded bg-gray-800 text-white text-xs"
                             placeholder="Add a tag"
-                            value={orderTagInputs[orders[0].id] || ''}
-                            onChange={(e) => setOrderTagInputs(m => ({ ...m, [orders[0].id]: e.target.value }))}
-                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddOrderTag(orders[0].id); } }}
+                            value={newOrderTag}
+                            onChange={e => setNewOrderTag(e.target.value)}
                           />
                           <button
                             type="button"
-                            className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-white text-xs"
-                            onClick={() => handleAddOrderTag(orders[0].id)}
+                            className="px-2 py-1 bg-blue-600 rounded text-white text-xs"
+                            onClick={async () => {
+                              const value = (newOrderTag || "").trim();
+                              if (!value || orders.length === 0) return;
+                              try {
+                                const latest = orders[0];
+                                await api.post(`${API_BASE}/shopify-orders/${latest.id}/tags`, { tag: value });
+                                setOrders(prev => {
+                                  const next = Array.isArray(prev) ? [...prev] : [];
+                                  if (next.length > 0) {
+                                    const tags = Array.isArray(next[0].tags) ? [...next[0].tags] : [];
+                                    if (!tags.includes(value)) tags.push(value);
+                                    next[0] = { ...next[0], tags };
+                                  }
+                                  return next;
+                                });
+                                setNewOrderTag("");
+                              } catch {}
+                            }}
                           >Add</button>
                         </div>
-                        <div className="mt-4">
-                          <div className="font-semibold mb-1">Latest Order Notes</div>
-                          <div className="text-xs whitespace-pre-wrap bg-gray-800 text-gray-100 p-2 rounded border border-gray-600 min-h-[2rem]">
-                            {orders[0].note ? orders[0].note : <span className="text-gray-400">No note</span>}
+                      </div>
+                    )}
+
+                    {/* Latest Order Notes */}
+                    {orders.length > 0 && (
+                      <div className="mt-3">
+                        <div className="font-semibold mb-1">Latest Order Notes</div>
+                        {orders[0].note ? (
+                          <div className="text-xs bg-gray-900 border border-gray-700 rounded p-2 whitespace-pre-wrap max-h-40 overflow-auto">
+                            {orders[0].note}
                           </div>
-                          <div className="mt-2 flex gap-2">
-                            <textarea
-                              className="flex-1 p-1 rounded bg-gray-900 text-white text-xs h-16 resize-y"
-                              placeholder="Append a note"
-                              value={orderNoteInputs[orders[0].id] || ''}
-                              onChange={(e) => setOrderNoteInputs(m => ({ ...m, [orders[0].id]: e.target.value }))}
-                              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleAppendOrderNote(orders[0].id); } }}
-                            />
-                            <div className="flex flex-col gap-2">
-                              <button
-                                type="button"
-                                className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-white text-xs"
-                                onClick={() => handleAppendOrderNote(orders[0].id)}
-                              >Append</button>
-                              <button
-                                type="button"
-                                className="px-2 py-1 bg-red-600 hover:bg-red-700 rounded text-white text-xs"
-                                onClick={() => handleClearOrderNote(orders[0].id)}
-                              >Clear</button>
-                            </div>
-                          </div>
-                          <div className="text-[10px] text-gray-400 mt-1">Press Ctrl+Enter to append</div>
+                        ) : (
+                          <div className="text-xs text-gray-400">No notes yet.</div>
+                        )}
+                        <div className="mt-2 flex gap-2 items-end">
+                          <textarea
+                            className="flex-1 p-2 rounded bg-gray-800 text-white text-xs h-16"
+                            placeholder="Add a note"
+                            value={newOrderNote}
+                            onChange={e => setNewOrderNote(e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            className="px-2 py-1 bg-blue-600 rounded text-white text-xs h-8 self-end"
+                            onClick={async () => {
+                              const value = (newOrderNote || "").trim();
+                              if (!value || orders.length === 0) return;
+                              try {
+                                const latest = orders[0];
+                                const res = await api.post(`${API_BASE}/shopify-orders/${latest.id}/note`, { note: value });
+                                const finalNote = res?.data?.note || value;
+                                setOrders(prev => {
+                                  const next = Array.isArray(prev) ? [...prev] : [];
+                                  if (next.length > 0) {
+                                    next[0] = { ...next[0], note: finalNote };
+                                  }
+                                  return next;
+                                });
+                                setNewOrderNote("");
+                              } catch {}
+                            }}
+                          >Add Note</button>
+                          <button
+                            type="button"
+                            className="px-2 py-1 bg-gray-600 hover:bg-gray-700 rounded text-white text-xs h-8"
+                            onClick={async () => {
+                              try {
+                                const latest = orders[0];
+                                await api.delete(`${API_BASE}/shopify-orders/${latest.id}/note`);
+                                setOrders(prev => {
+                                  const next = Array.isArray(prev) ? [...prev] : [];
+                                  if (next.length > 0) next[0] = { ...next[0], note: "" };
+                                  return next;
+                                });
+                              } catch {}
+                            }}
+                          >Clear Note</button>
                         </div>
                       </div>
                     )}

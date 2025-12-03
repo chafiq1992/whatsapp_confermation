@@ -1,12 +1,7 @@
 import httpx
 import logging
 import os
-import asyncio
-import hmac
-import hashlib
-import base64
-import json
-from fastapi import APIRouter, Body, Query, HTTPException, Request
+from fastapi import APIRouter, Body, Query, HTTPException
 
 # ================= CONFIG ==================
 
@@ -88,57 +83,12 @@ def normalize_phone(phone):
         return ""
     phone = str(phone).replace(" ", "").replace("-", "")
     if phone.startswith("+"):
-        # Fix common mistake: +2120XXXXXXXX -> +212XXXXXXXX (remove national trunk '0')
-        try:
-            if phone.startswith("+2120") and len(phone) >= 5:
-                return "+212" + phone[5:]
-        except Exception:
-            pass
         return phone
     if len(phone) == 12 and phone.startswith("212"):
         return "+" + phone
     if len(phone) == 10 and phone.startswith("06"):
         return "+212" + phone[1:]
     return phone
-
-def format_phone_for_template_display(phone: str) -> str:
-    """Format phone for template placeholder:
-    - Morocco (+212...): display as 0XXXXXXXXX (national format, no country code)
-    - Non-Morocco: display with +<country><number>
-    """
-    try:
-        s = "".join(ch for ch in str(phone or "") if ch.isdigit() or ch == "+")
-        if not s:
-            return "-"
-        # Normalize +2120XXXX to +212XXXX for consistency
-        if s.startswith("+2120"):
-            s = "+212" + s[5:]
-        # If E.164 Morocco
-        if s.startswith("+212"):
-            local = "".join(ch for ch in s if ch.isdigit())[3:]
-            if not local:
-                return "-"
-            # Ensure single leading 0 in display
-            if not local.startswith("0"):
-                return "0" + local
-            return local
-        # Raw digits path
-        digits = "".join(ch for ch in s if ch.isdigit())
-        if digits.startswith("212"):
-            local = digits[3:]
-            return ("0" + local) if not local.startswith("0") else local
-        if digits.startswith("0") and len(digits) >= 9:
-            # Already in national form
-            return digits
-        # Likely missing trunk 0 for MA mobile (9 digits starting with 6/7)
-        if len(digits) == 9 and digits[0] in ("5","6","7","8","9"):
-            return "0" + digits
-        # Non-Morocco: return E.164 style
-        if s.startswith("+"):
-            return s
-        return "+" + digits if digits else "-"
-    except Exception:
-        return str(phone or "-")
 
 def _split_name(full_name: str) -> tuple[str, str]:
     full = (full_name or "").strip()
@@ -286,20 +236,12 @@ async def fetch_customer_by_phone(phone_number: str):
                 }
 
             # Build response
-            # Safely pick the first address1 if present
-            try:
-                addr_list = c.get("addresses") or []
-                primary_addr = addr_list[0] if isinstance(addr_list, list) and addr_list else {}
-                address1 = (primary_addr or {}).get("address1") or ""
-            except Exception:
-                address1 = ""
-
             return {
-                "customer_id": c.get("id"),
+                "customer_id": c["id"],   # <--- ADD THIS LINE
                 "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
                 "email": c.get("email") or "",
                 "phone": c.get("phone") or "",
-                "address": address1,
+                "address": (c["addresses"][0]["address1"] if c.get("addresses") and c["addresses"] else ""),
                 "total_orders": total_orders,
                 "last_order": last_order
             }
@@ -464,6 +406,9 @@ async def shopify_orders(customer_id: str, limit: int = 50):
         domain = admin_api_base().replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
         simplified = []
         for o in orders:
+            # Shopify REST Admin API returns order.tags as a comma-separated string; expose as an array
+            tags_str = o.get("tags") or ""
+            tags_arr = [t.strip() for t in str(tags_str).split(",") if t and t.strip()]
             simplified.append({
                 "id": o.get("id"),
                 "order_number": o.get("name"),
@@ -472,527 +417,136 @@ async def shopify_orders(customer_id: str, limit: int = 50):
                 "fulfillment_status": o.get("fulfillment_status"),
                 "total_price": o.get("total_price"),
                 "currency": o.get("currency"),
-                # Comma-separated string in Shopify; expose as array for UI clarity
-                "tags": [t.strip() for t in str(o.get("tags") or "").split(",") if t and t.strip()],
-                # Include order note for quick display/append in UI
-                "note": o.get("note") or "",
                 "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
+                "tags": tags_arr,
+                "note": o.get("note") or "",
             })
         return simplified
 
-# =============== WEBHOOK: ORDERS CREATE ===============
-@router.post("/shopify/webhooks/orders/create")
-async def shopify_orders_create_webhook(request: Request):
-    """Receive Shopify Orders Create webhook and trigger order confirmation flow.
-
-    Verifies HMAC when SHOPIFY_WEBHOOK_SECRET (or IRRAKIDS_WEBHOOK_SECRET/IRRANOVA_WEBHOOK_SECRET) is set.
-    """
-    try:
-        body_bytes = await request.body()
-        # Verify HMAC if secret provided
-        secret = (
-            os.getenv("SHOPIFY_WEBHOOK_SECRET")
-            or os.getenv("IRRAKIDS_WEBHOOK_SECRET")
-            or os.getenv("IRRANOVA_WEBHOOK_SECRET")
-        )
-        if secret:
-            provided_hmac = request.headers.get("X-Shopify-Hmac-Sha256", "")
-            digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).digest()
-            computed = base64.b64encode(digest).decode()
-            if not provided_hmac or not hmac.compare_digest(provided_hmac, computed):
-                logging.getLogger(__name__).warning("Shopify webhook HMAC verification failed")
-                from fastapi.responses import PlainTextResponse
-                return PlainTextResponse("Unauthorized", status_code=401)
-
-        # Parse payload
-        try:
-            payload = json.loads(body_bytes.decode("utf-8") or "{}")
-        except Exception:
-            payload = {}
-
-        # Orders/Create webhook sends the order object at the root
-        order = payload if payload.get("id") else (payload.get("order") or {})
-        order_id = order.get("id")
-
-        # Try to extract phone directly from webhook payload to avoid re-fetching
-        raw_phone = (
-            ((order.get("shipping_address") or {}).get("phone"))
-            or ((order.get("billing_address") or {}).get("phone"))
-            or ((order.get("customer") or {}).get("phone"))
-            or order.get("phone")
-        )
-
-        logging.getLogger(__name__).info(
-            "order_confirm webhook: order_id=%s raw_phone=%s", str(order_id or ""), str(raw_phone or "")
-        )
-
-        # Build default body components (7 params) matching template placeholders
-        # 1) customer name, 2) order number, 3) phone, 4) city, 5) address, 6) items summary, 7) total
-        components_override = None
-        try:
-            body_params: list[str] = []
-            shipping = (order.get("shipping_address") or {})
-            billing = (order.get("billing_address") or {})
-            customer = (order.get("customer") or {})
-            customer_name = (
-                shipping.get("name")
-                or f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
-                or f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip()
-                or "-"
-            )
-            order_number = str(order.get("name") or order.get("order_number") or order_id or "-")
-            total_str = str(order.get("total_price") or "").strip()
-            currency = str(order.get("currency") or "").strip()
-            if not total_str:
-                total_with_currency = "-"
-            else:
-                s = total_str
-                if currency:
-                    # Avoid duplicating the currency if already present (case-insensitive)
-                    if currency.lower() in s.lower():
-                        total_with_currency = s
-                    else:
-                        total_with_currency = f"{s} {currency}"
-                else:
-                    total_with_currency = s
-            city = str(shipping.get("city") or billing.get("city") or "-")
-            address1 = str(shipping.get("address1") or billing.get("address1") or "-")
-            # phone
-            phone_val = (
-                (shipping.get("phone") if isinstance(shipping.get("phone"), str) else None)
-                or (billing.get("phone") if isinstance(billing.get("phone"), str) else None)
-                or (customer.get("phone") if isinstance(customer.get("phone"), str) else None)
-                or (order.get("phone") if isinstance(order.get("phone"), str) else None)
-                or str(raw_phone or "-")
-            )
-            # items summary: only quantity, size, and color (no product title), e.g. "1x 25 blue + 3x 21 brown"
-            items = order.get("line_items") or []
-            try:
-                fragments = []
-                for li in items:
-                    qty = li.get("quantity")
-                    try:
-                        qstr = str(int(qty)) if qty is not None else ""
-                    except Exception:
-                        qstr = str(qty or "")
-                    # Extract size/color from properties or variant_title
-                    props = {}
-                    try:
-                        for p in (li.get("properties") or []):
-                            n = str(p.get("name") or "").strip().lower()
-                            v = str(p.get("value") or "").strip()
-                            if n:
-                                props[n] = v
-                    except Exception:
-                        props = {}
-                    size = props.get("size") or props.get("المقاس") or None
-                    color = props.get("color") or props.get("اللون") or None
-                    if not (size and color):
-                        vt = (li.get("variant_title") or "").strip()
-                        if vt and "/" in vt and not (size and color):
-                            parts = [s.strip() for s in vt.split("/") if s.strip()]
-                            if len(parts) >= 1 and not size:
-                                size = parts[0]
-                            if len(parts) >= 2 and not color:
-                                color = parts[1]
-                    # Compose fragment: "Qx SIZE COLOR" (omit missing fields)
-                    parts_out = []
-                    if qstr:
-                        parts_out.append(f"{qstr}x")
-                    if size:
-                        parts_out.append(str(size))
-                    if color:
-                        parts_out.append(str(color))
-                    frag = " ".join(p for p in parts_out if p)
-                    if frag:
-                        fragments.append(frag)
-                # Join fragments with ' + ' and sanitize later
-                items_summary = " + ".join(fragments) or "-"
-            except Exception:
-                items_summary = "-"
-
-            # Fill exactly 7 params to satisfy template placeholders in this exact order:
-            # 1 customer name, 2 order number, 3 items titles, 4 total, 5 city, 6 address, 7 phone
-            body_params = [
-                customer_name,
-                order_number,
-                items_summary,
-                total_with_currency,
-                city,
-                address1,
-                format_phone_for_template_display(phone_val),
-            ]
-            components_override = []
-            # Header IMAGE param: prefer order note_attributes.image_url, else env ORDER_CONFIRM_HEADER_IMAGE_URL
-            try:
-                header_url = None
-                note_attrs = order.get("note_attributes") or []
-                if isinstance(note_attrs, list):
-                    for na in note_attrs:
-                        try:
-                            if str(na.get("name")).lower() == "image_url" and na.get("value"):
-                                header_url = str(na.get("value"))
-                                break
-                        except Exception:
-                            continue
-                if not header_url:
-                    header_url = os.getenv("ORDER_CONFIRM_HEADER_IMAGE_URL")
-                # If still not set, try deriving from first line item's variant image (best-effort)
-                if not header_url:
-                    try:
-                        items = order.get("line_items") or []
-                        if items:
-                            base = admin_api_base()
-                            async with httpx.AsyncClient(timeout=12.0) as client:
-                                for li in items:
-                                    variant_id = li.get("variant_id")
-                                    product_id = li.get("product_id")
-                                    image_id = None
-                                    if variant_id:
-                                        try:
-                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
-                                            if v_resp.status_code == 200:
-                                                variant = (v_resp.json() or {}).get("variant") or {}
-                                                image_id = variant.get("image_id")
-                                                if not product_id:
-                                                    product_id = variant.get("product_id")
-                                        except Exception:
-                                            image_id = None
-                                    if product_id:
-                                        try:
-                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
-                                            if p_resp.status_code == 200:
-                                                prod = (p_resp.json() or {}).get("product") or {}
-                                                # Match variant image id
-                                                if image_id:
-                                                    try:
-                                                        imgs = prod.get("images") or []
-                                                        for img in imgs:
-                                                            if str(img.get("id")) == str(image_id) and img.get("src"):
-                                                                header_url = img.get("src")
-                                                                break
-                                                    except Exception:
-                                                        pass
-                                                # Fallbacks
-                                                if not header_url:
-                                                    header_url = (prod.get("image") or {}).get("src") or (
-                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
-                                                    )
-                                        except Exception:
-                                            pass
-                                    if header_url:
-                                        break
-                    except Exception:
-                        pass
-                if header_url:
-                    components_override.append({
-                        "type": "header",
-                        "parameters": [{
-                            "type": "image",
-                            "image": {"link": str(header_url)}
-                        }]
-                    })
-            except Exception:
-                pass
-
-            # Sanitize all text params: remove newlines/tabs and collapse spaces
-            def _sanitize_text(s: str) -> str:
-                try:
-                    t = str(s or "")
-                    t = t.replace("\n", " ").replace("\t", " ")
-                    # collapse multiple spaces to one
-                    while "  " in t:
-                        t = t.replace("  ", " ")
-                    return t.strip()
-                except Exception:
-                    return str(s or "")
-            components_override.append({
-                "type": "body",
-                "parameters": [{"type": "text", "text": _sanitize_text(str(v))} for v in body_params],
-            })
-            logging.getLogger(__name__).info(
-                "order_confirm webhook: built %d body params for template", len(body_params)
-            )
-        except Exception as _exc:
-            components_override = None
-
-        # Collect additional variant media entries for multi-item orders (best-effort, limit 10)
-        extra_image_links: list[str] | None = None
-        try:
-            items = order.get("line_items") or []
-            base = admin_api_base()
-            entries: list[dict] = []
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                for li in items:
-                    if len(entries) >= 10:
-                        break
-                    product_id = li.get("product_id")
-                    variant_id = li.get("variant_id")
-                    image_id = None
-                    if variant_id:
-                        try:
-                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
-                            if v_resp.status_code == 200:
-                                variant = (v_resp.json() or {}).get("variant") or {}
-                                image_id = variant.get("image_id")
-                                if not product_id:
-                                    product_id = variant.get("product_id")
-                        except Exception:
-                            image_id = None
-                    img_url = None
-                    if product_id:
-                        try:
-                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
-                            if p_resp.status_code == 200:
-                                prod = (p_resp.json() or {}).get("product") or {}
-                                if image_id:
-                                    for img in (prod.get("images") or []):
-                                        if str(img.get("id")) == str(image_id) and img.get("src"):
-                                            img_url = img.get("src")
-                                            break
-                                if not img_url:
-                                    img_url = (prod.get("image") or {}).get("src") or (
-                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
-                                    )
-                        except Exception:
-                            pass
-                    if not img_url:
-                        continue
-                    # Build Arabic caption: size, color, quantity (best-effort)
-                    qty = li.get("quantity")
-                    try:
-                        qstr = str(int(qty)) if qty is not None else ""
-                    except Exception:
-                        qstr = str(qty or "")
-                    props = {}
-                    try:
-                        for p in (li.get("properties") or []):
-                            n = str(p.get("name") or "").strip().lower()
-                            v = str(p.get("value") or "").strip()
-                            if n:
-                                props[n] = v
-                    except Exception:
-                        props = {}
-                    size = props.get("size") or props.get("المقاس") or None
-                    color = props.get("color") or props.get("اللون") or None
-                    if not (size and color):
-                        vt = (li.get("variant_title") or "").strip()
-                        if vt and "/" in vt and not (size and color):
-                            parts = [s.strip() for s in vt.split("/") if s.strip()]
-                            if len(parts) >= 1 and not size:
-                                size = parts[0]
-                            if len(parts) >= 2 and not color:
-                                color = parts[1]
-                    # Try to improve size/color inference when variant_title has mixed info
-                    if not (size and color):
-                        vt = (li.get("variant_title") or "").strip()
-                        if vt and "/" in vt and not (size and color):
-                            parts = [s.strip() for s in vt.split("/") if s.strip()]
-                            def _is_size_token(tok: str) -> bool:
-                                t = (tok or "").strip().lower()
-                                if t.isdigit():
-                                    return True
-                                return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
-                            for part in parts:
-                                if not color and not part.isdigit() and not _is_size_token(part):
-                                    color = part
-                                    continue
-                                if not size and _is_size_token(part):
-                                    size = part
-                    price_val = None
-                    try:
-                        price_val = li.get("price")
-                    except Exception:
-                        price_val = None
-                    if price_val is not None:
-                        try:
-                            num = float(str(price_val).replace(",","."))
-                            price_str = f"{num:.2f}"
-                        except Exception:
-                            price_str = str(price_val)
-                    else:
-                        price_str = ""
-                    lines = []
-                    if color:
-                        lines.append(f"اللون: {color}")
-                    if size:
-                        lines.append(f"المقاس: {size}")
-                    if qstr:
-                        lines.append(f"الكمية: {qstr}")
-                    if price_str:
-                        lines.append(f"السعر: {price_str}")
-                    caption = "\n".join(lines)
-                    entry = {"url": img_url, "caption": caption}
-                    try:
-                        if variant_id:
-                            entry["retailer_id"] = str(variant_id)
-                    except Exception:
-                        pass
-                    entries.append(entry)
-            # Maintain legacy extra_image_links for flow (now cached, not sent)
-            extra_image_links = [e.get("url") for e in entries if e.get("url")] or None
-            # Cache detailed entries for sending after confirm
-            try:
-                from . import main as backend_main  # type: ignore
-                uid = None
-                try:
-                    phone_e164 = backend_main._normalize_ma_phone(str(raw_phone or ""))  # type: ignore[attr-defined]
-                    uid = backend_main._normalize_user_id(phone_e164)  # type: ignore[attr-defined]
-                except Exception:
-                    uid = None
-                if uid and entries:
-                    await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
-                        f"pending_variant_media:{uid}",
-                        {"items": entries, "ts": datetime.utcnow().isoformat()},
-                        ttl=3 * 24 * 3600,
-                    )
-                # Persist the order id to strengthen fallback resolution on confirm
-                if uid and order_id:
-                    try:
-                        await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
-                            f"pending_variant_order:{uid}",
-                            {"order_id": str(order_id), "ts": datetime.utcnow().isoformat()},
-                            ttl=3 * 24 * 3600,
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        except Exception:
-            extra_image_links = None
-
-        if order_id:
-            try:
-                # Lazy import to avoid circular imports at module load time
-                from . import main as backend_main  # type: ignore
-                # Use requested template/language for this flow run
-                asyncio.create_task(
-                    backend_main._run_order_confirmation_flow(
-                        str(order_id),
-                        template_name_override="order_confermation",
-                        template_lang_override="ar",
-                        raw_phone_override=(str(raw_phone).strip() if raw_phone else None),
-                        components_override=components_override,
-                        extra_image_links=extra_image_links,
-                    )
-                )
-            except Exception as exc:
-                logging.getLogger(__name__).warning("Failed to trigger order confirmation flow: %s", exc)
-
-        return {"ok": True}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Webhook handling failed: {exc}")
-
-# --- Add or set order tags ---
 @router.post("/shopify-orders/{order_id}/tags")
-async def add_order_tag(order_id: str, payload: dict = Body(...)):
-    """Add a single tag to a Shopify order. Returns updated tags list.
+async def add_order_tag(order_id: str, body: dict = Body(...)):
+    """Add a tag to a Shopify order. Requires write_orders scope.
 
-    Body: { "tag": "new-tag" }
+    Body: { "tag": "..." }
+    Returns: { ok: true, order_id, tags: [..] }
     """
-    base = admin_api_base()
-    tag = (payload.get("tag") or "").strip()
-    if not tag:
-        raise HTTPException(status_code=400, detail="Missing tag")
-    if "," in tag:
-        raise HTTPException(status_code=400, detail="Tag cannot contain comma")
-
-    get_endpoint = f"{base}/orders/{order_id}.json"
-    async with httpx.AsyncClient() as client:
-        # Fetch existing order to read current tags
-        resp = await client.get(get_endpoint, **_client_args())
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Order not found")
-        resp.raise_for_status()
-        order = (resp.json() or {}).get("order") or {}
-        existing_s = str(order.get("tags") or "")
-        existing = [t.strip() for t in existing_s.split(",") if t and t.strip()]
-        # Avoid case-insensitive duplicates
-        lower_set = {t.lower() for t in existing}
-        if tag.lower() not in lower_set:
-            existing.append(tag)
-
-        put_endpoint = f"{base}/orders/{order_id}.json"
-        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "tags": ", ".join(existing)}}
-        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
-        if upd.status_code == 403:
-            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
-        upd.raise_for_status()
-        return {"order_id": order_id, "tags": existing}
-
-# --- Remove a tag from order ---
-@router.post("/shopify-orders/{order_id}/tags/remove")
-async def remove_order_tag(order_id: str, payload: dict = Body(...)):
-    """Remove a single tag from a Shopify order. Returns updated tags list.
-
-    Body: { "tag": "existing-tag" }
-    """
-    base = admin_api_base()
-    tag = (payload.get("tag") or "").strip()
+    tag = (body or {}).get("tag")
+    tag = (tag or "").strip()
     if not tag:
         raise HTTPException(status_code=400, detail="Missing tag")
 
-    get_endpoint = f"{base}/orders/{order_id}.json"
+    base = admin_api_base()
     async with httpx.AsyncClient() as client:
-        resp = await client.get(get_endpoint, **_client_args())
-        if resp.status_code == 404:
+        # Fetch current tags first to avoid overwriting
+        get_resp = await client.get(f"{base}/orders/{order_id}.json", timeout=15, **_client_args())
+        if get_resp.status_code == 404:
             raise HTTPException(status_code=404, detail="Order not found")
-        resp.raise_for_status()
-        order = (resp.json() or {}).get("order") or {}
-        existing_s = str(order.get("tags") or "")
-        existing = [t.strip() for t in existing_s.split(",") if t and t.strip()]
-        # Remove case-insensitively
-        updated = [t for t in existing if t.lower() != tag.lower()]
-        put_endpoint = f"{base}/orders/{order_id}.json"
-        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "tags": ", ".join(updated)}}
-        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
-        if upd.status_code == 403:
-            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
-        upd.raise_for_status()
-        return {"order_id": order_id, "tags": updated}
+        if get_resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks read_orders scope or app not installed.")
+        get_resp.raise_for_status()
+        order_obj = (get_resp.json() or {}).get("order") or {}
+        current_tags_str = order_obj.get("tags") or ""
+        current_tags = [t.strip() for t in str(current_tags_str).split(",") if t and t.strip()]
+        if tag not in current_tags:
+            current_tags.append(tag)
 
-# --- Append/Clear order note ---
+        update_payload = {"order": {"id": int(str(order_id)), "tags": ", ".join(current_tags)}}
+        put_resp = await client.put(f"{base}/orders/{order_id}.json", json=update_payload, timeout=15, **_client_args())
+        if put_resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        put_resp.raise_for_status()
+        updated_order = (put_resp.json() or {}).get("order") or {}
+        tags_str = updated_order.get("tags") or ", ".join(current_tags)
+        tags_arr = [t.strip() for t in str(tags_str).split(",") if t and t.strip()]
+        return {"ok": True, "order_id": updated_order.get("id") or order_id, "tags": tags_arr}
+
+@router.delete("/shopify-orders/{order_id}/tags")
+async def remove_order_tag(order_id: str, body: dict = Body(...)):
+    """Remove a tag from a Shopify order. Requires write_orders scope.
+
+    Body: { "tag": "..." }
+    Returns: { ok: true, order_id, tags: [..] }
+    """
+    tag = (body or {}).get("tag")
+    tag = (tag or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Missing tag")
+
+    base = admin_api_base()
+    async with httpx.AsyncClient() as client:
+        get_resp = await client.get(f"{base}/orders/{order_id}.json", timeout=15, **_client_args())
+        if get_resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if get_resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks read_orders scope or app not installed.")
+        get_resp.raise_for_status()
+        order_obj = (get_resp.json() or {}).get("order") or {}
+        current_tags_str = order_obj.get("tags") or ""
+        current_tags = [t.strip() for t in str(current_tags_str).split(",") if t and t.strip()]
+        next_tags = [t for t in current_tags if t.lower() != tag.lower()]
+
+        update_payload = {"order": {"id": int(str(order_id)), "tags": ", ".join(next_tags)}}
+        put_resp = await client.put(f"{base}/orders/{order_id}.json", json=update_payload, timeout=15, **_client_args())
+        if put_resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        put_resp.raise_for_status()
+        updated_order = (put_resp.json() or {}).get("order") or {}
+        tags_str = updated_order.get("tags") or ", ".join(next_tags)
+        tags_arr = [t.strip() for t in str(tags_str).split(",") if t and t.strip()]
+        return {"ok": True, "order_id": updated_order.get("id") or order_id, "tags": tags_arr}
+
 @router.post("/shopify-orders/{order_id}/note")
-async def append_order_note(order_id: str, payload: dict = Body(...)):
-    """Append text to the Shopify order note. Returns updated note text.
+async def add_order_note(order_id: str, body: dict = Body(...)):
+    """Append a note to a Shopify order. Requires write_orders scope.
 
-    Body: { "note": "text to append" }
+    Body: { "note": "..." }
+    Appends to existing note with a newline.
+    Returns: { ok: true, order_id, note: "..." }
     """
+    new_note_fragment = (body or {}).get("note")
+    new_note_fragment = (new_note_fragment or "").strip()
+    if not new_note_fragment:
+        raise HTTPException(status_code=400, detail="Missing note")
+
     base = admin_api_base()
-    text = str(payload.get("note") or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="Missing note text")
-    get_endpoint = f"{base}/orders/{order_id}.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(get_endpoint, **_client_args())
-        if resp.status_code == 404:
+        # Fetch current order to read existing note
+        get_resp = await client.get(f"{base}/orders/{order_id}.json", timeout=15, **_client_args())
+        if get_resp.status_code == 404:
             raise HTTPException(status_code=404, detail="Order not found")
-        resp.raise_for_status()
-        order = (resp.json() or {}).get("order") or {}
-        existing = str(order.get("note") or "").strip()
-        new_note = (existing + ("\n" if existing else "") + text)
-        put_endpoint = f"{base}/orders/{order_id}.json"
-        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "note": new_note}}
-        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
-        if upd.status_code == 403:
+        if get_resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks read_orders scope or app not installed.")
+        get_resp.raise_for_status()
+        order_obj = (get_resp.json() or {}).get("order") or {}
+        current_note = (order_obj.get("note") or "").strip()
+        combined_note = new_note_fragment if not current_note else f"{current_note}\n{new_note_fragment}"
+
+        update_payload = {"order": {"id": int(str(order_id)), "note": combined_note}}
+        put_resp = await client.put(f"{base}/orders/{order_id}.json", json=update_payload, timeout=15, **_client_args())
+        if put_resp.status_code == 403:
             raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
-        upd.raise_for_status()
-        return {"order_id": order_id, "note": new_note}
+        put_resp.raise_for_status()
+        updated_order = (put_resp.json() or {}).get("order") or {}
+        final_note = (updated_order.get("note") or combined_note)
+        return {"ok": True, "order_id": updated_order.get("id") or order_id, "note": final_note}
 
 @router.delete("/shopify-orders/{order_id}/note")
-async def clear_order_note(order_id: str):
-    """Clear the Shopify order note (set to empty)."""
+async def delete_order_note(order_id: str):
+    """Clear the note on a Shopify order (set to empty). Requires write_orders scope.
+
+    Returns: { ok: true, order_id, note: "" }
+    """
     base = admin_api_base()
     async with httpx.AsyncClient() as client:
-        put_endpoint = f"{base}/orders/{order_id}.json"
-        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "note": ""}}
-        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
-        if upd.status_code == 404:
-            raise HTTPException(status_code=404, detail="Order not found")
-        if upd.status_code == 403:
+        update_payload = {"order": {"id": int(str(order_id)), "note": ""}}
+        put_resp = await client.put(f"{base}/orders/{order_id}.json", json=update_payload, timeout=15, **_client_args())
+        if put_resp.status_code == 403:
             raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
-        upd.raise_for_status()
-        return {"order_id": order_id, "note": ""}
+        if put_resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        put_resp.raise_for_status()
+        updated_order = (put_resp.json() or {}).get("order") or {}
+        return {"ok": True, "order_id": updated_order.get("id") or order_id, "note": ""}
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():

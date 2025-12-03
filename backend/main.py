@@ -1989,9 +1989,29 @@ class DatabaseManager:
                 last_type = last["type"] if last else None
                 last_from_me = bool(last["from_me"]) if last and ("from_me" in last) else None
                 last_status = last["status"] if last else None
-                # Time window filter (SQLite): skip conversations older than since_iso if provided
-                if since_iso and last_time and str(last_time) < str(since_iso):
-                    continue
+                # Time window filter (SQLite): skip conversations older than since_iso if provided, using robust parsing
+                if since_iso and last_time:
+                    def _parse_dt(val: Any) -> Optional[datetime]:
+                        try:
+                            s = str(val)
+                            # Normalize common variants
+                            s = s.replace(\"Z\", \"+00:00\")
+                            # Allow space or 'T' separator
+                            if \" \" in s and \"+\" not in s and \"T\" not in s:
+                                # bare 'YYYY-MM-DD HH:MM:SS' → OK for fromisoformat
+                                pass
+                            return datetime.fromisoformat(s)
+                        except Exception:
+                            try:
+                                # Fallback: strip microseconds if present
+                                s2 = str(val).split(\".\")[0].replace(\"T\", \" \").strip()
+                                return datetime.fromisoformat(s2)
+                            except Exception:
+                                return None
+                    since_dt = _parse_dt(since_iso)
+                    last_dt = _parse_dt(last_time)
+                    if since_dt and last_dt and last_dt < since_dt:
+                        continue
 
                 cur = await db.execute(
                     self._convert("SELECT COUNT(*) AS c FROM messages WHERE user_id = ? AND from_me = 0 AND status != 'read'"),
@@ -5323,7 +5343,7 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, since_hours: int = 72, limit: Optional[int] = None, offset: int = 0):
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, since_hours: int = 24, limit: Optional[int] = None, offset: int = 0):
     """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
