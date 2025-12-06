@@ -1772,7 +1772,7 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
-    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 200, offset: int = 0) -> List[dict]:
+    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 1000, offset: int = 0) -> List[dict]:
         """Return conversation summaries for chat list with optional filters.
 
         Optimized single-query plan for Postgres; SQLite uses existing per-user aggregation.
@@ -4462,11 +4462,11 @@ async def get_active_users():
     return {"active_users": connection_manager.get_active_users()}
 
 @app.get("/conversations")
-async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, limit: int = 200, offset: int = 0):
+async def get_conversations(q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[str] = None, unresponded_only: bool = False, limit: int = 1000, offset: int = 0):
     """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, limit=max(1, min(limit, 500)), offset=max(0, offset))
+        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, limit=max(1, min(limit, 1000)), offset=max(0, offset))
         if unresponded_only:
             conversations = [c for c in conversations if (c.get("unresponded_count") or 0) > 0]
         return conversations
