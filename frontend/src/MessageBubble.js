@@ -173,7 +173,8 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   const isVideo = msg.type === "video";
   const isCatalogItem = msg.type === "catalog_item" || msg.type === "interactive_product";
   const isCatalogSet = msg.type === "catalog_set";
-  const isText = msg.type === "text" || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages);
+  const isTemplate = msg.type === 'template' || (!!msg?.template && typeof msg.template === 'object');
+  const isText = (msg.type === "text" && !isTemplate) || (!isImage && !isAudio && !isVideo && !isOrder && !isGroupedImages && !isTemplate);
   const [linkPreview, setLinkPreview] = useState(null);
   const [linkPreviewError, setLinkPreviewError] = useState(false);
   const [linkPreviewImgLoaded, setLinkPreviewImgLoaded] = useState(false);
@@ -393,6 +394,49 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
     </div>
   );
 
+  // Template renderer (header media + body params list)
+  const renderTemplate = () => {
+    const tpl = msg?.template || {};
+    const name = String(tpl?.name || msg?.message || '').replace(/^\[Template\]\s*/, '');
+    const lang = String(tpl?.language || '').trim();
+    // header link from explicit field or components
+    let headerLink = String(msg?.template_header_link || '') || '';
+    try {
+      if (!headerLink && Array.isArray(tpl?.components)) {
+        const header = tpl.components.find(c => String(c?.type || '').toUpperCase() === 'HEADER');
+        const p0 = header && Array.isArray(header.parameters) ? header.parameters[0] : null;
+        if (p0 && typeof p0 === 'object') {
+          if (p0.image?.link) headerLink = String(p0.image.link);
+          else if (p0.video?.link) headerLink = String(p0.video.link);
+          else if (p0.document?.link) headerLink = String(p0.document.link);
+        }
+      }
+    } catch {}
+    const bodyParams = Array.isArray(msg?.template_body_params) ? msg.template_body_params : [];
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-sm font-semibold">{name}{lang ? ` · ${lang}` : ''}</div>
+        {headerLink ? (
+          <img
+            src={headerLink}
+            alt="Template header"
+            className="rounded-xl w-[250px] h-auto object-cover bg-gray-100 border border-gray-200"
+            style={{ aspectRatio: '4 / 3' }}
+            onError={(e) => handleImageError(e)}
+            loading="lazy"
+            onLoad={() => notifyResize()}
+            onClick={() => window.open(headerLink, '_blank')}
+          />
+        ) : null}
+        {bodyParams.length > 0 ? (
+          <div className="text-sm whitespace-pre-wrap">
+            {bodyParams.join('\n')}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   // Enhanced audio renderer
   const renderAudio = () => (
     !isVisible ? (
@@ -581,7 +625,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                         <span className="flex items-center">
                           <span className="font-medium text-blue-700">Price:</span>
                           <span className="ml-1 font-semibold">
-                            {item.item_price} {item.currency || "MAD"}
+                            {(() => { const s = String(item.item_price ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${item.currency || "MAD"}`; })()}
                           </span>
                         </span>
                         {finalSize && (
@@ -607,7 +651,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
                       {product.price && product.price !== item.item_price && (
                         <div className="mt-2">
                           <span className="inline-block text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full border border-blue-100">
-                            <span className="font-medium">Catalog Price:</span> {product.price} {item.currency || "MAD"}
+                            <span className="font-medium">Catalog Price:</span> {(() => { const s = String(product.price ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${item.currency || "MAD"}`; })()}
                           </span>
                         </div>
                       )}
@@ -643,7 +687,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         {order.total && (
           <div className="mt-3 pt-2 border-t border-yellow-200">
             <div className="text-right font-semibold text-yellow-800">
-              Total: {order.total} {order.currency || "MAD"}
+              Total: {(() => { const s = String(order.total ?? ""); return /\bMAD\b/i.test(s) ? s : `${s} ${order.currency || "MAD"}`; })()}
             </div>
           </div>
         )}
@@ -771,6 +815,7 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
          isImage ? renderSingleImage(mediaUrl ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}` : mediaUrl, "Product", msg.caption || msg.price) :
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
+         isTemplate ? renderTemplate() :
          isCatalogItem ? (
            (() => {
             const info = catalogProducts[retailerId] || {};

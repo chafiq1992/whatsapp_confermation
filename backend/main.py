@@ -13,6 +13,7 @@ from collections import defaultdict
 import time
 import os
 import re
+import re
 import aiosqlite
 import aiofiles
 from pathlib import Path
@@ -189,6 +190,12 @@ def parse_agent_token(token: str) -> Optional[dict]:
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "chafiq")
 ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "your_access_token_here")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "your_phone_number_id")
+WABA_ID_ENV = (
+    os.getenv("WHATSAPP_WABA_ID")
+    or os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID")
+    or os.getenv("WABA_ID")
+    or os.getenv("BUSINESS_ACCOUNT_ID")
+)
 CATALOG_ID = os.getenv("CATALOG_ID", "CATALOGID")
 META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", ACCESS_TOKEN)
 META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FB_APP_ID", "")
@@ -213,6 +220,27 @@ except Exception:
 def _digits_only(value: str) -> str:
     try:
         return "".join([ch for ch in str(value) if ch.isdigit()])
+    except Exception:
+        return str(value or "")
+
+# Canonical conversation key: digits-only, Morocco phones normalized to 212XXXXXXXXX
+def _normalize_user_id(value: str) -> str:
+    try:
+        s = str(value or "").strip()
+        # Internal channels should pass through unchanged
+        if s.startswith(("team:", "agent:", "dm:")):
+            return s
+        digits = _digits_only(s)
+        if not digits:
+            return s
+        # If starts with 0 -> convert to 212...
+        if digits.startswith("0"):
+            return "212" + digits[1:]
+        # If already starts with 212 -> keep
+        if digits.startswith("212"):
+            return digits
+        # Fallback: assume it's a country code without plus
+        return digits
     except Exception:
         return str(value or "")
 
@@ -245,6 +273,21 @@ _vlog(f"   PHONE_NUMBER_ID: {PHONE_NUMBER_ID}")
 # Feature flags / tunables
 AUDIO_VOICE_ENABLED = (os.getenv("WA_AUDIO_VOICE", "1") or "1").strip() not in ("0", "false", "False")
 
+# Order confirmation: allowed numbers
+_ORDER_CONFIRM_ALLOWED_RAW = os.getenv("ORDER_CONFIRM_ALLOWED_NUMBERS", "")
+ORDER_CONFIRM_ALLOWED_NUMBERS: Set[str] = set(
+    _digits_only(n.strip()) for n in _ORDER_CONFIRM_ALLOWED_RAW.split(",") if n.strip()
+)
+# Always include these defaults
+try:
+    ORDER_CONFIRM_ALLOWED_NUMBERS.update({"212650161162", "212606315335"})
+except Exception:
+    pass
+
+# Allow sending order confirmation to all numbers (bypass whitelist)
+ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+ORDER_CONFIRM_SEND_CATALOG = (os.getenv("ORDER_CONFIRM_SEND_CATALOG", "0") or "0").strip() not in ("0", "false", "False")
+
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
 APP_STARTED_AT = datetime.utcnow().isoformat()
@@ -253,6 +296,15 @@ def chunk_list(items: List[str], size: int):
     """Yield successive chunks from a list."""
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+def _format_price_mad(value: str) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    # Avoid duplicating MAD if already present
+    if re.search(r"\bMAD\b", s, re.IGNORECASE):
+        return s
+    return f"{s} MAD"
 
 async def convert_webm_to_ogg(src_path: Path) -> Path:
     """
@@ -702,6 +754,46 @@ class WhatsAppMessenger:
             },
         }
         return await self._make_request("messages", data)
+
+    async def check_whatsapp_contact(self, phone_e164: str) -> dict:
+        """Check if a phone has WhatsApp using the contacts endpoint.
+        Returns the raw response with entries like [{ input, status, wa_id? }].
+        """
+        url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{self.phone_number_id}/contacts"
+        payload = {
+            "blocking": "wait",
+            "contacts": [phone_e164],
+            "force_check": True,
+        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=self.headers)
+            return resp.json() if resp is not None else {}
+
+    async def send_template_message(
+        self,
+        to: str,
+        template_name: str,
+        language: str = "en",
+        components: list | None = None,
+        context_message_id: str | None = None,
+    ) -> dict:
+        url = f"{self.base_url}/messages"
+        payload: dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language},
+            },
+        }
+        if components:
+            payload["template"]["components"] = components
+        if context_message_id:
+            payload["context"] = {"message_id": context_message_id}
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=self.headers)
+            return resp.json() if resp is not None else {}
 
     async def _make_request(self, endpoint: str, data: dict) -> dict:
         """Helper to send POST requests to WhatsApp API"""
@@ -2512,11 +2604,16 @@ class MessageProcessor:
             return
         
         try:
+            # Normalize destination for WhatsApp API (E.164 with plus) except internal channels
+            if isinstance(user_id, str) and not user_id.startswith(("team:", "agent:", "dm:")):
+                wa_to = _normalize_ma_phone(user_id)
+            else:
+                wa_to = user_id
             # Send to WhatsApp API with concurrency guard
             async with wa_semaphore:
                 if message["type"] == "text":
                     wa_response = await self.whatsapp_messenger.send_text_message(
-                        user_id, message["message"], context_message_id=message.get("reply_to")
+                        wa_to, message["message"], context_message_id=message.get("reply_to")
                     )
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
@@ -2530,7 +2627,7 @@ class MessageProcessor:
                         raise Exception("Missing product_retailer_id for catalog_item")
                     try:
                         wa_response = await self.whatsapp_messenger.send_single_catalog_item(
-                            user_id, str(retailer_id), caption
+                            wa_to, str(retailer_id), caption
                         )
                         # After interactive is delivered, optionally send bilingual prompt as a reply
                         if message.get("needs_bilingual_prompt"):
@@ -2599,8 +2696,9 @@ class MessageProcessor:
                                 pass
                         if img_url:
                             # Send as image with caption if interactive fails
+                            safe_caption = caption or (price and _format_price_mad(price) or "")
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id, "image", img_url, caption or (price and f"{price} MAD" or "")
+                                wa_to, "image", img_url, safe_caption
                             )
                             if message.get("needs_bilingual_prompt"):
                                 wa_msg_id = None
@@ -2633,7 +2731,7 @@ class MessageProcessor:
                         else:
                             # Final fallback to text
                             wa_response = await self.whatsapp_messenger.send_text_message(
-                                user_id, caption or str(retailer_id)
+                                wa_to, caption or str(retailer_id)
                             )
                             if message.get("needs_bilingual_prompt"):
                                 wa_msg_id = None
@@ -2669,11 +2767,11 @@ class MessageProcessor:
                     if not isinstance(buttons, list) or not buttons:
                         # Fallback to text to avoid hard failure
                         wa_response = await self.whatsapp_messenger.send_text_message(
-                            user_id, body_text or ""
+                            wa_to, body_text or ""
                         )
                     else:
                         wa_response = await self.whatsapp_messenger.send_reply_buttons(
-                            user_id, body_text, buttons
+                            wa_to, body_text, buttons
                         )
                 elif message["type"] in ("list", "interactive_list"):
                     body_text = message.get("message") or ""
@@ -2683,11 +2781,11 @@ class MessageProcessor:
                     footer_text = message.get("footer_text") or None
                     if not isinstance(sections, list) or not sections:
                         wa_response = await self.whatsapp_messenger.send_text_message(
-                            user_id, body_text or ""
+                            wa_to, body_text or ""
                         )
                     else:
                         wa_response = await self.whatsapp_messenger.send_list_message(
-                            user_id,
+                            wa_to,
                             body_text,
                             button_text,
                             sections,
@@ -2698,7 +2796,7 @@ class MessageProcessor:
                     # For now send order payload as text to ensure delivery speed
                     payload = message.get("message")
                     wa_response = await self.whatsapp_messenger.send_text_message(
-                        user_id, payload if isinstance(payload, str) else json.dumps(payload or {})
+                        wa_to, payload if isinstance(payload, str) else json.dumps(payload or {})
                     )
                 else:
                     # For media messages: support either local path upload or direct link
@@ -2756,7 +2854,7 @@ class MessageProcessor:
                             await asyncio.sleep(0.5)
                         if message.get("reply_to"):
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id,
+                                wa_to,
                                 message["type"],
                                 media_info["id"],
                                 message.get("caption", ""),
@@ -2765,7 +2863,7 @@ class MessageProcessor:
                             )
                         else:
                             wa_response = await self.whatsapp_messenger.send_media_message(
-                                user_id,
+                                wa_to,
                                 message["type"],
                                 media_info["id"],
                                 message.get("caption", ""),
@@ -2822,7 +2920,7 @@ class MessageProcessor:
                                 await asyncio.sleep(0.5)
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id,
+                                    wa_to,
                                     message["type"],
                                     media_info["id"],
                                     message.get("caption", ""),
@@ -2831,7 +2929,7 @@ class MessageProcessor:
                                 )
                             else:
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id,
+                                    wa_to,
                                     message["type"],
                                     media_info["id"],
                                     message.get("caption", ""),
@@ -2852,11 +2950,11 @@ class MessageProcessor:
                             print(f"URL fetch→upload fallback failed, sending link: {_exc}")
                             if message.get("reply_to"):
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
+                                    wa_to, message["type"], media_url, message.get("caption", ""), context_message_id=message.get("reply_to")
                                 )
                             else:
                                 wa_response = await self.whatsapp_messenger.send_media_message(
-                                    user_id, message["type"], media_url, message.get("caption", "")
+                                    wa_to, message["type"], media_url, message.get("caption", "")
                                 )
                     else:
                         raise Exception("No media found: require url http(s) or valid media_path")
@@ -3117,9 +3215,10 @@ class MessageProcessor:
         print("📨 _handle_incoming_message CALLED")
         print(json.dumps(message, indent=2))
         
-        sender = message.get("from") or (message.get("contact_info") or {}).get("wa_id")
-        if not sender:
+        sender_raw = message.get("from") or (message.get("contact_info") or {}).get("wa_id")
+        if not sender_raw:
             raise RuntimeError("incoming message missing sender id")
+        sender = _normalize_user_id(sender_raw)
         msg_type = message["type"]
         wa_message_id = message.get("id")
         timestamp = datetime.utcfromtimestamp(int(message.get("timestamp", 0))).isoformat()
@@ -3202,8 +3301,117 @@ class MessageProcessor:
                 title = (btn.get("title") or lst.get("title") or "").strip()
                 # Capture id for workflow routing
                 reply_id = (btn.get("id") or lst.get("id") or "").strip()
+                # Extra fallbacks if title missing in payload variants
+                if not title:
+                    try:
+                        # Some clients may not include title; fallback to visible button text or body text
+                        title = (
+                            (inter.get("button") or {}).get("text")
+                            or inter.get("title")
+                            or (inter.get("body") or {}).get("text")
+                            or reply_id
+                            or ""
+                        ).strip()
+                    except Exception:
+                        title = reply_id or ""
                 message_obj["type"] = "text"
                 message_obj["message"] = title or "[interactive_reply]"
+                # Order confirmation flow button handling (Arabic labels)
+                try:
+                    def _norm_ar(s: str) -> str:
+                        t = (s or "").strip()
+                        try:
+                            t = t.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                            t = t.replace("ي", "ى") if False else t  # placeholder for future normalization
+                        except Exception:
+                            pass
+                        return t
+                    tnorm = _norm_ar(title)
+                    # Map known buttons
+                    BTN1 = {"تاكيد الطلب", "تأكيد الطلب"}
+                    BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
+                    BTN3 = {"تكلم مع العميل"}
+                    if tnorm in BTN1:
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                wa_id = await self._send_audio_via_upload(to, str(audio_url))
+                                if not wa_id:
+                                    res = await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                    try:
+                                        arr = (res or {}).get("messages") or []
+                                        if isinstance(arr, list) and arr:
+                                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                                    except Exception:
+                                        wa_id = None
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    **({"wa_message_id": wa_id} if wa_id else {}),
+                                    "status": "sent",
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
+                        # Always send pending variant images after confirm
+                        try:
+                            await self._send_pending_variant_media(sender)
+                        except Exception:
+                            pass
+                    elif tnorm in BTN2:
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                ok = await self._send_audio_via_upload(to, str(audio_url))
+                                if not ok:
+                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
+                    elif tnorm in BTN3:
+                        audio_url = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                        if audio_url:
+                            try:
+                                to = _normalize_ma_phone(sender)
+                                ok = await self._send_audio_via_upload(to, str(audio_url))
+                                if not ok:
+                                    await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(audio_url), audio_voice=True)
+                                synthetic_audio = {
+                                    "temp_id": f"temp_{uuid.uuid4().hex}",
+                                    "user_id": sender,
+                                    "message": str(audio_url),
+                                    "type": "audio",
+                                    "url": str(audio_url),
+                                    "from_me": 1,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                }
+                                await self.db_manager.upsert_message(synthetic_audio)
+                                await self.redis_manager.cache_message(sender, synthetic_audio)
+                                await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
                 # Route survey interactions before generic acknowledgment
                 if reply_id.startswith("survey_"):
                     # Persist the textual reply bubble first
@@ -3278,6 +3486,76 @@ class MessageProcessor:
             except Exception:
                 message_obj["type"] = "text"
                 message_obj["message"] = "[interactive_reply]"
+        elif msg_type == "button":
+            try:
+                btn = message.get("button", {}) or {}
+                title = (btn.get("text") or btn.get("payload") or "").strip()
+            except Exception:
+                title = "[button_reply]"
+            message_obj["type"] = "text"
+            message_obj["message"] = title or "[button_reply]"
+            # Order confirmation quick-reply buttons (non-interactive payloads)
+            try:
+                def _norm_ar_btn(s: str) -> str:
+                    t = (s or "").strip()
+                    try:
+                        t = t.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+                    except Exception:
+                        pass
+                    return t
+                tnorm = _norm_ar_btn(title)
+                BTN1 = {"تاكيد الطلب", "تأكيد الطلب"}
+                BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
+                BTN3 = {"تكلم مع العميل"}
+                matched = None
+                if tnorm in BTN1:
+                    matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                elif tnorm in BTN2:
+                    matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                elif tnorm in BTN3:
+                    matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                if matched:
+                    try:
+                        to = _normalize_ma_phone(sender)
+                        wa_id = await self._send_audio_via_upload(to, str(matched))
+                        if not wa_id:
+                            res = await self.whatsapp_messenger.send_media_message(to=to, media_type="audio", media_id_or_url=str(matched), audio_voice=True)
+                            try:
+                                arr = (res or {}).get("messages") or []
+                                if isinstance(arr, list) and arr:
+                                    wa_id = str((arr[0] or {}).get("id") or "") or None
+                            except Exception:
+                                wa_id = None
+                        synthetic_audio = {
+                            "temp_id": f"temp_{uuid.uuid4().hex}",
+                            "user_id": sender,
+                            "message": str(matched),
+                            "type": "audio",
+                            "url": str(matched),
+                            "from_me": 1,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            **({"wa_message_id": wa_id} if wa_id else {}),
+                            "status": "sent",
+                        }
+                        await self.db_manager.upsert_message(synthetic_audio)
+                        await self.redis_manager.cache_message(sender, synthetic_audio)
+                        await self.connection_manager.send_to_user(sender, {"type": "message_sent", "data": synthetic_audio})
+                    except Exception:
+                        pass
+                # Only send pending images on explicit confirm BTN1 (by text matching)
+                try:
+                    tnorm = _norm_ar_btn(title)
+                    if tnorm in {"تاكيد الطلب", "تأكيد الطلب"}:
+                        try:
+                            # small delay to ensure previous audio send settles in WA
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            pass
+                        await self._send_pending_variant_media(sender)
+                except Exception:
+                    pass
+            except Exception:
+                pass
         elif msg_type == "image":
             image_path, drive_url = await self._download_media(message["image"]["id"], "image")
             message_obj["message"] = image_path
@@ -3300,6 +3578,11 @@ class MessageProcessor:
             message_obj["message"] = audio_path
             message_obj["url"] = drive_url
             message_obj["transcription"] = ""
+            # If customer sends an audio after order confirmation, try sending pending variant images
+            try:
+                await self._send_pending_variant_media(sender)
+            except Exception:
+                pass
         elif msg_type == "video":
             video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
@@ -3692,7 +3975,13 @@ class MessageProcessor:
                 if resolved_variant:
                     t = resolved_variant.get("title") or ""
                     pr = resolved_variant.get("price") or ""
-                    cap = (f"{t} - {pr} MAD").strip(" -")
+                    pr_fmt = _format_price_mad(pr) if pr else ""
+                    parts: list[str] = []
+                    if t:
+                        parts.append(t)
+                    if pr_fmt:
+                        parts.append(pr_fmt)
+                    cap = (" - ".join(parts)).strip(" -")
                 await self.process_outgoing_message({
                     "user_id": user_id,
                     "type": "catalog_item",
@@ -3723,6 +4012,459 @@ class MessageProcessor:
         caption = " - ".join(caption_parts)
         # Removed automatic image auto-reply on name-based match
         return
+
+    async def _send_audio_via_upload(self, to_e164: str, audio_url: str) -> Optional[str]:
+        """Download remote audio and upload to WhatsApp, then send as voice note.
+        Returns WhatsApp message id on success, or None on failure.
+        """
+        try:
+            import tempfile
+            # Prefer signed URL for GCS objects
+            fetch_url = audio_url
+            try:
+                signed = maybe_signed_url_for(audio_url, ttl_seconds=600)
+                if signed:
+                    fetch_url = signed
+            except Exception:
+                pass
+            data: bytes | None = None
+            # Try HTTP download first
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(fetch_url)
+                    if resp.status_code < 400:
+                        data = await resp.aread()
+            except Exception:
+                data = None
+            # If HTTP failed and looks like GCS, try SDK download using service account
+            if data is None:
+                try:
+                    bucket, blob = _parse_gcs_url(audio_url)
+                    if blob:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_local:
+                            tmp_path_dl = tmp_local.name
+                        # When blob lacks bucket, download uses default bucket
+                        download_file_from_gcs(blob if bucket is None else f"{blob}", tmp_path_dl)
+                        with open(tmp_path_dl, "rb") as fh:
+                            data = fh.read()
+                        try:
+                            os.remove(tmp_path_dl)
+                        except Exception:
+                            pass
+                except Exception:
+                    data = None
+            if not data:
+                return None
+            # Persist downloaded bytes then convert to m4a (robust across WA clients)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as tmp_raw:
+                tmp_raw.write(data)
+                tmp_raw_path = tmp_raw.name
+            # Convert to m4a/aac regardless of source to avoid codec mismatch
+            tmp_path = None
+            try:
+                tmp_path = str(await convert_any_to_m4a(Path(tmp_raw_path)))
+            except Exception:
+                # Fallback: use raw if conversion failed
+                tmp_path = tmp_raw_path
+            try:
+                media_info = await self._upload_media_to_whatsapp(Path(tmp_path), "audio")
+                await asyncio.sleep(0.5)
+                res = await self.whatsapp_messenger.send_media_message(
+                    to_e164, "audio", media_info.get("id") or "", audio_voice=True
+                )
+                try:
+                    mid = (res or {}).get("messages") or []
+                    if isinstance(mid, list) and mid:
+                        return str((mid[0] or {}).get("id") or "") or None
+                except Exception:
+                    pass
+                return None
+            finally:
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                try:
+                    if tmp_raw_path and os.path.exists(tmp_raw_path):
+                        os.remove(tmp_raw_path)
+                except Exception:
+                    pass
+        except Exception:
+            return None
+
+    async def _send_pending_variant_media(self, user_id: str) -> None:
+        """Send up to 10 cached variant images with Arabic captions, then clear the cache."""
+        try:
+            # Prefer sending catalog items when enabled
+            if ORDER_CONFIRM_SEND_CATALOG:
+                try:
+                    await self._send_order_variants_as_catalog_items(user_id)
+                    return
+                except Exception:
+                    # Fallback to images below
+                    pass
+            key = f"pending_variant_media:{user_id}"
+            data = await redis_manager.get_json(key)
+            items = []
+            if isinstance(data, dict):
+                items = data.get("items") or []
+            try:
+                logging.info("variant_media: cache lookup user=%s count=%s", user_id, len(items) if items else 0)
+            except Exception:
+                pass
+            # Fallback: if nothing cached, try to build from customer's last order
+            # Priority 1: if we have a recent order_id pinned for this user, build from that exact order
+            if not items:
+                try:
+                    order_ref = await redis_manager.get_json(f"pending_variant_order:{user_id}")
+                    order_id = None
+                    if isinstance(order_ref, dict):
+                        order_id = str(order_ref.get("order_id") or "").strip()
+                    if order_id:
+                        try:
+                            logging.info("variant_media: using pinned order_id=%s for user=%s", order_id, user_id)
+                        except Exception:
+                            pass
+                        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+                        import httpx  # type: ignore
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            o_resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                            if o_resp.status_code == 200:
+                                order_payload = (o_resp.json() or {}).get("order") or {}
+                                line_items = order_payload.get("line_items") or []
+                                for li in line_items:
+                                    if len(items) >= 10:
+                                        break
+                                    product_id = li.get("product_id")
+                                    variant_id = li.get("variant_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    img_url = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                if image_id:
+                                                    for img in (prod.get("images") or []):
+                                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                            img_url = img.get("src")
+                                                            break
+                                                if not img_url:
+                                                    img_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if not img_url:
+                                        continue
+                                    qty = li.get("quantity")
+                                    try:
+                                        qstr = str(int(qty)) if qty is not None else ""
+                                    except Exception:
+                                        qstr = str(qty or "")
+                                    props = {}
+                                    try:
+                                        for p in (li.get("properties") or []):
+                                            n = str(p.get("name") or "").strip().lower()
+                                            v = str(p.get("value") or "").strip()
+                                            if n:
+                                                props[n] = v
+                                    except Exception:
+                                        props = {}
+                                    size = props.get("size") or props.get("المقاس") or None
+                                    color = props.get("color") or props.get("اللون") or None
+                                    if not (size and color):
+                                        vt = (li.get("variant_title") or "").strip()
+                                        if vt and "/" in vt and not (size and color):
+                                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                            if len(parts) >= 1 and not size:
+                                                size = parts[0]
+                                            if len(parts) >= 2 and not color:
+                                                color = parts[1]
+                                    lines = []
+                                    if size:
+                                        lines.append(f"المقاس: {size}")
+                                    if color:
+                                        lines.append(f"اللون: {color}")
+                                    if qstr:
+                                        lines.append(f"الكمية: {qstr}")
+                                    caption = "\n".join(lines)
+                                    items.append({"url": img_url, "caption": caption})
+                except Exception as exc:
+                    try:
+                        logging.warning("variant_media: pinned order fallback failed user=%s error=%s", user_id, exc)
+                    except Exception:
+                        pass
+            if not items:
+                try:
+                    from .shopify_integration import fetch_customer_by_phone, admin_api_base, _client_args  # type: ignore
+                    import httpx  # type: ignore
+                    cust = await fetch_customer_by_phone(user_id)
+                    last = (cust or {}).get("last_order") if isinstance(cust, dict) else None
+                    line_items = (last or {}).get("line_items") or []
+                    # line_items from fetch_customer_by_phone lacks product/variant ids, so best-effort fetch recent orders directly
+                    if not line_items:
+                        # Pull most recent order fully by phone
+                        # Use search again to get customer_id, then fetch orders with expanded line_items
+                        if cust and cust.get("customer_id"):
+                            params = {
+                                "customer_id": str(cust["customer_id"]),
+                                "status": "any",
+                                "order": "created_at desc",
+                                "limit": 1,
+                            }
+                            async with httpx.AsyncClient(timeout=12.0) as client:
+                                resp = await client.get(f"{admin_api_base()}/orders.json", params=params, **_client_args())
+                                if resp.status_code == 200:
+                                    orders = (resp.json() or {}).get("orders") or []
+                                    if orders:
+                                        line_items = (orders[0] or {}).get("line_items") or []
+                    # Build entries with image URLs and Arabic captions
+                    if line_items:
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=12.0) as client:
+                            for li in line_items:
+                                if len(items) >= 10:
+                                    break
+                                product_id = li.get("product_id")
+                                variant_id = li.get("variant_id")
+                                image_id = None
+                                if variant_id:
+                                    try:
+                                        v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                        if v_resp.status_code == 200:
+                                            variant = (v_resp.json() or {}).get("variant") or {}
+                                            image_id = variant.get("image_id")
+                                            if not product_id:
+                                                product_id = variant.get("product_id")
+                                    except Exception:
+                                        image_id = None
+                                img_url = None
+                                if product_id:
+                                    try:
+                                        p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                        if p_resp.status_code == 200:
+                                            prod = (p_resp.json() or {}).get("product") or {}
+                                            if image_id:
+                                                for img in (prod.get("images") or []):
+                                                    if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                        img_url = img.get("src")
+                                                        break
+                                            if not img_url:
+                                                img_url = (prod.get("image") or {}).get("src") or (
+                                                    (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                )
+                                    except Exception:
+                                        pass
+                                if not img_url:
+                                    continue
+                                # Arabic caption from size/color/qty if available
+                                qty = li.get("quantity")
+                                try:
+                                    qstr = str(int(qty)) if qty is not None else ""
+                                except Exception:
+                                    qstr = str(qty or "")
+                                props = {}
+                                try:
+                                    for p in (li.get("properties") or []):
+                                        n = str(p.get("name") or "").strip().lower()
+                                        v = str(p.get("value") or "").strip()
+                                        if n:
+                                            props[n] = v
+                                except Exception:
+                                    props = {}
+                                size = props.get("size") or props.get("المقاس") or None
+                                color = props.get("color") or props.get("اللون") or None
+                                if not (size and color):
+                                    vt = (li.get("variant_title") or "").strip()
+                                    if vt and "/" in vt and not (size and color):
+                                        parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                        if len(parts) >= 1 and not size:
+                                            size = parts[0]
+                                        if len(parts) >= 2 and not color:
+                                            color = parts[1]
+                                lines = []
+                                if size:
+                                    lines.append(f"المقاس: {size}")
+                                if color:
+                                    lines.append(f"اللون: {color}")
+                                if qstr:
+                                    lines.append(f"الكمية: {qstr}")
+                                caption = "\n".join(lines)
+                                items.append({"url": img_url, "caption": caption})
+                except Exception:
+                    items = []
+            if not items:
+                return
+            to = _normalize_ma_phone(user_id)
+            try:
+                logging.info("variant_media: sending %s images to=%s", len(items[:10]), to)
+            except Exception:
+                pass
+            count = 0
+            for it in items[:10]:
+                try:
+                    url = (it.get("url") or it.get("link") or "").strip()
+                    caption = str(it.get("caption") or "")
+                except Exception:
+                    continue
+                if not url:
+                    continue
+                try:
+                    await self.whatsapp_messenger.send_media_message(to=to, media_type="image", media_id_or_url=url, caption=caption)
+                    try:
+                        logging.info("variant_media: sent image ok to=%s url=%s", to, url)
+                    except Exception:
+                        pass
+                    synthetic_img = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": user_id,
+                        "message": url,
+                        "type": "image",
+                        "url": url,
+                        "caption": caption,
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    await self.db_manager.upsert_message(synthetic_img)
+                    await self.redis_manager.cache_message(user_id, synthetic_img)
+                    await self.connection_manager.send_to_user(user_id, {"type": "message_sent", "data": synthetic_img})
+                    count += 1
+                except Exception:
+                    continue
+            # Clear the cache after sending
+            try:
+                if redis_manager.redis_client:
+                    await redis_manager.redis_client.delete(key)
+            except Exception:
+                pass
+        except Exception:
+            return
+
+    async def _send_order_variants_as_catalog_items(self, user_id: str) -> None:
+        """Send order variants as interactive catalog items with captions (size/color/qty).
+        Uses pinned order_id when available, otherwise falls back to last order.
+        """
+        try:
+            # Resolve phone and uid
+            to = _normalize_ma_phone(user_id)
+            uid = _normalize_user_id(to)
+            # Try pinned order first
+            order_id = None
+            try:
+                ref = await redis_manager.get_json(f"pending_variant_order:{uid}")
+                if isinstance(ref, dict) and ref.get("order_id"):
+                    order_id = str(ref.get("order_id")).strip()
+            except Exception:
+                order_id = None
+            from .shopify_integration import admin_api_base, _client_args, fetch_customer_by_phone  # type: ignore
+            import httpx  # type: ignore
+            base = admin_api_base()
+            line_items = []
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                if order_id:
+                    resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                    if resp.status_code == 200:
+                        order_payload = (resp.json() or {}).get("order") or {}
+                        line_items = order_payload.get("line_items") or []
+                if not line_items:
+                    cust = await fetch_customer_by_phone(uid)
+                    if cust and cust.get("last_order"):
+                        # Pull full order by parsing name if possible not supported; fallback to list orders
+                        params = {
+                            "customer_id": cust.get("customer_id"),
+                            "status": "any",
+                            "order": "created_at desc",
+                            "limit": 1,
+                        }
+                        r = await client.get(f"{base}/orders.json", params=params, **_client_args())
+                        if r.status_code == 200:
+                            orders = (r.json() or {}).get("orders") or []
+                            if orders:
+                                line_items = (orders[0] or {}).get("line_items") or []
+            if not line_items:
+                return
+            sent = 0
+            for li in line_items:
+                if sent >= 10:
+                    break
+                variant_id = li.get("variant_id")
+                if not variant_id:
+                    continue
+                # Build Arabic caption
+                qty = li.get("quantity")
+                try:
+                    qstr = str(int(qty)) if qty is not None else ""
+                except Exception:
+                    qstr = str(qty or "")
+                props = {}
+                try:
+                    for p in (li.get("properties") or []):
+                        n = str(p.get("name") or "").strip().lower()
+                        v = str(p.get("value") or "").strip()
+                        if n:
+                            props[n] = v
+                except Exception:
+                    props = {}
+                size = props.get("size") or props.get("المقاس") or None
+                color = props.get("color") or props.get("اللون") or None
+                if not (size and color):
+                    vt = (li.get("variant_title") or "").strip()
+                    if vt and "/" in vt and not (size and color):
+                        parts = [s.strip() for s in vt.split("/") if s.strip()]
+                        if len(parts) >= 1 and not size:
+                            size = parts[0]
+                        if len(parts) >= 2 and not color:
+                            color = parts[1]
+                lines = []
+                if size:
+                    lines.append(f"المقاس: {size}")
+                if color:
+                    lines.append(f"اللون: {color}")
+                if qstr:
+                    lines.append(f"الكمية: {qstr}")
+                caption = "\n".join(lines)
+                try:
+                    res = await self.whatsapp_messenger.send_single_catalog_item(to, str(variant_id), caption)
+                    # Build synthetic interactive entry for UI
+                    synthetic = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": uid,
+                        "type": "catalog_item",
+                        "product_retailer_id": str(variant_id),
+                        "caption": caption,
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    # attach WA id if present
+                    try:
+                        arr = (res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            synthetic["wa_message_id"] = str((arr[0] or {}).get("id") or "")
+                            synthetic["status"] = "sent"
+                    except Exception:
+                        pass
+                    await self.db_manager.upsert_message(synthetic)
+                    await self.redis_manager.cache_message(uid, synthetic)
+                    await self.connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
+                    sent += 1
+                    await asyncio.sleep(0.2)
+                except Exception:
+                    continue
+        except Exception:
+            return
 
     async def _download_media(self, media_id: str, media_type: str) -> tuple[str, str]:
         """Download media from WhatsApp and upload it to Google Cloud Storage.
@@ -4287,6 +5029,24 @@ async def webhook(request: Request):
                 data = await request.json()
         except Exception:
             return PlainTextResponse("Bad Request", status_code=400)
+        # Early filter by phone_number_id BEFORE verbose logging to avoid noisy logs
+        try:
+            value = (data.get("entry") or [{}])[0].get("changes", [{}])[0].get("value") or {}
+            meta = value.get("metadata") or {}
+            incoming_phone_id = str(meta.get("phone_number_id") or "")
+            configured_phone_id = str(PHONE_NUMBER_ID or "")
+            if (
+                incoming_phone_id
+                and configured_phone_id
+                and configured_phone_id != "your_phone_number_id"
+                and incoming_phone_id != configured_phone_id
+            ):
+                _vlog(
+                    f"⏭️ Skipping webhook for phone_number_id {incoming_phone_id} (configured {configured_phone_id})"
+                )
+                return {"ok": True}
+        except Exception:
+            pass
         _vlog("📥 Incoming Webhook Payload:")
         _vlog(json.dumps(data, indent=2))
 
@@ -4626,7 +5386,642 @@ async def log_order_created(payload: dict = Body(...)):
     if not order_id:
         raise HTTPException(status_code=400, detail="order_id is required")
     await db_manager.log_order_created(order_id=order_id, user_id=user_id, agent_username=agent)
+    # Kick off order confirmation flow in background (only for test number gate)
+    try:
+        asyncio.create_task(_run_order_confirmation_flow(order_id))
+    except Exception:
+        pass
     return {"ok": True}
+
+# ---------- Order Confirmation Flow (Test number only) ----------
+
+async def _fetch_order_phone(order_id: str) -> str:
+    """Fetch customer's phone from Shopify order."""
+    try:
+        # Lazy import to avoid hard dependency if Shopify not configured
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        url = f"{admin_api_base()}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return ""
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            # Prefer shipping address phone, fallback to customer or billing
+            phone = (
+                (order.get("shipping_address") or {}).get("phone")
+                or (order.get("billing_address") or {}).get("phone")
+                or (order.get("customer") or {}).get("phone")
+                or order.get("phone")
+                or ""
+            )
+            return str(phone or "").strip()
+    except Exception:
+        return ""
+
+async def _add_order_tag(order_id: str, tag: str) -> None:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            # Get current tags
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            current_tags = order.get("tags") or ""
+            tags = [t.strip() for t in str(current_tags).split(",") if t and t.strip()]
+            if tag not in tags:
+                tags.append(tag)
+            payload = {"order": {"id": order_id, "tags": ", ".join(tags)}}
+            await client.put(url, json=payload, **_client_args())
+    except Exception:
+        return
+
+def _normalize_ma_phone(phone: str) -> str:
+    """Normalize Moroccan phone to E.164 (+212...)."""
+    try:
+        s = "".join([ch for ch in str(phone or "") if ch.isdigit() or ch == "+"]) or ""
+        if not s:
+            return ""
+        # If already e164
+        if s.startswith("+"):
+            # Fix common mistake: "+2120XXXXXXXX" -> "+212XXXXXXXX"
+            try:
+                if s.startswith("+2120") and len(s) >= 5:
+                    return "+212" + s[5:]
+            except Exception:
+                pass
+            return s
+        # Strip all non-digits, then normalize
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if digits.startswith("212"):
+            return "+" + digits
+        if digits.startswith("0"):
+            digits = digits[1:]
+        # Assume Morocco default
+        return "+212" + digits
+    except Exception:
+        return ""
+
+async def _run_order_confirmation_flow(
+    order_id: str,
+    template_name_override: Optional[str] = None,
+    template_lang_override: Optional[str] = None,
+    components_override: list | None = None,
+    raw_phone_override: Optional[str] = None,
+    extra_image_links: Optional[list[str]] = None,
+    audio_url_override: Optional[str] = None,
+) -> None:
+    """Run order confirmation flow for allowed numbers, with node logs in Redis."""
+    TEST_NUMBER_RAW = "0618182056"
+    try:
+        # Node log structure helper
+        flow_key = f"flow_run:order_confirm:{order_id}"
+        nodes: list[dict] = []
+
+        def log_node(name: str, input_data: dict | None = None, output: dict | None = None, status: str = "ok", error: str | None = None):
+            nodes.append({
+                "name": name,
+                "status": status,
+                "input": input_data or {},
+                "output": output or {},
+                **({"error": error} if error else {}),
+                "ts": datetime.utcnow().isoformat(),
+            })
+
+        # Trigger: fetch order phone (or use override from webhook)
+        raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
+        log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
+
+        # Gate: only proceed if phone matches allowed numbers (env + defaults)
+        raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
+        candidates: list[str] = []
+        # include legacy test number
+        try:
+            gate_digits = "".join(ch for ch in TEST_NUMBER_RAW if ch.isdigit())
+            gate_no0 = gate_digits[1:] if gate_digits.startswith("0") else gate_digits
+            gate_e164 = ("212" + gate_no0) if not gate_digits.startswith("212") else gate_digits
+            candidates.extend([gate_digits, gate_no0, gate_e164])
+        except Exception:
+            pass
+        for n in list(ORDER_CONFIRM_ALLOWED_NUMBERS or set()):
+            try:
+                d = "".join(ch for ch in str(n) if ch.isdigit())
+                if not d:
+                    continue
+                candidates.append(d)
+                if d.startswith("0"):
+                    candidates.append(d[1:])
+                if not d.startswith("212"):
+                    no0 = d[1:] if d.startswith("0") else d
+                    candidates.append("212" + no0)
+            except Exception:
+                continue
+        # Env override: allow all numbers
+        if ORDER_CONFIRM_ALLOW_ALL:
+            allowed = True
+        else:
+            allowed = any(raw_digits.endswith(c) for c in candidates if c)
+        log_node(
+            "gate:allowed_numbers",
+            {"raw_digits": raw_digits, "candidates": candidates},
+            {"allowed": allowed},
+        )
+        try:
+            logging.info("order_confirm flow: order_id=%s gate_allowed=%s phone_raw=%s", order_id, allowed, str(raw_phone))
+        except Exception:
+            pass
+        if not allowed:
+            # Store nodes and return
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+        # Test-gate mode controls whether to skip WA contact checks; disable when allowing all
+        is_test_gate = not ORDER_CONFIRM_ALLOW_ALL
+
+        # Normalize phone
+        phone_e164 = _normalize_ma_phone(raw_phone)
+        log_node("normalize_phone", {"raw": raw_phone}, {"e164": phone_e164})
+        if not phone_e164:
+            log_node("normalize_phone", {"raw": raw_phone}, status="error", error="Empty normalized phone")
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
+        # Check WhatsApp availability (skip for test gate to allow direct send attempt)
+        has_wa = True
+        if not is_test_gate:
+            try:
+                contact_res = await messenger.check_whatsapp_contact(phone_e164)
+                entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
+                wa_status = (entry.get("status") or "").lower()
+                has_wa = wa_status == "valid" and bool(entry.get("wa_id"))
+                log_node("check_whatsapp", {"to": phone_e164}, {"status": wa_status, "has_wa": has_wa})
+            except Exception as exc:
+                log_node("check_whatsapp", {"to": phone_e164}, status="error", error=str(exc))
+                await _persist_flow_nodes(flow_key, nodes)
+                return
+
+            # Tag and return if no WhatsApp
+            if not has_wa:
+                await _add_order_tag(order_id, "no_wtp")
+                log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
+                await _persist_flow_nodes(flow_key, nodes)
+                return
+        else:
+            log_node("check_whatsapp", {"to": phone_e164, "skipped": True}, {"has_wa": True})
+
+        # Send order confirmation template
+        # Allow per-call overrides; else read from DB config; else env vars
+        cfg_name = None
+        cfg_lang = None
+        cfg_components = None
+        try:
+            cfg_raw = await db_manager.get_setting("order_confirm:template_config")
+            if cfg_raw:
+                cfg = json.loads(cfg_raw)
+                cfg_name = (cfg or {}).get("template_name")
+                cfg_lang = (cfg or {}).get("language")
+                cfg_components = (cfg or {}).get("components")
+        except Exception:
+            pass
+
+        template_name = template_name_override or cfg_name or os.getenv("ORDER_CONFIRM_TEMPLATE_NAME", "order_confirmed")
+        template_lang = template_lang_override or cfg_lang or os.getenv("ORDER_CONFIRM_TEMPLATE_LANG", "en")
+        components = components_override if components_override is not None else cfg_components
+        if components is None:
+            components_env = os.getenv("ORDER_CONFIRM_TEMPLATE_COMPONENTS", "")
+            try:
+                if components_env:
+                    components = json.loads(components_env)
+            except Exception:
+                components = None
+        try:
+            send_res = await messenger.send_template_message(
+                to=phone_e164,
+                template_name=template_name,
+                language=template_lang,
+                components=components,
+            )
+            # Detect Graph API errors and branch accordingly
+            if isinstance(send_res, dict) and send_res.get("error"):
+                log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, status="error", error=str(send_res.get("error")))
+                try:
+                    logging.info("order_confirm flow: template error order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
+                except Exception:
+                    pass
+            else:
+                log_node("send_template", {"to": phone_e164, "template": template_name, "language": template_lang}, {"response": send_res})
+                try:
+                    logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
+                except Exception:
+                    pass
+                await _add_order_tag(order_id, "ok_wtp")
+                log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
+                try:
+                    uid = _normalize_user_id(phone_e164)
+                    await db_manager.upsert_user(uid)
+                    # Extract WhatsApp message id if present in response
+                    wa_id = None
+                    try:
+                        arr = (send_res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                    except Exception:
+                        wa_id = None
+                    # Extract header media link from components if any
+                    header_link = ""
+                    body_params: list[str] = []
+                    try:
+                        for comp in (components or []):
+                            t = str((comp or {}).get("type") or "").upper()
+                            if t == "HEADER":
+                                params = (comp or {}).get("parameters") or []
+                                if params and isinstance(params, list):
+                                    p0 = params[0] or {}
+                                    # handle image/video/document
+                                    for k in ("image", "video", "document"):
+                                        if k in p0 and isinstance(p0[k], dict):
+                                            header_link = str((p0[k] or {}).get("link") or "")
+                                            break
+                            if t == "BODY":
+                                for p in ((comp or {}).get("parameters") or []):
+                                    if isinstance(p, dict) and p.get("type") == "text":
+                                        body_params.append(str(p.get("text") or ""))
+                    except Exception:
+                        header_link = header_link or ""
+                    synthetic = {
+                        "temp_id": f"temp_{uuid.uuid4().hex}",
+                        "user_id": uid,
+                        "message": f"[Template] {template_name}",
+                        "type": "template",
+                        "from_me": 1,
+                        "timestamp": datetime.utcnow().isoformat(),
+                        **({"wa_message_id": wa_id} if wa_id else {}),
+                        "status": "sent",
+                        "template": {
+                            "name": template_name,
+                            "language": template_lang,
+                            "components": components or [],
+                        },
+                        **({"template_header_link": header_link} if header_link else {}),
+                        **({"template_body_params": body_params} if body_params else {}),
+                    }
+                    await db_manager.upsert_message(synthetic)
+                    await redis_manager.cache_message(uid, synthetic)
+                    await connection_manager.send_to_user(uid, {"type": "message_sent", "data": synthetic})
+                except Exception:
+                    pass
+            # Cache extra variant images (do not send yet). They will be sent on confirm.
+            try:
+                uid = _normalize_user_id(phone_e164)
+                items: list[dict] = []
+                if isinstance(extra_image_links, list):
+                    for link in extra_image_links[:10]:
+                        try:
+                            if isinstance(link, dict):
+                                url = link.get("url") or link.get("link") or ""
+                                cap = str(link.get("caption") or "")
+                            else:
+                                url = str(link)
+                                cap = ""
+                            if not url:
+                                continue
+                            items.append({"url": url, "caption": cap})
+                        except Exception:
+                            continue
+                if items:
+                    await redis_manager.set_json(f"pending_variant_media:{uid}", {"items": items, "ts": datetime.utcnow().isoformat()}, ttl=3 * 24 * 3600)
+                    log_node("cache_variant_media", {"uid": uid, "count": len(items)}, {"cached": True})
+                # Also store order id for stronger fallback resolution
+                try:
+                    await redis_manager.set_json(
+                        f"pending_variant_order:{uid}",
+                        {"order_id": str(order_id), "ts": datetime.utcnow().isoformat()},
+                        ttl=3 * 24 * 3600,
+                    )
+                except Exception:
+                    pass
+                # If we still have nothing cached, build from the specific Shopify order line items
+                if not items:
+                    try:
+                        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+                        import httpx  # type: ignore
+                        base = admin_api_base()
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            o_resp = await client.get(f"{base}/orders/{order_id}.json", **_client_args())
+                            if o_resp.status_code == 200:
+                                order_payload = (o_resp.json() or {}).get("order") or {}
+                                line_items = order_payload.get("line_items") or []
+                                entries: list[dict] = []
+                                for li in line_items:
+                                    if len(entries) >= 10:
+                                        break
+                                    product_id = li.get("product_id")
+                                    variant_id = li.get("variant_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    img_url = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                if image_id:
+                                                    for img in (prod.get("images") or []):
+                                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                            img_url = img.get("src")
+                                                            break
+                                                if not img_url:
+                                                    img_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if not img_url:
+                                        continue
+                                    # Caption in Arabic: size, color, quantity
+                                    qty = li.get("quantity")
+                                    try:
+                                        qstr = str(int(qty)) if qty is not None else ""
+                                    except Exception:
+                                        qstr = str(qty or "")
+                                    props = {}
+                                    try:
+                                        for p in (li.get("properties") or []):
+                                            n = str(p.get("name") or "").strip().lower()
+                                            v = str(p.get("value") or "").strip()
+                                            if n:
+                                                props[n] = v
+                                    except Exception:
+                                        props = {}
+                                    size = props.get("size") or props.get("المقاس") or None
+                                    color = props.get("color") or props.get("اللون") or None
+                                    if not (size and color):
+                                        vt = (li.get("variant_title") or "").strip()
+                                        if vt and "/" in vt and not (size and color):
+                                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                                            if len(parts) >= 1 and not size:
+                                                size = parts[0]
+                                            if len(parts) >= 2 and not color:
+                                                color = parts[1]
+                                    lines = []
+                                    if size:
+                                        lines.append(f"المقاس: {size}")
+                                    if color:
+                                        lines.append(f"اللون: {color}")
+                                    if qstr:
+                                        lines.append(f"الكمية: {qstr}")
+                                    caption = "\n".join(lines)
+                                    entries.append({"url": img_url, "caption": caption})
+                                if entries:
+                                    await redis_manager.set_json(
+                                        f"pending_variant_media:{uid}",
+                                        {"items": entries, "ts": datetime.utcnow().isoformat()},
+                                        ttl=3 * 24 * 3600,
+                                    )
+                                    log_node("cache_variant_media_from_order", {"uid": uid, "count": len(entries)}, {"cached": True})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as exc:
+            log_node("send_template", {"to": phone_e164, "template": template_name}, status="error", error=str(exc))
+            try:
+                logging.warning("order_confirm flow: send template failed order_id=%s error=%s", order_id, str(exc))
+            except Exception:
+                pass
+            # In test mode, reflect failure with no_wtp tag to keep visibility in admin
+            if is_test_gate:
+                try:
+                    await _add_order_tag(order_id, "no_wtp")
+                    log_node("tag:no_wtp", {"order_id": order_id}, {"tagged": True})
+                except Exception:
+                    pass
+
+        # Optional: send audio (test/demo)
+        try:
+            audio_url = audio_url_override or os.getenv("ORDER_CONFIRM_AUDIO_URL", "")
+            if audio_url:
+                try:
+                    await messenger.send_media_message(to=phone_e164, media_type="audio", media_id_or_url=str(audio_url))
+                    log_node("send_audio", {"to": phone_e164, "url": audio_url}, {"ok": True})
+                except Exception as exc:
+                    log_node("send_audio", {"to": phone_e164, "url": audio_url}, status="error", error=str(exc))
+        except Exception:
+            pass
+
+        # Persist all nodes
+        await _persist_flow_nodes(flow_key, nodes)
+    except Exception as exc:
+        try:
+            # Best-effort log outer error
+            flow_key = f"flow_run:order_confirm:{order_id}"
+            await _persist_flow_nodes(flow_key, [{"name": "flow:error", "status": "error", "error": str(exc), "ts": datetime.utcnow().isoformat()}])
+        except Exception:
+            pass
+
+async def _persist_flow_nodes(flow_key: str, nodes: list[dict]):
+    try:
+        if redis_manager.redis_client:
+            await redis_manager.redis_client.setex(flow_key, 24 * 3600, json.dumps({"nodes": nodes}))
+            # Also push to recent list
+            await redis_manager.redis_client.lpush("flow_run:order_confirm:list", flow_key)
+            await redis_manager.redis_client.ltrim("flow_run:order_confirm:list", 0, 49)
+        # Persist a bounded history in DB settings for long-term preview
+        try:
+            order_id = str(flow_key.split(":")[-1]) if flow_key else ""
+            summarized_status = (nodes[-1].get("status") if nodes else None) or "ok"
+            summarized_name = (nodes[-1].get("name") if nodes else None) or ""
+            history_key = "order_confirm:runs"
+            raw = await db_manager.get_setting(history_key)
+            arr = []
+            try:
+                arr = json.loads(raw) if raw else []
+                if not isinstance(arr, list):
+                    arr = []
+            except Exception:
+                arr = []
+            entry = {
+                "order_id": order_id,
+                "flow_key": flow_key,
+                "ts": datetime.utcnow().isoformat(),
+                "last": {"name": summarized_name, "status": summarized_status},
+            }
+            # Drop previous entry for same order_id to avoid duplicates
+            arr = [e for e in arr if str(e.get("order_id")) != order_id]
+            arr.insert(0, entry)
+            # Cap history size
+            arr = arr[:200]
+            await db_manager.set_setting(history_key, arr)
+            # Persist full run under a dedicated key too
+            try:
+                await db_manager.set_setting(f"order_confirm:run:{order_id}", {"nodes": nodes})
+            except Exception:
+                pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+@app.get("/flows/order-confirmation/last")
+async def get_last_order_confirmation_runs(limit: int = 20):
+    try:
+        if not redis_manager.redis_client:
+            return []
+        keys = await redis_manager.redis_client.lrange("flow_run:order_confirm:list", 0, max(0, int(limit) - 1))
+        out: list[dict] = []
+        for k in keys:
+            key = k.decode() if isinstance(k, (bytes, bytearray)) else str(k)
+            raw = await redis_manager.redis_client.get(key)
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+                out.append({"key": key, "summary": (parsed.get("nodes") or [])[-1] if parsed else {}})
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+@app.get("/flows/order-confirmation/{order_id}")
+async def get_order_confirmation_run(order_id: str):
+    try:
+        if not redis_manager.redis_client:
+            # Fallback to DB settings
+            try:
+                raw = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw) if raw else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
+        key = f"flow_run:order_confirm:{order_id}"
+        raw = await redis_manager.redis_client.get(key)
+        if not raw:
+            # Fallback to DB settings
+            try:
+                raw2 = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw2) if raw2 else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
+        try:
+            return json.loads(raw)
+        except Exception:
+            # Fallback to DB settings
+            try:
+                raw2 = await db_manager.get_setting(f"order_confirm:run:{order_id}")
+                return json.loads(raw2) if raw2 else {"nodes": []}
+            except Exception:
+                return {"nodes": []}
+    except Exception:
+        return {"nodes": []}
+
+@app.get("/flows/order-confirmation/history")
+async def get_order_confirmation_history(limit: int = 50):
+    try:
+        raw = await db_manager.get_setting("order_confirm:runs")
+        arr = []
+        try:
+            arr = json.loads(raw) if raw else []
+            if not isinstance(arr, list):
+                arr = []
+        except Exception:
+            arr = []
+        return arr[: max(1, min(int(limit), 200))]
+    except Exception:
+        return []
+
+@app.post("/flows/order-confirmation/test-run")
+async def start_order_confirmation_test_run(
+    order_id: str = Body("", embed=True),
+    phone: str | None = Body(None, embed=True),
+    template_name: str | None = Body(None, embed=True),
+    language: str | None = Body(None, embed=True),
+    components: list | None = Body(None, embed=True),
+    extra_image_links: list[str] | None = Body(None, embed=True),
+    audio_url: str | None = Body(None, embed=True),
+):
+    """Trigger a background test run of the order-confirmation flow.
+
+    If `phone` is provided, it overrides the Shopify fetch and will be used as the raw phone.
+    """
+    try:
+        if not order_id:
+            raise HTTPException(status_code=400, detail="order_id is required")
+        asyncio.create_task(
+            _run_order_confirmation_flow(
+                order_id=order_id,
+                template_name_override=template_name,
+                template_lang_override=language,
+                components_override=components,
+                raw_phone_override=phone,
+                extra_image_links=extra_image_links,
+                audio_url_override=audio_url,
+            )
+        )
+        return {"ok": True, "queued": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start test run: {exc}")
+
+@app.get("/flows/order-confirmation/template-config")
+async def get_order_confirm_template_config():
+    try:
+        raw = await db_manager.get_setting("order_confirm:template_config")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+@app.post("/flows/order-confirmation/template-config")
+async def set_order_confirm_template_config(payload: dict = Body(...)):
+    try:
+        name = (payload.get("template_name") or "").strip()
+        language = (payload.get("language") or "en").strip()
+        components = payload.get("components") or None
+        cfg = {"template_name": name, "language": language}
+        if components is not None:
+            cfg["components"] = components
+        await db_manager.set_setting("order_confirm:template_config", cfg)
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save template config: {exc}")
+
+@app.post("/shopify/webhooks/orders/create")
+async def shopify_orders_create_webhook(payload: dict = Body(...)):
+    try:
+        # Shopify may post full order JSON
+        order = payload.get("order") or payload
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        if not order_id:
+            raise HTTPException(status_code=400, detail="order id missing")
+        # Try to get a phone from payload as early input
+        phone = (
+            (order.get("shipping_address") or {}).get("phone")
+            or (order.get("billing_address") or {}).get("phone")
+            or (order.get("customer") or {}).get("phone")
+            or order.get("phone")
+            or None
+        )
+        asyncio.create_task(_run_order_confirmation_flow(order_id=order_id, raw_phone_override=phone))
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Webhook failed: {exc}")
 
 @app.get("/messages/{user_id}")
 async def get_messages_endpoint(user_id: str, offset: int = 0, limit: int = 50, since: str | None = None, before: str | None = None):
@@ -5502,6 +6897,10 @@ async def get_waba_id() -> Optional[str]:
     try:
         if _WABA_ID_CACHE:
             return _WABA_ID_CACHE
+        # Allow explicit override via environment
+        if WABA_ID_ENV and isinstance(WABA_ID_ENV, str) and WABA_ID_ENV.strip():
+            _WABA_ID_CACHE = WABA_ID_ENV.strip()
+            return _WABA_ID_CACHE
         if not PHONE_NUMBER_ID or PHONE_NUMBER_ID == "your_phone_number_id":
             return None
         url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{PHONE_NUMBER_ID}"
@@ -5533,7 +6932,7 @@ async def list_whatsapp_templates():
 
         url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{waba_id}/message_templates"
         params = {
-            "fields": "name,status,category,language,quality_score",
+            "fields": "name,status,category,language,quality_score,components",
             "limit": 100,
         }
         headers = await get_whatsapp_headers()
@@ -5553,6 +6952,7 @@ async def list_whatsapp_templates():
                             "language": t.get("language"),
                             "category": t.get("category"),
                             "quality_score": (t.get("quality_score") or {}).get("score"),
+                            "components": t.get("components") or [],
                         })
                     except Exception:
                         continue
@@ -5565,6 +6965,75 @@ async def list_whatsapp_templates():
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch templates: {exc}")
+
+@app.get("/whatsapp/config")
+async def whatsapp_config():
+    """Diagnostic endpoint to inspect WhatsApp env/config detection (non-sensitive)."""
+    try:
+        detected_waba = await get_waba_id()
+        return {
+            "has_access_token": bool(ACCESS_TOKEN and ACCESS_TOKEN != "your_access_token_here"),
+            "phone_number_id_set": bool(PHONE_NUMBER_ID and PHONE_NUMBER_ID != "your_phone_number_id"),
+            "waba_env_present": bool(WABA_ID_ENV),
+            "resolved_waba_id": detected_waba or None,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+# ---------------- Automations storage (simple key/value) -----------------
+
+AUTOMATIONS_KEY = "automations:list"
+
+@app.get("/automations")
+async def list_automations():
+    try:
+        raw = await db_manager.get_setting(AUTOMATIONS_KEY)
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+@app.post("/automations")
+async def save_automations(payload: list[dict] = Body(...)):
+    try:
+        await db_manager.set_setting(AUTOMATIONS_KEY, payload or [])
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save automations: {exc}")
+
+@app.post("/whatsapp/send-template")
+async def send_whatsapp_template(
+    to: str = Body(..., embed=True),
+    template_name: str = Body(..., embed=True),
+    language: str = Body("en", embed=True),
+    components: list | None = Body(None, embed=True),
+):
+    """Send a WhatsApp template with full components to a phone (E.164 or raw).
+
+    Body: { to, template_name, language, components }
+    """
+    try:
+        # Normalize if raw digits provided
+        norm = to
+        if isinstance(to, str) and to and not to.startswith("+"):
+            try:
+                digits = "".join(ch for ch in to if ch.isdigit())
+                if digits.startswith("212"):
+                    norm = "+" + digits
+                elif digits.startswith("0"):
+                    norm = "+212" + digits[1:]
+                else:
+                    norm = "+" + digits
+            except Exception:
+                norm = to
+        res = await messenger.send_template_message(
+            to=norm,
+            template_name=template_name,
+            language=language or "en",
+            components=components,
+        )
+        return {"ok": True, "response": res}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Send template failed: {exc}")
 
 class CatalogManager:
     # Simple in-memory cache for set products to speed up responses

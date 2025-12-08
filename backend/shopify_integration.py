@@ -1,7 +1,12 @@
 import httpx
 import logging
 import os
-from fastapi import APIRouter, Body, Query, HTTPException
+import asyncio
+import hmac
+import hashlib
+import base64
+import json
+from fastapi import APIRouter, Body, Query, HTTPException, Request
 
 # ================= CONFIG ==================
 
@@ -83,12 +88,57 @@ def normalize_phone(phone):
         return ""
     phone = str(phone).replace(" ", "").replace("-", "")
     if phone.startswith("+"):
+        # Fix common mistake: +2120XXXXXXXX -> +212XXXXXXXX (remove national trunk '0')
+        try:
+            if phone.startswith("+2120") and len(phone) >= 5:
+                return "+212" + phone[5:]
+        except Exception:
+            pass
         return phone
     if len(phone) == 12 and phone.startswith("212"):
         return "+" + phone
     if len(phone) == 10 and phone.startswith("06"):
         return "+212" + phone[1:]
     return phone
+
+def format_phone_for_template_display(phone: str) -> str:
+    """Format phone for template placeholder:
+    - Morocco (+212...): display as 0XXXXXXXXX (national format, no country code)
+    - Non-Morocco: display with +<country><number>
+    """
+    try:
+        s = "".join(ch for ch in str(phone or "") if ch.isdigit() or ch == "+")
+        if not s:
+            return "-"
+        # Normalize +2120XXXX to +212XXXX for consistency
+        if s.startswith("+2120"):
+            s = "+212" + s[5:]
+        # If E.164 Morocco
+        if s.startswith("+212"):
+            local = "".join(ch for ch in s if ch.isdigit())[3:]
+            if not local:
+                return "-"
+            # Ensure single leading 0 in display
+            if not local.startswith("0"):
+                return "0" + local
+            return local
+        # Raw digits path
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if digits.startswith("212"):
+            local = digits[3:]
+            return ("0" + local) if not local.startswith("0") else local
+        if digits.startswith("0") and len(digits) >= 9:
+            # Already in national form
+            return digits
+        # Likely missing trunk 0 for MA mobile (9 digits starting with 6/7)
+        if len(digits) == 9 and digits[0] in ("5","6","7","8","9"):
+            return "0" + digits
+        # Non-Morocco: return E.164 style
+        if s.startswith("+"):
+            return s
+        return "+" + digits if digits else "-"
+    except Exception:
+        return str(phone or "-")
 
 def _split_name(full_name: str) -> tuple[str, str]:
     full = (full_name or "").strip()
@@ -417,6 +467,378 @@ async def shopify_orders(customer_id: str, limit: int = 50):
                 "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
             })
         return simplified
+
+# =============== WEBHOOK: ORDERS CREATE ===============
+@router.post("/shopify/webhooks/orders/create")
+async def shopify_orders_create_webhook(request: Request):
+    """Receive Shopify Orders Create webhook and trigger order confirmation flow.
+
+    Verifies HMAC when SHOPIFY_WEBHOOK_SECRET (or IRRAKIDS_WEBHOOK_SECRET/IRRANOVA_WEBHOOK_SECRET) is set.
+    """
+    try:
+        body_bytes = await request.body()
+        # Verify HMAC if secret provided
+        secret = (
+            os.getenv("SHOPIFY_WEBHOOK_SECRET")
+            or os.getenv("IRRAKIDS_WEBHOOK_SECRET")
+            or os.getenv("IRRANOVA_WEBHOOK_SECRET")
+        )
+        if secret:
+            provided_hmac = request.headers.get("X-Shopify-Hmac-Sha256", "")
+            digest = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).digest()
+            computed = base64.b64encode(digest).decode()
+            if not provided_hmac or not hmac.compare_digest(provided_hmac, computed):
+                logging.getLogger(__name__).warning("Shopify webhook HMAC verification failed")
+                from fastapi.responses import PlainTextResponse
+                return PlainTextResponse("Unauthorized", status_code=401)
+
+        # Parse payload
+        try:
+            payload = json.loads(body_bytes.decode("utf-8") or "{}")
+        except Exception:
+            payload = {}
+
+        # Orders/Create webhook sends the order object at the root
+        order = payload if payload.get("id") else (payload.get("order") or {})
+        order_id = order.get("id")
+
+        # Try to extract phone directly from webhook payload to avoid re-fetching
+        raw_phone = (
+            ((order.get("shipping_address") or {}).get("phone"))
+            or ((order.get("billing_address") or {}).get("phone"))
+            or ((order.get("customer") or {}).get("phone"))
+            or order.get("phone")
+        )
+
+        logging.getLogger(__name__).info(
+            "order_confirm webhook: order_id=%s raw_phone=%s", str(order_id or ""), str(raw_phone or "")
+        )
+
+        # Build default body components (7 params) matching template placeholders
+        # 1) customer name, 2) order number, 3) phone, 4) city, 5) address, 6) items summary, 7) total
+        components_override = None
+        try:
+            body_params: list[str] = []
+            shipping = (order.get("shipping_address") or {})
+            billing = (order.get("billing_address") or {})
+            customer = (order.get("customer") or {})
+            customer_name = (
+                shipping.get("name")
+                or f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
+                or f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip()
+                or "-"
+            )
+            order_number = str(order.get("name") or order.get("order_number") or order_id or "-")
+            total_str = str(order.get("total_price") or "").strip()
+            currency = str(order.get("currency") or "").strip()
+            if not total_str:
+                total_with_currency = "-"
+            else:
+                s = total_str
+                if currency:
+                    # Avoid duplicating the currency if already present (case-insensitive)
+                    if currency.lower() in s.lower():
+                        total_with_currency = s
+                    else:
+                        total_with_currency = f"{s} {currency}"
+                else:
+                    total_with_currency = s
+            city = str(shipping.get("city") or billing.get("city") or "-")
+            address1 = str(shipping.get("address1") or billing.get("address1") or "-")
+            # phone
+            phone_val = (
+                (shipping.get("phone") if isinstance(shipping.get("phone"), str) else None)
+                or (billing.get("phone") if isinstance(billing.get("phone"), str) else None)
+                or (customer.get("phone") if isinstance(customer.get("phone"), str) else None)
+                or (order.get("phone") if isinstance(order.get("phone"), str) else None)
+                or str(raw_phone or "-")
+            )
+            # items summary: only quantity, size, and color (no product title), e.g. "1x 25 blue + 3x 21 brown"
+            items = order.get("line_items") or []
+            try:
+                fragments = []
+                for li in items:
+                    qty = li.get("quantity")
+                    try:
+                        qstr = str(int(qty)) if qty is not None else ""
+                    except Exception:
+                        qstr = str(qty or "")
+                    # Extract size/color from properties or variant_title
+                    props = {}
+                    try:
+                        for p in (li.get("properties") or []):
+                            n = str(p.get("name") or "").strip().lower()
+                            v = str(p.get("value") or "").strip()
+                            if n:
+                                props[n] = v
+                    except Exception:
+                        props = {}
+                    size = props.get("size") or props.get("المقاس") or None
+                    color = props.get("color") or props.get("اللون") or None
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            if len(parts) >= 1 and not size:
+                                size = parts[0]
+                            if len(parts) >= 2 and not color:
+                                color = parts[1]
+                    # Compose fragment: "Qx SIZE COLOR" (omit missing fields)
+                    parts_out = []
+                    if qstr:
+                        parts_out.append(f"{qstr}x")
+                    if size:
+                        parts_out.append(str(size))
+                    if color:
+                        parts_out.append(str(color))
+                    frag = " ".join(p for p in parts_out if p)
+                    if frag:
+                        fragments.append(frag)
+                # Join fragments with ' + ' and sanitize later
+                items_summary = " + ".join(fragments) or "-"
+            except Exception:
+                items_summary = "-"
+
+            # Fill exactly 7 params to satisfy template placeholders in this exact order:
+            # 1 customer name, 2 order number, 3 items titles, 4 total, 5 city, 6 address, 7 phone
+            body_params = [
+                customer_name,
+                order_number,
+                items_summary,
+                total_with_currency,
+                city,
+                address1,
+                format_phone_for_template_display(phone_val),
+            ]
+            components_override = []
+            # Header IMAGE param: prefer order note_attributes.image_url, else env ORDER_CONFIRM_HEADER_IMAGE_URL
+            try:
+                header_url = None
+                note_attrs = order.get("note_attributes") or []
+                if isinstance(note_attrs, list):
+                    for na in note_attrs:
+                        try:
+                            if str(na.get("name")).lower() == "image_url" and na.get("value"):
+                                header_url = str(na.get("value"))
+                                break
+                        except Exception:
+                            continue
+                if not header_url:
+                    header_url = os.getenv("ORDER_CONFIRM_HEADER_IMAGE_URL")
+                # If still not set, try deriving from first line item's variant image (best-effort)
+                if not header_url:
+                    try:
+                        items = order.get("line_items") or []
+                        if items:
+                            base = admin_api_base()
+                            async with httpx.AsyncClient(timeout=12.0) as client:
+                                for li in items:
+                                    variant_id = li.get("variant_id")
+                                    product_id = li.get("product_id")
+                                    image_id = None
+                                    if variant_id:
+                                        try:
+                                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                                            if v_resp.status_code == 200:
+                                                variant = (v_resp.json() or {}).get("variant") or {}
+                                                image_id = variant.get("image_id")
+                                                if not product_id:
+                                                    product_id = variant.get("product_id")
+                                        except Exception:
+                                            image_id = None
+                                    if product_id:
+                                        try:
+                                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                                            if p_resp.status_code == 200:
+                                                prod = (p_resp.json() or {}).get("product") or {}
+                                                # Match variant image id
+                                                if image_id:
+                                                    try:
+                                                        imgs = prod.get("images") or []
+                                                        for img in imgs:
+                                                            if str(img.get("id")) == str(image_id) and img.get("src"):
+                                                                header_url = img.get("src")
+                                                                break
+                                                    except Exception:
+                                                        pass
+                                                # Fallbacks
+                                                if not header_url:
+                                                    header_url = (prod.get("image") or {}).get("src") or (
+                                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                                    )
+                                        except Exception:
+                                            pass
+                                    if header_url:
+                                        break
+                    except Exception:
+                        pass
+                if header_url:
+                    components_override.append({
+                        "type": "header",
+                        "parameters": [{
+                            "type": "image",
+                            "image": {"link": str(header_url)}
+                        }]
+                    })
+            except Exception:
+                pass
+
+            # Sanitize all text params: remove newlines/tabs and collapse spaces
+            def _sanitize_text(s: str) -> str:
+                try:
+                    t = str(s or "")
+                    t = t.replace("\n", " ").replace("\t", " ")
+                    # collapse multiple spaces to one
+                    while "  " in t:
+                        t = t.replace("  ", " ")
+                    return t.strip()
+                except Exception:
+                    return str(s or "")
+            components_override.append({
+                "type": "body",
+                "parameters": [{"type": "text", "text": _sanitize_text(str(v))} for v in body_params],
+            })
+            logging.getLogger(__name__).info(
+                "order_confirm webhook: built %d body params for template", len(body_params)
+            )
+        except Exception as _exc:
+            components_override = None
+
+        # Collect additional variant media entries for multi-item orders (best-effort, limit 10)
+        extra_image_links: list[str] | None = None
+        try:
+            items = order.get("line_items") or []
+            base = admin_api_base()
+            entries: list[dict] = []
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                for li in items:
+                    if len(entries) >= 10:
+                        break
+                    product_id = li.get("product_id")
+                    variant_id = li.get("variant_id")
+                    image_id = None
+                    if variant_id:
+                        try:
+                            v_resp = await client.get(f"{base}/variants/{variant_id}.json", **_client_args())
+                            if v_resp.status_code == 200:
+                                variant = (v_resp.json() or {}).get("variant") or {}
+                                image_id = variant.get("image_id")
+                                if not product_id:
+                                    product_id = variant.get("product_id")
+                        except Exception:
+                            image_id = None
+                    img_url = None
+                    if product_id:
+                        try:
+                            p_resp = await client.get(f"{base}/products/{product_id}.json", **_client_args())
+                            if p_resp.status_code == 200:
+                                prod = (p_resp.json() or {}).get("product") or {}
+                                if image_id:
+                                    for img in (prod.get("images") or []):
+                                        if str(img.get("id")) == str(image_id) and img.get("src"):
+                                            img_url = img.get("src")
+                                            break
+                                if not img_url:
+                                    img_url = (prod.get("image") or {}).get("src") or (
+                                        (prod.get("images") or [{}])[0].get("src") if (prod.get("images") or []) else None
+                                    )
+                        except Exception:
+                            pass
+                    if not img_url:
+                        continue
+                    # Build Arabic caption: size, color, quantity (best-effort)
+                    qty = li.get("quantity")
+                    try:
+                        qstr = str(int(qty)) if qty is not None else ""
+                    except Exception:
+                        qstr = str(qty or "")
+                    props = {}
+                    try:
+                        for p in (li.get("properties") or []):
+                            n = str(p.get("name") or "").strip().lower()
+                            v = str(p.get("value") or "").strip()
+                            if n:
+                                props[n] = v
+                    except Exception:
+                        props = {}
+                    size = props.get("size") or props.get("المقاس") or None
+                    color = props.get("color") or props.get("اللون") or None
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            if len(parts) >= 1 and not size:
+                                size = parts[0]
+                            if len(parts) >= 2 and not color:
+                                color = parts[1]
+                    lines = []
+                    if size:
+                        lines.append(f"المقاس: {size}")
+                    if color:
+                        lines.append(f"اللون: {color}")
+                    if qstr:
+                        lines.append(f"الكمية: {qstr}")
+                    caption = "\n".join(lines)
+                    entry = {"url": img_url, "caption": caption}
+                    try:
+                        if variant_id:
+                            entry["retailer_id"] = str(variant_id)
+                    except Exception:
+                        pass
+                    entries.append(entry)
+            # Maintain legacy extra_image_links for flow (now cached, not sent)
+            extra_image_links = [e.get("url") for e in entries if e.get("url")] or None
+            # Cache detailed entries for sending after confirm
+            try:
+                from . import main as backend_main  # type: ignore
+                uid = None
+                try:
+                    phone_e164 = backend_main._normalize_ma_phone(str(raw_phone or ""))  # type: ignore[attr-defined]
+                    uid = backend_main._normalize_user_id(phone_e164)  # type: ignore[attr-defined]
+                except Exception:
+                    uid = None
+                if uid and entries:
+                    await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
+                        f"pending_variant_media:{uid}",
+                        {"items": entries, "ts": datetime.utcnow().isoformat()},
+                        ttl=3 * 24 * 3600,
+                    )
+                # Persist the order id to strengthen fallback resolution on confirm
+                if uid and order_id:
+                    try:
+                        await backend_main.redis_manager.set_json(  # type: ignore[attr-defined]
+                            f"pending_variant_order:{uid}",
+                            {"order_id": str(order_id), "ts": datetime.utcnow().isoformat()},
+                            ttl=3 * 24 * 3600,
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            extra_image_links = None
+
+        if order_id:
+            try:
+                # Lazy import to avoid circular imports at module load time
+                from . import main as backend_main  # type: ignore
+                # Use requested template/language for this flow run
+                asyncio.create_task(
+                    backend_main._run_order_confirmation_flow(
+                        str(order_id),
+                        template_name_override="order_confermation",
+                        template_lang_override="ar",
+                        raw_phone_override=(str(raw_phone).strip() if raw_phone else None),
+                        components_override=components_override,
+                        extra_image_links=extra_image_links,
+                    )
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Failed to trigger order confirmation flow: %s", exc)
+
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Webhook handling failed: {exc}")
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():

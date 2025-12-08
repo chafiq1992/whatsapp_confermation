@@ -1670,6 +1670,7 @@ function ChatWindow({ activeUser, ws, currentAgent, adminWs, onUpdateConversatio
         <TemplatesDialog
           open={templatesOpen}
           onClose={() => setTemplatesOpen(false)}
+          toUserId={activeUser?.user_id}
           onSelectTemplate={(tpl) => {
             try {
               if (!tpl || !tpl.name) return;
