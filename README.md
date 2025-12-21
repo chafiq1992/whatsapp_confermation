@@ -157,6 +157,20 @@ uvicorn backend.main:app --reload --port 8080
 
 The backend attempts to connect to Redis at startup. If Redis is unavailable, the app continues to work but without caching, pub/sub, or rate limiting.
 
+## Webhook reliability (don’t miss messages)
+
+WhatsApp (Meta) expects your `/webhook` to respond quickly. To prevent timeouts and reduce missed/delayed messages, this backend ACKs webhooks quickly and processes them asynchronously.
+
+**Best practice** is to persist webhook events durably before ACKing. This repo supports a durable queue using **Redis Streams** (requires `REDIS_URL`):
+
+- `WEBHOOK_USE_REDIS_STREAM=1`
+- `WEBHOOK_STREAM_KEY`
+- `WEBHOOK_STREAM_GROUP`
+- `WEBHOOK_STREAM_DLQ_KEY` (dead-letter queue for poisoned events)
+- `WEBHOOK_MAX_ATTEMPTS`
+
+If Redis is unavailable, the backend falls back to an in-memory queue (not durable across crashes), so for production you should keep Redis healthy and reachable (Memorystore + VPC connector on Cloud Run).
+
 ## CI/CD to Cloud Run with Memorystore and GCS
 
 This repo includes a GitHub Actions workflow to build/push the Docker image to Artifact Registry and deploy to Cloud Run, wired to a Redis Memorystore instance and a GCS bucket.
