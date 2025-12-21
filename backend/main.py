@@ -5049,7 +5049,12 @@ async def no_cache_html(request: StarletteRequest, call_next):
 @app.on_event("startup")
 async def startup():
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    await db_manager.init_db()
+    # Never block container readiness on DB init. If Postgres is down/misconfigured,
+    # we still want the HTTP server to start so /webhook can return 503 quickly and Meta can retry.
+    try:
+        await asyncio.wait_for(db_manager.init_db(), timeout=30.0)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("DB init failed during startup (continuing degraded): %s", exc)
     try:
         # Safe startup hint about DB backend and pool settings
         from urllib.parse import urlparse
