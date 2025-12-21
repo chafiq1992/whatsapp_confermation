@@ -161,7 +161,13 @@ The backend attempts to connect to Redis at startup. If Redis is unavailable, th
 
 WhatsApp (Meta) expects your `/webhook` to respond quickly. To prevent timeouts and reduce missed/delayed messages, this backend ACKs webhooks quickly and processes them asynchronously.
 
-**Best practice** is to persist webhook events durably before ACKing. This repo supports a durable queue using **Redis Streams** (requires `REDIS_URL`):
+**Best practice** is to persist webhook events durably before ACKing. If you already run **Postgres** (set `DATABASE_URL`), you can use the **DB-backed queue** (no Redis required):
+
+- `WEBHOOK_USE_DB_QUEUE=1`
+- `WEBHOOK_DB_BATCH_SIZE`
+- `WEBHOOK_DB_POLL_INTERVAL_SEC`
+
+Alternatively, this repo also supports a durable queue using **Redis Streams** (requires `REDIS_URL`):
 
 - `WEBHOOK_USE_REDIS_STREAM=1`
 - `WEBHOOK_STREAM_KEY`
@@ -169,7 +175,7 @@ WhatsApp (Meta) expects your `/webhook` to respond quickly. To prevent timeouts 
 - `WEBHOOK_STREAM_DLQ_KEY` (dead-letter queue for poisoned events)
 - `WEBHOOK_MAX_ATTEMPTS`
 
-If Redis is unavailable, the backend falls back to an in-memory queue (not durable across crashes), so for production you should keep Redis healthy and reachable (Memorystore + VPC connector on Cloud Run).
+If neither Postgres queue nor Redis Streams is available, the backend falls back to an in-memory queue (not durable across crashes).
 
 ## CI/CD to Cloud Run with Memorystore and GCS
 

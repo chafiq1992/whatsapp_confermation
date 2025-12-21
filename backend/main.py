@@ -80,6 +80,11 @@ WEBHOOK_STREAM_GROUP = os.getenv("WEBHOOK_STREAM_GROUP", "webhook-workers")
 WEBHOOK_STREAM_DLQ_KEY = os.getenv("WEBHOOK_STREAM_DLQ_KEY", "wa:webhooks:dlq")
 WEBHOOK_MAX_ATTEMPTS = int(os.getenv("WEBHOOK_MAX_ATTEMPTS", "20"))
 WEBHOOK_CLAIM_MIN_IDLE_MS = int(os.getenv("WEBHOOK_CLAIM_MIN_IDLE_MS", "60000"))  # 60s
+
+# Durable webhook queue (no Redis): Postgres-backed queue table.
+WEBHOOK_USE_DB_QUEUE = os.getenv("WEBHOOK_USE_DB_QUEUE", "1") == "1"
+WEBHOOK_DB_BATCH_SIZE = int(os.getenv("WEBHOOK_DB_BATCH_SIZE", "25"))
+WEBHOOK_DB_POLL_INTERVAL_SEC = float(os.getenv("WEBHOOK_DB_POLL_INTERVAL_SEC", "1.0"))
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -1330,6 +1335,22 @@ class DatabaseManager:
                     key   TEXT PRIMARY KEY,
                     value TEXT
                 );
+
+                -- Durable webhook queue (SQLite fallback; Postgres has JSONB schema below)
+                CREATE TABLE IF NOT EXISTS webhook_events (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status          TEXT NOT NULL DEFAULT 'pending', -- pending|processing|retry|done|dead
+                    attempts        INTEGER NOT NULL DEFAULT 0,
+                    payload         TEXT NOT NULL,
+                    last_error      TEXT,
+                    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    locked_at       TEXT,
+                    lock_owner      TEXT,
+                    created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_webhook_events_due
+                    ON webhook_events (status, datetime(next_attempt_at), id);
                 """
             if self.use_postgres:
                 script = base_script.replace(
@@ -1344,6 +1365,26 @@ class DatabaseManager:
                     await db.execute(stmt)
                 # Ensure the additional composite index exists in Postgres as well
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text ON messages (user_id, timestamp)")
+                # Durable webhook queue schema for Postgres (JSONB + timestamptz)
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        payload JSONB NOT NULL,
+                        last_error TEXT,
+                        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        locked_at TIMESTAMPTZ,
+                        lock_owner TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_events_due ON webhook_events (status, next_attempt_at, id)"
+                )
             else:
                 await db.executescript(base_script)
                 await db.commit()
@@ -4638,6 +4679,100 @@ messenger = message_processor.whatsapp_messenger
 # ────────────────────────────────────────────────────────────
 WEBHOOK_QUEUE: "asyncio.Queue[dict]" = asyncio.Queue(maxsize=max(1, int(WEBHOOK_QUEUE_MAXSIZE)))
 
+def _webhook_backend_name() -> str:
+    if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE:
+        return "db"
+    if WEBHOOK_USE_REDIS_STREAM and bool(getattr(redis_manager, "redis_client", None)):
+        return "redis_stream"
+    return "memory"
+
+async def _db_enqueue_webhook(payload: dict) -> None:
+    """Persist webhook payload into Postgres-backed queue before ACKing."""
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            raise RuntimeError("DB queue requires Postgres")
+        await db.execute(
+            "INSERT INTO webhook_events (payload, status, next_attempt_at) VALUES ($1::jsonb, 'pending', NOW())",
+            json.dumps(payload),
+        )
+
+async def _db_claim_webhook_events(batch_size: int, lock_owner: str) -> list[dict]:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return []
+        rows = await db.fetch(
+            """
+            WITH cte AS (
+              SELECT id
+              FROM webhook_events
+              WHERE status IN ('pending','retry')
+                AND next_attempt_at <= NOW()
+              ORDER BY id
+              FOR UPDATE SKIP LOCKED
+              LIMIT $1
+            )
+            UPDATE webhook_events e
+            SET status='processing',
+                locked_at=NOW(),
+                lock_owner=$2,
+                attempts=e.attempts+1,
+                updated_at=NOW()
+            FROM cte
+            WHERE e.id = cte.id
+            RETURNING e.id, e.payload, e.attempts
+            """,
+            int(batch_size),
+            str(lock_owner),
+        )
+        out: list[dict] = []
+        for r in rows or []:
+            try:
+                payload = r["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+            except Exception:
+                payload = {}
+            out.append({"id": int(r["id"]), "payload": payload, "attempts": int(r["attempts"] or 0)})
+        return out
+
+async def _db_mark_webhook_done(event_id: int) -> None:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return
+        await db.execute(
+            "UPDATE webhook_events SET status='done', last_error=NULL, locked_at=NULL, lock_owner=NULL, updated_at=NOW() WHERE id=$1",
+            int(event_id),
+        )
+
+async def _db_reschedule_webhook(event_id: int, *, attempts: int, error: str) -> None:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return
+        dead = int(attempts) >= int(WEBHOOK_MAX_ATTEMPTS)
+        delay = min(300, max(1, int(2 ** min(int(attempts), 8))))
+        if dead:
+            await db.execute(
+                "UPDATE webhook_events SET status='dead', last_error=$2, locked_at=NULL, lock_owner=NULL, updated_at=NOW() WHERE id=$1",
+                int(event_id),
+                str(error)[:4000],
+            )
+        else:
+            await db.execute(
+                """
+                UPDATE webhook_events
+                SET status='retry',
+                    last_error=$2,
+                    next_attempt_at=NOW() + ($3 * INTERVAL '1 second'),
+                    locked_at=NULL,
+                    lock_owner=NULL,
+                    updated_at=NOW()
+                WHERE id=$1
+                """,
+                int(event_id),
+                str(error)[:4000],
+                int(delay),
+            )
+
 async def _ensure_webhook_stream_group() -> bool:
     """Ensure Redis Stream + consumer group exists for durable webhook ingestion."""
     try:
@@ -4807,6 +4942,38 @@ async def _webhook_worker(worker_id: int):
             except Exception:
                 pass
 
+async def _webhook_db_worker(worker_id: int):
+    """Postgres-backed webhook worker (no Redis required)."""
+    log = logging.getLogger(__name__)
+    lock_owner = f"dbw{worker_id}-{uuid.uuid4().hex[:10]}"
+    batch = max(1, int(WEBHOOK_DB_BATCH_SIZE))
+    poll = max(0.1, float(WEBHOOK_DB_POLL_INTERVAL_SEC))
+    while True:
+        try:
+            events = await _db_claim_webhook_events(batch, lock_owner)
+            if not events:
+                await asyncio.sleep(poll)
+                continue
+            for ev in events:
+                eid = int(ev.get("id") or 0)
+                payload = ev.get("payload") or {}
+                attempts = int(ev.get("attempts") or 0)
+                try:
+                    await asyncio.wait_for(
+                        message_processor.process_incoming_message(payload),
+                        timeout=max(1.0, float(WEBHOOK_PROCESSING_TIMEOUT_SECONDS)),
+                    )
+                    await _db_mark_webhook_done(eid)
+                except asyncio.TimeoutError:
+                    log.error("DB webhook worker %s: event %s timed out after %ss", worker_id, eid, WEBHOOK_PROCESSING_TIMEOUT_SECONDS)
+                    await _db_reschedule_webhook(eid, attempts=attempts, error="timeout")
+                except Exception as exc:
+                    log.exception("DB webhook worker %s: event %s failed: %s", worker_id, eid, exc)
+                    await _db_reschedule_webhook(eid, attempts=attempts, error=str(exc))
+        except Exception as outer:
+            log.exception("DB webhook worker %s: loop error: %s", worker_id, outer)
+            await asyncio.sleep(poll)
+
 # FastAPI app
 app = FastAPI(default_response_class=(ORJSONResponse if _ORJSON_AVAILABLE else JSONResponse))
 
@@ -4927,10 +5094,15 @@ async def startup():
             print(f"Rate limiter init failed: {exc}")
     # Start webhook background workers so /webhook can ACK quickly.
     try:
-        await _ensure_webhook_stream_group()
-        for i in range(max(1, int(WEBHOOK_WORKERS))):
-            asyncio.create_task(_webhook_worker(i + 1))
-        print(f"Webhook workers started: {max(1, int(WEBHOOK_WORKERS))} (queue maxsize={WEBHOOK_QUEUE_MAXSIZE})")
+        if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE:
+            for i in range(max(1, int(WEBHOOK_WORKERS))):
+                asyncio.create_task(_webhook_db_worker(i + 1))
+            print(f"Webhook DB workers started: {max(1, int(WEBHOOK_WORKERS))} (batch={WEBHOOK_DB_BATCH_SIZE})")
+        else:
+            await _ensure_webhook_stream_group()
+            for i in range(max(1, int(WEBHOOK_WORKERS))):
+                asyncio.create_task(_webhook_worker(i + 1))
+            print(f"Webhook workers started: {max(1, int(WEBHOOK_WORKERS))} (queue maxsize={WEBHOOK_QUEUE_MAXSIZE})")
     except Exception as exc:
         print(f"Webhook worker startup failed: {exc}")
     # Ensure conversation_notes table exists for legacy deployments
@@ -5339,14 +5511,17 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         _vlog("📥 Incoming Webhook Payload:")
         _vlog(json.dumps(data, indent=2))
 
-        # Best practice: persist the event durably (Redis Stream) before returning 200.
-        # If Redis is unavailable, fall back to an in-memory queue (not durable across crashes).
+        # Best practice: persist the event durably before returning 200.
+        # Prefer Postgres-backed queue when DATABASE_URL is set (no Redis required).
         try:
-            r = getattr(redis_manager, "redis_client", None)
-            if r and WEBHOOK_USE_REDIS_STREAM:
-                await r.xadd(WEBHOOK_STREAM_KEY, {"payload": json.dumps(data)})
+            if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE:
+                await _db_enqueue_webhook(data)
             else:
-                WEBHOOK_QUEUE.put_nowait(data)
+                r = getattr(redis_manager, "redis_client", None)
+                if r and WEBHOOK_USE_REDIS_STREAM:
+                    await r.xadd(WEBHOOK_STREAM_KEY, {"payload": json.dumps(data)})
+                else:
+                    WEBHOOK_QUEUE.put_nowait(data)
         except asyncio.QueueFull:
             return PlainTextResponse("Webhook queue full", status_code=503)
         except Exception:
@@ -5665,12 +5840,14 @@ async def health_check():
         "status": "healthy",
         "redis": redis_status,
         "webhook": {
+            "backend": _webhook_backend_name(),
             "queue_size": getattr(WEBHOOK_QUEUE, "qsize", lambda: None)(),
             "queue_maxsize": int(WEBHOOK_QUEUE_MAXSIZE),
             "workers": int(max(1, int(WEBHOOK_WORKERS))),
             "use_redis_stream": bool(WEBHOOK_USE_REDIS_STREAM and bool(redis_manager.redis_client)),
             "stream_key": WEBHOOK_STREAM_KEY if (WEBHOOK_USE_REDIS_STREAM and redis_manager.redis_client) else None,
             "dlq_key": WEBHOOK_STREAM_DLQ_KEY if (WEBHOOK_USE_REDIS_STREAM and redis_manager.redis_client) else None,
+            "use_db_queue": bool(getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE),
         },
         "active_connections": len(connection_manager.active_connections),
         "timestamp": datetime.utcnow().isoformat(),
