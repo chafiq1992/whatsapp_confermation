@@ -504,7 +504,12 @@ class ConnectionManager:
                     pass
             del self.message_queue[user_id]
         
-        print(f"✅ User {user_id} connected. Total connections: {len(self.active_connections[user_id])}")
+        # Avoid print+emoji which gets promoted to ERROR by the smart_print wrapper.
+        logging.getLogger(__name__).info(
+            "WS connected user_id=%s connections_for_user=%s",
+            user_id,
+            len(self.active_connections.get(user_id) or []),
+        )
     
     def disconnect(self, websocket: WebSocket):
         """Disconnect a WebSocket"""
@@ -516,7 +521,9 @@ class ConnectionManager:
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
             
-            print(f"❌ User {user_id} disconnected")
+            # Normal disconnects are expected (tab close, network change, idle timeout).
+            # Keep this as INFO to reduce log noise/cost.
+            logging.getLogger(__name__).info("WS disconnected user_id=%s", user_id)
     
     async def _send_local(self, user_id: str, message: dict):
         _vlog(f"📤 Attempting to send to user {user_id}")
@@ -7194,7 +7201,12 @@ async def get_catalog_sets():
 
 
 @app.get("/catalog-all-products")
-async def get_catalog_products_endpoint(force_refresh: bool = False):
+async def get_catalog_products_endpoint(force_refresh: bool = False, background_tasks: BackgroundTasks = None):
+    """Return cached catalog products quickly.
+
+    Important: do NOT block this endpoint on a full remote refresh (can exceed Cloud Run timeouts),
+    instead trigger a background refresh and serve stale cache immediately.
+    """
     # Refresh cache if forced or stale/missing; otherwise serve cached for speed
     need_refresh = bool(force_refresh)
     try:
@@ -7210,10 +7222,15 @@ async def get_catalog_products_endpoint(force_refresh: bool = False):
 
     if need_refresh:
         try:
-            await catalog_manager.refresh_catalog_cache()
+            # Fire-and-forget refresh to avoid request timeouts.
+            if background_tasks is not None:
+                background_tasks.add_task(catalog_manager.refresh_catalog_cache)
+            else:
+                asyncio.create_task(catalog_manager.refresh_catalog_cache())
         except Exception as exc:
-            print(f"Catalog cache refresh failed in endpoint: {exc}")
+            logging.getLogger(__name__).warning("Catalog cache refresh scheduling failed: %s", exc)
 
+    # Always serve current cache (may be stale, but fast).
     return catalog_manager.get_cached_products() or []
 
 
