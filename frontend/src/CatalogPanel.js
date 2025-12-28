@@ -29,10 +29,11 @@ export default function CatalogPanel({
   const [selectedSet, setSelectedSet] = useState(null);
 
   // Products and pagination
-  const INITIAL_FETCH_LIMIT = 10000; // fetch many items up-front for instant preview
+  const INITIAL_FETCH_LIMIT = 600; // keep initial render/network bounded; load more on scroll
   const PREFETCH_LIMIT = 120; // lightweight background prefetch for folder previews
   const PAGE_STEP = 200; // only used when falling back to infinite scroll for very large sets
   const CONCURRENT_THUMB_PREFETCH = 6;
+  const MAX_THUMBNAIL_PRECACHE = 300; // avoid flooding /proxy-image when opening large sets
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -42,6 +43,7 @@ export default function CatalogPanel({
   const requestIdRef = useRef(0);
   const fetchInFlightRef = useRef(false);
   const fetchLimitTimerRef = useRef(null);
+  const prefetchedThumbsRef = useRef(new Set());
 
   // Selected images (URLs)
   const [selectedImages, setSelectedImages] = useState([]);
@@ -133,7 +135,7 @@ export default function CatalogPanel({
         const i = index++;
         if (i >= unique.length) return;
         const u = unique[i];
-        try { await fetch(u, { cache: 'no-store' }); } catch {}
+        try { await fetch(u, { cache: 'force-cache' }); } catch {}
         return runNext();
       };
       await Promise.all(Array.from({ length: CONCURRENT_THUMB_PREFETCH }, runNext));
@@ -164,7 +166,14 @@ export default function CatalogPanel({
             .map(p => p?.images?.[0]?.url)
             .filter(Boolean)
             .map(u => thumbUrlFor(u, 256));
-          setTimeout(() => { _precacheThumbs(urls); }, 0);
+          const next = [];
+          for (const u of urls) {
+            if (!u || prefetchedThumbsRef.current.has(u)) continue;
+            prefetchedThumbsRef.current.add(u);
+            next.push(u);
+            if (next.length >= MAX_THUMBNAIL_PRECACHE) break;
+          }
+          if (next.length) setTimeout(() => { _precacheThumbs(next); }, 0);
         } catch {}
       }
       try { await saveCatalogSetProducts(setId, list); } catch {}
@@ -529,6 +538,7 @@ export default function CatalogPanel({
     setSelectedImages([]);
     setLoadingProducts(true);
     setModalOpen(true);
+    try { prefetchedThumbsRef.current.clear(); } catch {}
     try { if (gridRef.current) gridRef.current.scrollTop = 0; } catch {}
     // Show cached instantly
     try {
@@ -769,7 +779,7 @@ export default function CatalogPanel({
                         const url = p.images?.[0]?.url;
                         const checked = url && selectedImages.includes(url);
                         return (
-                          <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
+                          <div key={`${p.retailer_id || p.id || 'p'}-${idx}`} className="relative group border rounded overflow-hidden">
                             {url && (
                               <input type="checkbox" className="absolute top-2 right-2 z-10 scale-150 cursor-pointer" checked={checked} onChange={() => toggleSelect(url)} />
                             )}
@@ -781,9 +791,16 @@ export default function CatalogPanel({
                                   sizes="(max-width: 640px) 45vw, (max-width: 1024px) 22vw, 256px"
                                   alt={p.name}
                                   className="w-full h-32 object-cover"
-                                  loading="eager"
+                                  loading="lazy"
                                   decoding="async"
-                                  onError={(e) => { try { e.currentTarget.src = '/broken-image.png'; } catch {} }}
+                                  onError={(e) => {
+                                    try {
+                                      const img = e.currentTarget;
+                                      if (img?.dataset?.fallbackApplied) return;
+                                      img.dataset.fallbackApplied = '1';
+                                      img.src = '/broken-image.png';
+                                    } catch {}
+                                  }}
                                 />
                               ) : (
                                 <span className="text-xs text-gray-400">No Image</span>

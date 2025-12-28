@@ -7425,7 +7425,6 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                             media_type="image/jpeg",
                             headers={
                                 "Cache-Control": "public, max-age=86400",
-                                "Vary": "Accept",
                             },
                         )
                     except Exception:
@@ -7436,7 +7435,6 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                     media_type=ctype,
                     headers={
                         "Cache-Control": "public, max-age=86400",
-                        "Vary": "Accept",
                     },
                 )
             except Exception:
@@ -7448,8 +7446,13 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
         # Forward upstream status code and caching headers to enable proper browser caching/conditional requests
         passthrough = {
             "Cache-Control": resp.headers.get("Cache-Control", "public, max-age=86400"),
-            "Vary": resp.headers.get("Vary", "Accept"),
         }
+        try:
+            vary = resp.headers.get("Vary")
+            if vary:
+                passthrough["Vary"] = vary
+        except Exception:
+            pass
         for h in ("ETag", "Last-Modified", "Content-Length"):
             v = resp.headers.get(h)
             if v:
@@ -7467,6 +7470,7 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                 thumb_bytes = buf.getvalue()
                 # Remove upstream length since content length changed
                 passthrough.pop("Content-Length", None)
+                passthrough.pop("Vary", None)
                 return StarletteResponse(
                     content=thumb_bytes,
                     media_type="image/jpeg",
