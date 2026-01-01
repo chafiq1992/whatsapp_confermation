@@ -296,18 +296,25 @@ _ORDER_CONFIRM_ALLOWED_RAW = os.getenv("ORDER_CONFIRM_ALLOWED_NUMBERS", "")
 ORDER_CONFIRM_ALLOWED_NUMBERS: Set[str] = set(
     _digits_only(n.strip()) for n in _ORDER_CONFIRM_ALLOWED_RAW.split(",") if n.strip()
 )
-# Always include these defaults
-try:
-    ORDER_CONFIRM_ALLOWED_NUMBERS.update({"212650161162", "212606315335"})
-except Exception:
-    pass
 
 # Allow sending order confirmation to all numbers (bypass whitelist)
-ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "1") or "1").strip() not in ("0", "false", "False")
 # Optionally skip WhatsApp contacts pre-check regardless of allow-all/whitelist mode
 # When enabled, the flow will attempt sending templates without tagging no_wtp first
 ORDER_CONFIRM_SKIP_CONTACT_CHECK = (os.getenv("ORDER_CONFIRM_SKIP_CONTACT_CHECK", "0") or "0").strip() not in ("0", "false", "False")
 ORDER_CONFIRM_SEND_CATALOG = (os.getenv("ORDER_CONFIRM_SEND_CATALOG", "0") or "0").strip() not in ("0", "false", "False")
+
+# Warn loudly when order-confirmation is effectively in allowlist/test gate mode
+try:
+    if not ORDER_CONFIRM_ALLOW_ALL:
+        logging.warning(
+            "Order confirmation phone gate is ENABLED (ORDER_CONFIRM_ALLOW_ALL=0). "
+            "Only allowlisted numbers will receive the order confirmation template. "
+            "Allowed digits: %s",
+            ",".join(sorted(list(ORDER_CONFIRM_ALLOWED_NUMBERS or set())))[:500],
+        )
+except Exception:
+    pass
 
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -1129,6 +1136,7 @@ class DatabaseManager:
             "type",
             "from_me",
             "status",
+            "error",
             "price",
             "caption",
             "media_path",
@@ -1250,6 +1258,7 @@ class DatabaseManager:
                     type           TEXT DEFAULT 'text',
                     from_me        INTEGER DEFAULT 0,             -- bool 0/1
                     status         TEXT  DEFAULT 'sending',
+                    error          TEXT,
                     price          TEXT,
                     caption        TEXT,
                     url            TEXT,
@@ -1411,6 +1420,7 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "reaction_emoji", "TEXT")
             await self._add_column_if_missing(db, "messages", "reaction_action", "TEXT")
             await self._add_column_if_missing(db, "messages", "waveform", "TEXT")
+            await self._add_column_if_missing(db, "messages", "error", "TEXT")
             # Ensure product identifiers columns exist for catalog items
             await self._add_column_if_missing(db, "messages", "product_retailer_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "retailer_id", "TEXT")
@@ -1762,7 +1772,7 @@ class DatabaseManager:
                 await db.execute("DELETE FROM conversation_notes WHERE id = ?", (note_id,))
                 await db.commit()
 
-    async def update_message_status(self, wa_message_id: str, status: str):
+    async def update_message_status(self, wa_message_id: str, status: str, error: str | None = None):
         """Persist a status update for a message identified by wa_message_id.
 
         Returns the temp_id if available so the UI can reconcile optimistic bubbles.
@@ -1791,7 +1801,10 @@ class DatabaseManager:
                 pass
 
         if user_id:
-            await self.upsert_message({"user_id": user_id, "wa_message_id": wa_message_id, "status": status})
+            payload = {"user_id": user_id, "wa_message_id": wa_message_id, "status": status}
+            if error:
+                payload["error"] = error
+            await self.upsert_message(payload)
         # If we couldn't resolve user_id, do nothing to avoid inserting orphan rows
         return temp_id
 
@@ -3090,6 +3103,16 @@ class MessageProcessor:
                 }
             }
             await self.connection_manager.send_to_user(user_id, error_update)
+            # Persist failure for later inspection (history/admin UI)
+            try:
+                await self.db_manager.upsert_message({
+                    "user_id": user_id,
+                    "temp_id": temp_id,
+                    "status": "failed",
+                    "error": str(e),
+                })
+            except Exception:
+                pass
         finally:
             media_path = message.get("media_path")
             if media_path and Path(media_path).exists():
@@ -3260,8 +3283,48 @@ class MessageProcessor:
             if not wa_id or not status:
                 continue
 
+            # Extract failure reason (Meta provides `errors` on failed delivery statuses)
+            error_payload: str | None = None
+            try:
+                errs = item.get("errors")
+                if isinstance(errs, list) and errs:
+                    e0 = errs[0] if isinstance(errs[0], dict) else {"raw": errs[0]}
+                    error_payload = json.dumps(
+                        {
+                            "code": e0.get("code"),
+                            "title": e0.get("title"),
+                            "details": e0.get("details"),
+                            "href": e0.get("href"),
+                        },
+                        ensure_ascii=False,
+                    )
+                elif isinstance(item.get("error"), dict):
+                    e0 = item.get("error") or {}
+                    error_payload = json.dumps(
+                        {
+                            "code": e0.get("code"),
+                            "title": e0.get("title"),
+                            "details": e0.get("message") or e0.get("details"),
+                        },
+                        ensure_ascii=False,
+                    )
+            except Exception:
+                error_payload = None
+
+            # Log failed deliveries loudly (helps debug "accepted" but not received)
+            try:
+                if str(status).lower() == "failed":
+                    logging.error(
+                        "WhatsApp status failed wa_message_id=%s error=%s raw=%s",
+                        str(wa_id),
+                        error_payload or "<no details>",
+                        json.dumps(item, ensure_ascii=False)[:800],
+                    )
+            except Exception:
+                pass
+
             # Update DB and fetch temp_id/user_id (skip if user_id unknown)
-            temp_id = await self.db_manager.update_message_status(wa_id, status)
+            temp_id = await self.db_manager.update_message_status(wa_id, status, error=error_payload)
             user_id = await self.db_manager.get_user_for_message(wa_id)
             if not user_id:
                 continue
@@ -3277,6 +3340,7 @@ class MessageProcessor:
                     "wa_message_id": wa_id,
                     "status": status,
                     "timestamp": timestamp,
+                    **({"error": error_payload} if error_payload else {}),
                 }
             })
 
