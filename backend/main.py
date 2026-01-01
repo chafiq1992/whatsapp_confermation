@@ -2698,6 +2698,13 @@ class MessageProcessor:
                     wa_response = await self.whatsapp_messenger.send_text_message(
                         wa_to, message["message"], context_message_id=message.get("reply_to")
                     )
+                elif message["type"] == "template":
+                    wa_response = await self.whatsapp_messenger.send_template_message(
+                        to=wa_to,
+                        template_name=str(message.get("template_name") or message.get("message") or ""),
+                        language=str(message.get("language") or "en"),
+                        components=message.get("components"),
+                    )
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
                     retailer_id = (
@@ -3486,7 +3493,7 @@ class MessageProcessor:
                     BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
                     BTN3 = {"تكلم مع العميل"}
                     if tnorm in BTN1:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn1_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3521,7 +3528,7 @@ class MessageProcessor:
                         except Exception:
                             pass
                     elif tnorm in BTN2:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn2_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3543,7 +3550,7 @@ class MessageProcessor:
                             except Exception:
                                 pass
                     elif tnorm in BTN3:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn3_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3663,11 +3670,11 @@ class MessageProcessor:
                 BTN3 = {"تكلم مع العميل"}
                 matched = None
                 if tnorm in BTN1:
-                    matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn1_audio_url") or "")
                 elif tnorm in BTN2:
-                    matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn2_audio_url") or "")
                 elif tnorm in BTN3:
-                    matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn3_audio_url") or "")
                 if matched:
                     try:
                         to = _normalize_ma_phone(sender)
@@ -3763,6 +3770,12 @@ class MessageProcessor:
             {"type": "message_received", "data": message_obj},
             exclude_user=sender
         )
+
+        # Trigger automations asynchronously (never block webhook workers)
+        try:
+            asyncio.create_task(run_whatsapp_automations(sender=sender, message_obj=message_obj, raw_message=message))
+        except Exception:
+            pass
         
         # Auto-responses
         try:
@@ -4038,7 +4051,9 @@ class MessageProcessor:
             return
         # Only the QUICK-REPLY BUTTONS are gated by test numbers; catalog matches are for all
         try:
-            is_test_number = _digits_only(user_id) in AUTO_REPLY_TEST_NUMBERS
+            cfg = await get_inbox_config()
+            test_numbers = set(_norm_digits_list(cfg.get("test_numbers") or AUTO_REPLY_TEST_NUMBERS))
+            is_test_number = _digits_only(user_id) in test_numbers
         except Exception:
             is_test_number = False
         # 24h cooldown per user (bypass when an explicit product ID/URL is present)
@@ -4060,6 +4075,13 @@ class MessageProcessor:
             has_url = False
             has_digit = False
         if (not has_url) and (not has_digit) and is_test_number:
+            try:
+                cfg = await get_inbox_config()
+                buy_title = str(cfg.get("catalog_buy_button_title") or "Acheter | شراء")
+                status_title = str(cfg.get("catalog_order_status_button_title") or "Statut | حالة")
+            except Exception:
+                buy_title = "Acheter | شراء"
+                status_title = "Statut | حالة"
             await self.process_outgoing_message({
                 "user_id": user_id,
                 "type": "buttons",
@@ -4069,8 +4091,8 @@ class MessageProcessor:
                     "اختر خيارًا:\nأريد شراء منتج\nأريد التحقق من حالة طلبي"
                 ),
                 "buttons": [
-                    {"id": "buy_item", "title": "Acheter | شراء"},
-                    {"id": "order_status", "title": "Statut | حالة"},
+                    {"id": "buy_item", "title": buy_title},
+                    {"id": "order_status", "title": status_title},
                 ],
                 "timestamp": datetime.utcnow().isoformat(),
             })
@@ -5916,6 +5938,137 @@ async def delete_agent_endpoint(username: str):
     return {"ok": True}
 
 SESSIONS: dict[str, dict] = {}
+
+# ---------------- Inbox config (DB-backed, editable from UI) -----------------
+
+INBOX_CONFIG_KEY = "inbox:config"
+_INBOX_CONFIG_CACHE: dict = {"ts": 0.0, "data": None}
+_INBOX_CONFIG_CACHE_TTL_SEC = float(os.getenv("INBOX_CONFIG_CACHE_TTL_SEC", "5"))
+
+
+async def _require_admin(request: Request) -> dict:
+    me = await auth_me(request)
+    if not me.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin required")
+    return me
+
+
+def _norm_digits_list(values) -> list[str]:
+    out: list[str] = []
+    if values is None:
+        return out
+    if isinstance(values, str):
+        # allow comma / newline separated
+        raw = re.split(r"[,\n]+", values)
+    elif isinstance(values, list):
+        raw = values
+    else:
+        raw = [values]
+    for v in raw:
+        try:
+            d = _digits_only(str(v).strip())
+            if d:
+                out.append(d)
+        except Exception:
+            continue
+    # de-dup preserve order
+    seen = set()
+    dedup = []
+    for d in out:
+        if d in seen:
+            continue
+        seen.add(d)
+        dedup.append(d)
+    return dedup
+
+
+async def get_inbox_config() -> dict:
+    """Return merged inbox config (DB overrides env defaults)."""
+    now = time.time()
+    try:
+        cached = _INBOX_CONFIG_CACHE.get("data")
+        if cached is not None and (now - float(_INBOX_CONFIG_CACHE.get("ts") or 0.0)) < _INBOX_CONFIG_CACHE_TTL_SEC:
+            return dict(cached)
+    except Exception:
+        pass
+
+    # Defaults derived from current env behavior
+    defaults = {
+        # Automations runner gate
+        "automations_test_gate_enabled": False,
+        "test_numbers": [],  # digits-only list; used for automations + catalog quick replies
+
+        # Catalog quick-reply buttons (shown only for test numbers)
+        "catalog_buy_button_title": "Acheter | شراء",
+        "catalog_order_status_button_title": "Statut | حالة",
+
+        # Order confirmation button audio URLs
+        "order_confirm_btn1_audio_url": os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "") or "",
+        "order_confirm_btn2_audio_url": os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "") or "",
+        "order_confirm_btn3_audio_url": os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "") or "",
+    }
+
+    try:
+        raw = await db_manager.get_setting(INBOX_CONFIG_KEY)
+        db_cfg = json.loads(raw) if raw else {}
+        if not isinstance(db_cfg, dict):
+            db_cfg = {}
+    except Exception:
+        db_cfg = {}
+
+    merged = {**defaults, **db_cfg}
+    merged["test_numbers"] = _norm_digits_list(merged.get("test_numbers") or AUTO_REPLY_TEST_NUMBERS)
+    merged["automations_test_gate_enabled"] = bool(merged.get("automations_test_gate_enabled"))
+
+    try:
+        _INBOX_CONFIG_CACHE["ts"] = now
+        _INBOX_CONFIG_CACHE["data"] = merged
+    except Exception:
+        pass
+    return merged
+
+
+@app.get("/admin/inbox-config")
+async def get_inbox_config_endpoint(request: Request):
+    await _require_admin(request)
+    return await get_inbox_config()
+
+
+@app.post("/admin/inbox-config")
+async def set_inbox_config_endpoint(request: Request, payload: dict = Body(...)):
+    await _require_admin(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    # Only accept known keys
+    allowed_keys = {
+        "automations_test_gate_enabled",
+        "test_numbers",
+        "catalog_buy_button_title",
+        "catalog_order_status_button_title",
+        "order_confirm_btn1_audio_url",
+        "order_confirm_btn2_audio_url",
+        "order_confirm_btn3_audio_url",
+    }
+    cfg = {k: payload.get(k) for k in allowed_keys if k in payload}
+
+    # Normalize
+    cfg["automations_test_gate_enabled"] = bool(cfg.get("automations_test_gate_enabled"))
+    cfg["test_numbers"] = _norm_digits_list(cfg.get("test_numbers"))
+    for k in ("catalog_buy_button_title", "catalog_order_status_button_title"):
+        if k in cfg and cfg[k] is not None:
+            cfg[k] = str(cfg[k])
+    for k in ("order_confirm_btn1_audio_url", "order_confirm_btn2_audio_url", "order_confirm_btn3_audio_url"):
+        if k in cfg and cfg[k] is not None:
+            cfg[k] = str(cfg[k]).strip()
+
+    await db_manager.set_setting(INBOX_CONFIG_KEY, cfg)
+    try:
+        _INBOX_CONFIG_CACHE["ts"] = 0.0
+        _INBOX_CONFIG_CACHE["data"] = None
+    except Exception:
+        pass
+    return {"ok": True, "config": await get_inbox_config()}
 
 @app.post("/auth/login")
 async def auth_login(payload: dict = Body(...)):
@@ -7816,9 +7969,358 @@ async def list_automations():
 async def save_automations(payload: list[dict] = Body(...)):
     try:
         await db_manager.set_setting(AUTOMATIONS_KEY, payload or [])
+        # Invalidate in-memory cache (best-effort)
+        try:
+            _AUTOMATIONS_CACHE["ts"] = 0.0
+            _AUTOMATIONS_CACHE["data"] = []
+        except Exception:
+            pass
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save automations: {exc}")
+
+
+# ---------------- Automations runtime (WhatsApp inbox) -----------------
+# NOTE: intentionally minimal: trigger on WhatsApp incoming message → run actions.
+
+_AUTOMATIONS_CACHE: dict = {"ts": 0.0, "data": []}
+_AUTOMATIONS_CACHE_TTL_SEC = float(os.getenv("AUTOMATIONS_CACHE_TTL_SEC", "5"))
+_AUTOMATIONS_MAX_DEPTH = int(os.getenv("AUTOMATIONS_MAX_DEPTH", "60"))
+_AUTOMATIONS_MAX_DELAY_SEC = int(os.getenv("AUTOMATIONS_MAX_DELAY_SEC", "3600"))
+
+
+def _render_vars(text: str, ctx: dict) -> str:
+    """Very small {{ var }} renderer used by the automation runner."""
+    try:
+        if not isinstance(text, str) or "{{" not in text:
+            return str(text or "")
+
+        def repl(m: re.Match) -> str:
+            key = (m.group(1) or "").strip()
+            val = ctx.get(key, "")
+            return "" if val is None else str(val)
+
+        return re.sub(r"\{\{\s*([^}]+?)\s*\}\}", repl, text)
+    except Exception:
+        return str(text or "")
+
+
+def _eval_condition_expr(expr: str, ctx: dict) -> bool:
+    """Minimal, safe condition evaluator.
+
+    Supported forms (after {{var}} substitution):
+    - "<left> == <right>"
+    - "<left> != <right>"
+    - "<left> contains <right>"
+    - "contains(<left>, <right>)"
+
+    Where <right> may be quoted with ' or ".
+    """
+    try:
+        s = _render_vars(str(expr or ""), ctx).strip()
+        if not s:
+            return False
+
+        def _strip_quotes(v: str) -> str:
+            v = (v or "").strip()
+            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+                return v[1:-1]
+            return v
+
+        m = re.match(r"^\s*contains\s*\(\s*(.+?)\s*,\s*(.+?)\s*\)\s*$", s, re.IGNORECASE)
+        if m:
+            left = _strip_quotes(m.group(1))
+            right = _strip_quotes(m.group(2))
+            return right.lower() in left.lower()
+
+        if re.search(r"\s+contains\s+", s, re.IGNORECASE):
+            parts = re.split(r"\s+contains\s+", s, maxsplit=1, flags=re.IGNORECASE)
+            left = _strip_quotes(parts[0]) if parts else ""
+            right = _strip_quotes(parts[1]) if len(parts) > 1 else ""
+            return right.lower() in left.lower()
+
+        if "==" in s:
+            a, b = s.split("==", 1)
+            return _strip_quotes(a).strip() == _strip_quotes(b).strip()
+        if "!=" in s:
+            a, b = s.split("!=", 1)
+            return _strip_quotes(a).strip() != _strip_quotes(b).strip()
+
+        return s.lower() in {"true", "1", "yes", "y", "ok"}
+    except Exception:
+        return False
+
+
+async def _get_automations_cached() -> list[dict]:
+    now = time.time()
+    try:
+        if (
+            _AUTOMATIONS_CACHE.get("data")
+            and (now - float(_AUTOMATIONS_CACHE.get("ts") or 0.0)) < _AUTOMATIONS_CACHE_TTL_SEC
+        ):
+            return list(_AUTOMATIONS_CACHE.get("data") or [])
+    except Exception:
+        pass
+
+    try:
+        raw = await db_manager.get_setting(AUTOMATIONS_KEY)
+        arr = json.loads(raw) if raw else []
+        if not isinstance(arr, list):
+            arr = []
+    except Exception:
+        arr = []
+
+    try:
+        _AUTOMATIONS_CACHE["ts"] = now
+        _AUTOMATIONS_CACHE["data"] = arr
+    except Exception:
+        pass
+
+    return arr
+
+
+async def run_whatsapp_automations(*, sender: str, message_obj: dict, raw_message: dict) -> None:
+    """Execute saved automations for a WhatsApp inbound message (best-effort)."""
+    try:
+        # Optional test-gate: run automations only for configured test numbers
+        try:
+            cfg = await get_inbox_config()
+            if cfg.get("automations_test_gate_enabled"):
+                tests = set(_norm_digits_list(cfg.get("test_numbers") or []))
+                if tests and _digits_only(sender) not in tests:
+                    return
+        except Exception:
+            pass
+
+        automations = await _get_automations_cached()
+        if not automations:
+            return
+
+        # Compact context for {{ var }} templates
+        text = ""
+        try:
+            if isinstance(message_obj, dict) and message_obj.get("type") == "text":
+                text = str(message_obj.get("message") or "")
+        except Exception:
+            text = ""
+
+        ctx = {
+            "user_id": sender,
+            "phone": sender,
+            "from": sender,
+            "text": text,
+            "message": text,
+            "topic": "message",
+            "source": "whatsapp",
+            "message_type": str(message_obj.get("type") or raw_message.get("type") or "text"),
+        }
+
+        for a in automations:
+            try:
+                if not isinstance(a, dict):
+                    continue
+                if a.get("id") == "order_confirmation":
+                    continue
+                if a.get("enabled", True) is False:
+                    continue
+
+                flow = a.get("flow") if isinstance(a.get("flow"), dict) else None
+                if not flow:
+                    continue
+                nodes = flow.get("nodes") or []
+                edges = flow.get("edges") or []
+                if not isinstance(nodes, list) or not isinstance(edges, list):
+                    continue
+
+                by_id = {str(n.get("id")): n for n in nodes if isinstance(n, dict) and n.get("id")}
+                out_map: dict[str, list[dict]] = {}
+                for e in edges:
+                    if isinstance(e, dict) and e.get("from") and e.get("to"):
+                        out_map.setdefault(str(e["from"]), []).append(e)
+
+                triggers: list[str] = []
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    if str(n.get("type") or "") != "trigger":
+                        continue
+                    data = n.get("data") if isinstance(n.get("data"), dict) else {}
+                    if str(data.get("source") or "").lower() != "whatsapp":
+                        continue
+                    topic = str(data.get("topic") or "message").strip().lower()
+                    if topic not in {"message", "incoming_message", "incoming", "inbox"}:
+                        continue
+                    triggers.append(str(n.get("id")))
+
+                if not triggers:
+                    continue
+
+                async def exec_action(node_data: dict) -> None:
+                    atype = str((node_data or {}).get("type") or "").strip()
+                    if atype == "send_whatsapp_text":
+                        body = _render_vars(str(node_data.get("text") or ""), ctx).strip()
+                        if not body:
+                            return
+                        await message_processor.process_outgoing_message({
+                            "user_id": sender,
+                            "type": "text",
+                            "from_me": True,
+                            "message": body,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "agent_username": "automation",
+                        })
+                    elif atype == "send_whatsapp_template":
+                        template_name = _render_vars(str(node_data.get("template_name") or ""), ctx).strip()
+                        if not template_name:
+                            return
+                        language = _render_vars(str(node_data.get("language") or "en"), ctx).strip() or "en"
+                        await message_processor.process_outgoing_message({
+                            "user_id": sender,
+                            "type": "template",
+                            "from_me": True,
+                            "message": template_name,
+                            "template_name": template_name,
+                            "language": language,
+                            "components": node_data.get("components"),
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "agent_username": "automation",
+                        })
+
+                async def visit(node_id: str, depth: int, seen: set[str]) -> None:
+                    if depth > _AUTOMATIONS_MAX_DEPTH or node_id in seen:
+                        return
+                    seen.add(node_id)
+                    node = by_id.get(str(node_id))
+                    if not isinstance(node, dict):
+                        return
+                    ntype = str(node.get("type") or "")
+                    ndata = node.get("data") if isinstance(node.get("data"), dict) else {}
+                    outs = out_map.get(str(node_id), []) or []
+
+                    if ntype == "condition":
+                        ok = _eval_condition_expr(str(ndata.get("expression") or ""), ctx)
+                        port = "true" if ok else "false"
+                        nxt = next((e for e in outs if str(e.get("fromPort") or "") == port), None)
+                        if nxt and nxt.get("to"):
+                            await visit(str(nxt.get("to")), depth + 1, seen)
+                        return
+
+                    if ntype == "delay":
+                        try:
+                            minutes = float(ndata.get("minutes") or 0)
+                        except Exception:
+                            minutes = 0.0
+                        delay_sec = min(max(0, int(minutes * 60)), max(0, int(_AUTOMATIONS_MAX_DELAY_SEC)))
+                        for e in outs:
+                            if e.get("to"):
+                                asyncio.create_task(_continue_after_delay(str(e.get("to")), delay_sec, by_id, out_map, ctx, sender))
+                        return
+
+                    if ntype == "action":
+                        await exec_action(ndata)
+
+                    # Default: follow non-input edges
+                    for e in outs:
+                        if str(e.get("fromPort") or "") == "in":
+                            continue
+                        if e.get("to"):
+                            await visit(str(e.get("to")), depth + 1, seen)
+
+                for tid in triggers:
+                    await visit(tid, 0, set())
+
+            except Exception:
+                continue
+    except Exception:
+        return
+
+
+async def _continue_after_delay(
+    next_node_id: str,
+    delay_sec: int,
+    by_id: dict,
+    out_map: dict,
+    ctx: dict,
+    sender: str,
+) -> None:
+    """Delayed continuation for a single branch (best-effort)."""
+    try:
+        if int(delay_sec) > 0:
+            await asyncio.sleep(int(delay_sec))
+
+        async def exec_action(node_data: dict) -> None:
+            atype = str((node_data or {}).get("type") or "").strip()
+            if atype == "send_whatsapp_text":
+                body = _render_vars(str(node_data.get("text") or ""), ctx).strip()
+                if not body:
+                    return
+                await message_processor.process_outgoing_message({
+                    "user_id": sender,
+                    "type": "text",
+                    "from_me": True,
+                    "message": body,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "agent_username": "automation",
+                })
+            elif atype == "send_whatsapp_template":
+                template_name = _render_vars(str(node_data.get("template_name") or ""), ctx).strip()
+                if not template_name:
+                    return
+                language = _render_vars(str(node_data.get("language") or "en"), ctx).strip() or "en"
+                await message_processor.process_outgoing_message({
+                    "user_id": sender,
+                    "type": "template",
+                    "from_me": True,
+                    "message": template_name,
+                    "template_name": template_name,
+                    "language": language,
+                    "components": node_data.get("components"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "agent_username": "automation",
+                })
+
+        async def visit(node_id: str, depth: int, seen: set[str]) -> None:
+            if depth > _AUTOMATIONS_MAX_DEPTH or node_id in seen:
+                return
+            seen.add(node_id)
+            node = by_id.get(str(node_id))
+            if not isinstance(node, dict):
+                return
+            ntype = str(node.get("type") or "")
+            ndata = node.get("data") if isinstance(node.get("data"), dict) else {}
+            outs = out_map.get(str(node_id), []) or []
+
+            if ntype == "condition":
+                ok = _eval_condition_expr(str(ndata.get("expression") or ""), ctx)
+                port = "true" if ok else "false"
+                nxt = next((e for e in outs if str(e.get("fromPort") or "") == port), None)
+                if nxt and nxt.get("to"):
+                    await visit(str(nxt.get("to")), depth + 1, seen)
+                return
+
+            if ntype == "delay":
+                try:
+                    minutes = float(ndata.get("minutes") or 0)
+                except Exception:
+                    minutes = 0.0
+                ds = min(max(0, int(minutes * 60)), max(0, int(_AUTOMATIONS_MAX_DELAY_SEC)))
+                for e in outs:
+                    if e.get("to"):
+                        asyncio.create_task(_continue_after_delay(str(e.get("to")), ds, by_id, out_map, ctx, sender))
+                return
+
+            if ntype == "action":
+                await exec_action(ndata)
+
+            for e in outs:
+                if str(e.get("fromPort") or "") == "in":
+                    continue
+                if e.get("to"):
+                    await visit(str(e.get("to")), depth + 1, seen)
+
+        await visit(str(next_node_id), 0, set())
+    except Exception:
+        return
 
 @app.post("/whatsapp/send-template")
 async def send_whatsapp_template(
