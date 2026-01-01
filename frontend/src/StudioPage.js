@@ -324,13 +324,15 @@ export default function StudioPage() {
               >Run Test</button>
             </>
           ) : (
-            <button className="px-2 py-1 text-sm border rounded" onClick={openSettings}>Inbox Settings</button>
-            <button
-              className="px-2 py-1 text-sm border rounded"
-              onClick={()=>{
-                try { window.dispatchEvent(new Event('studio-save-flow')); } catch {}
-              }}
-            >Save</button>
+            <>
+              <button className="px-2 py-1 text-sm border rounded" onClick={openSettings}>Inbox Settings</button>
+              <button
+                className="px-2 py-1 text-sm border rounded"
+                onClick={()=>{
+                  try { window.dispatchEvent(new Event('studio-save-flow')); } catch {}
+                }}
+              >Save</button>
+            </>
           )}
         </div>
       </div>
