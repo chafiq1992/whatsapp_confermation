@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import api from './api';
 import AutomationStudio from './AutomationStudio';
+import AutomationCustomersTab from './AutomationCustomersTab';
 import InboxSettingsPanel from './InboxSettingsPanel';
 
 export default function StudioPage() {
@@ -33,6 +34,7 @@ export default function StudioPage() {
   const SETTINGS_ID = '__inbox_settings__';
 
   const [selectedId, setSelectedId] = useState(getFlowIdFromUrl());
+  const [viewTab, setViewTab] = useState('canvas'); // 'canvas' | 'compaioing_es'
   const selectedAutomation = useMemo(() => list.find(x => x?.id === selectedId) || null, [list, selectedId]);
   const initialFlow = useMemo(() => {
     if (selectedId === 'order_confirmation') return orderFlow;
@@ -73,6 +75,11 @@ export default function StudioPage() {
       window.removeEventListener('popstate', onPop);
     };
   }, []);
+
+  useEffect(() => {
+    // Reset to canvas when switching flows
+    setViewTab('canvas');
+  }, [selectedId]);
 
   // When selecting Order Confirmation, fetch latest run and build a live visualization
   useEffect(() => {
@@ -275,7 +282,7 @@ export default function StudioPage() {
   }
 
   return (
-    <div className="h-screen w-screen bg-white">
+    <div className="h-screen w-screen bg-white flex flex-col">
       <div className="h-12 border-b flex items-center justify-between px-3">
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 text-sm border rounded" onClick={goHome}>← All flows</button>
@@ -336,24 +343,44 @@ export default function StudioPage() {
           )}
         </div>
       </div>
-      <div className="h-[calc(100vh-14rem)]">
-        <AutomationStudio
-          key={`flow-${selectedId}-${flowVersion}`}
-          initialFlow={initialFlow}
-          onSaveFlow={async (flow)=>{
-            try {
-              const existing = [...list];
-              const idx = existing.findIndex(x => x?.id === selectedId);
-              const entry = { id: selectedId || 'order_confirmation', name: selectedAutomation?.name || (selectedId === 'order_confirmation' ? 'Shopify: Order Confirmation' : selectedId), flow };
-              if (idx >= 0) existing[idx] = entry; else existing.push(entry);
-              setList(existing);
-              await persist(existing);
-              alert('Saved');
-            } catch { alert('Save failed'); }
-          }}
-        />
+
+      {/* Sub-tabs */}
+      <div className="h-10 border-b flex items-center gap-2 px-3 bg-white">
+        <button
+          className={`px-3 py-1.5 text-sm rounded ${viewTab === 'canvas' ? 'bg-slate-900 text-white' : 'border'}`}
+          onClick={() => setViewTab('canvas')}
+        >Canvas</button>
+        <button
+          className={`px-3 py-1.5 text-sm rounded ${viewTab === 'compaioing_es' ? 'bg-slate-900 text-white' : 'border'}`}
+          onClick={() => setViewTab('compaioing_es')}
+        >compaioing es</button>
       </div>
-      {selectedId === 'order_confirmation' && (
+
+      <div className="flex-1 overflow-hidden">
+        {viewTab === 'canvas' ? (
+          <div className={selectedId === 'order_confirmation' ? "h-[calc(100vh-12rem)]" : "h-[calc(100vh-6.5rem)]"}>
+            <AutomationStudio
+              key={`flow-${selectedId}-${flowVersion}`}
+              initialFlow={initialFlow}
+              onSaveFlow={async (flow)=>{
+                try {
+                  const existing = [...list];
+                  const idx = existing.findIndex(x => x?.id === selectedId);
+                  const entry = { id: selectedId || 'order_confirmation', name: selectedAutomation?.name || (selectedId === 'order_confirmation' ? 'Shopify: Order Confirmation' : selectedId), flow };
+                  if (idx >= 0) existing[idx] = entry; else existing.push(entry);
+                  setList(existing);
+                  await persist(existing);
+                  alert('Saved');
+                } catch { alert('Save failed'); }
+              }}
+            />
+          </div>
+        ) : (
+          <AutomationCustomersTab />
+        )}
+      </div>
+
+      {selectedId === 'order_confirmation' && viewTab === 'canvas' && (
         <div className="h-44 border-t bg-white">
           <div className="h-10 border-b flex items-center justify-between px-3">
             <div className="text-sm font-medium">Flow history</div>

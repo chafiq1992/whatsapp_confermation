@@ -404,7 +404,7 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
   const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
   return (
-    <div className="h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
+    <div className="h-full w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-12 px-3 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-2">
           <Rocket className="w-5 h-5 text-blue-600" />
@@ -437,7 +437,7 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
         </div>
       </header>
 
-      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100vh-3rem)]">
+      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100%-3rem)]">
         <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-20">
           <div className="border rounded">
             <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2"><Webhook className="w-4 h-4"/>Triggers</div>
@@ -547,7 +547,7 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
         </aside>
       </div>
 
-      <footer className="fixed bottom-3 left-0 right-0 flex justify-center">
+      <footer className="sticky bottom-3 left-0 right-0 flex justify-center">
         <div className="flex items-center gap-2 bg-white/80 backdrop-blur rounded-full shadow px-3 py-2 border">
           <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 inline-flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/>Validated</span>
           <span className="text-xs text-slate-500">No errors</span>
