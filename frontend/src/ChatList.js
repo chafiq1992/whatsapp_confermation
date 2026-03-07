@@ -71,6 +71,7 @@ const formatTime = (iso) => {
 const WS_BASE =
   process.env.REACT_APP_WS_URL ||
   `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/`;
+const PAGE_SIZE = 100;
 
 /* ───────────── Component ───────────── */
 function ChatList({
@@ -100,6 +101,10 @@ function ChatList({
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
   // Settings modal moved to header; no local settings state here
   const [needsReplyOnly, setNeedsReplyOnly] = useState(false);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [hasMoreConversations, setHasMoreConversations] = useState(true);
+  const [loadingOlderConversations, setLoadingOlderConversations] = useState(false);
+  const [loadingFirstPage, setLoadingFirstPage] = useState(false);
   const activeUserRef = useRef(activeUser);
   const containerRef = useRef(null);
   const [listHeight, setListHeight] = useState(0);
@@ -108,9 +113,41 @@ function ChatList({
   const rowNodesRef = useRef(new Map());
   const prevPositionsRef = useRef(new Map());
 
+  const hasServerFilters = useMemo(
+    () => (
+      !!search ||
+      showUnreadOnly ||
+      assignedFilter !== 'all' ||
+      tagFilters.length > 0 ||
+      needsReplyOnly ||
+      showArchive
+    ),
+    [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]
+  );
+
   useEffect(() => {
-    setConversations(initialConversations);
-  }, [initialConversations]);
+    const incoming = Array.isArray(initialConversations) ? initialConversations : [];
+    if (incoming.length === 0 || hasServerFilters) return;
+    setConversations((prev) => {
+      const map = new Map((Array.isArray(prev) ? prev : []).map((c) => [c.user_id, c]));
+      let changed = false;
+      for (const item of incoming) {
+        const existing = map.get(item.user_id);
+        if (!existing) {
+          map.set(item.user_id, item);
+          changed = true;
+          continue;
+        }
+        const existingMs = toMsNormalized(existing.last_message_time);
+        const incomingMs = toMsNormalized(item.last_message_time);
+        if (incomingMs >= existingMs) {
+          map.set(item.user_id, { ...existing, ...item });
+          changed = true;
+        }
+      }
+      return changed ? Array.from(map.values()) : prev;
+    });
+  }, [initialConversations, hasServerFilters]);
 
   // Live preview updates are handled in App to keep a single source of truth
 
@@ -169,71 +206,106 @@ function ChatList({
     })();
   }, []);
 
-  // Optionally fetch filtered conversations from backend for scalability (debounced)
+  const fetchConversationPage = useCallback(async ({ offset = 0, replace = false, signal }) => {
+    const params = new URLSearchParams();
+    if (search) params.set('q', search);
+    if (showUnreadOnly) params.set('unread_only', 'true');
+    if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
+    if (tagFilters.length) params.set('tags', tagFilters.join(','));
+    if (needsReplyOnly) params.set('unresponded_only', 'true');
+    if (showArchive) params.set('archived', '1');
+    params.set('limit', String(PAGE_SIZE));
+    params.set('offset', String(offset));
+    const res = await api.get(`/conversations?${params.toString()}`, { signal });
+    const rows = Array.isArray(res.data) ? res.data : [];
+    const baseById = new Map((Array.isArray(initialConversations) ? initialConversations : []).map((c) => [c.user_id, c]));
+    const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
+    const normalized = rows.map((s) => {
+      const b = baseById.get(s.user_id);
+      if (!b) return s;
+      const sMs = toMsNormalized(s.last_message_time);
+      const bMs = toMsNormalized(b.last_message_time);
+      if (bMs > sMs) {
+        return {
+          ...s,
+          last_message: b.last_message,
+          last_message_type: b.last_message_type,
+          last_message_time: b.last_message_time,
+          last_message_from_me: b.last_message_from_me,
+          last_message_status: b.last_message_status,
+        };
+      }
+      if (bMs === sMs) {
+        return {
+          ...s,
+          last_message_from_me: (typeof s.last_message_from_me === 'boolean') ? s.last_message_from_me : b.last_message_from_me,
+          last_message_status: (() => {
+            const curr = s.last_message_status;
+            const other = b.last_message_status;
+            if (!curr) return other;
+            if (!other) return curr;
+            return rank(curr) >= rank(other) ? curr : other;
+          })(),
+        };
+      }
+      return s;
+    }).map((item) => {
+      if (activeUserRef.current?.user_id && item.user_id === activeUserRef.current.user_id) {
+        return { ...item, unread_count: 0 };
+      }
+      return item;
+    });
+
+    const hasMore = rows.length === PAGE_SIZE;
+    const next = offset + rows.length;
+    setHasMoreConversations(hasMore);
+    setNextOffset(next);
+    setConversations((prev) => {
+      const existing = Array.isArray(prev) ? prev : [];
+      if (replace) return normalized;
+      const map = new Map(existing.map((c) => [c.user_id, c]));
+      for (const conv of normalized) {
+        map.set(conv.user_id, conv);
+      }
+      return Array.from(map.values());
+    });
+    return { hasMore, nextOffset: next };
+  }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive, initialConversations]);
+
+  const loadOlderConversations = useCallback(async () => {
+    if (loadingOlderConversations || !hasMoreConversations) return;
+    setLoadingOlderConversations(true);
+    try {
+      await fetchConversationPage({ offset: nextOffset, replace: false });
+    } catch (e) {
+      // network errors keep current window as-is
+    } finally {
+      setLoadingOlderConversations(false);
+    }
+  }, [loadingOlderConversations, hasMoreConversations, fetchConversationPage, nextOffset]);
+
+  // Reset and fetch first page when filters change (debounced)
   useEffect(() => {
     const controller = new AbortController();
-    const run = () => {
-      const params = new URLSearchParams();
-      if (search) params.set('q', search);
-      if (showUnreadOnly) params.set('unread_only', 'true');
-      if (assignedFilter && assignedFilter !== 'all') params.set('assigned', assignedFilter);
-      if (tagFilters.length) params.set('tags', tagFilters.join(','));
-      if (needsReplyOnly) params.set('unresponded_only', 'true');
-      if (showArchive) params.set('archived', '1');
-      (async () => {
-        try {
-          const res = await api.get(`/conversations?${params.toString()}`, { signal: controller.signal });
-          if (Array.isArray(res.data)) {
-            // Merge server results with App's latest previews to avoid stale downgrades
-            const baseById = new Map((Array.isArray(initialConversations) ? initialConversations : []).map(c => [c.user_id, c]));
-            const rank = (s) => ({ sending: 0, sent: 1, delivered: 2, read: 3, failed: 99 }[s] ?? -1);
-            const merged = res.data.map(s => {
-              const b = baseById.get(s.user_id);
-              if (!b) return s;
-              const sMs = toMsNormalized(s.last_message_time);
-              const bMs = toMsNormalized(b.last_message_time);
-              if (bMs > sMs) {
-                return {
-                  ...s,
-                  last_message: b.last_message,
-                  last_message_type: b.last_message_type,
-                  last_message_time: b.last_message_time,
-                  last_message_from_me: b.last_message_from_me,
-                  last_message_status: b.last_message_status,
-                };
-              } else if (bMs === sMs) {
-                return {
-                  ...s,
-                  last_message_from_me: (typeof s.last_message_from_me === 'boolean') ? s.last_message_from_me : b.last_message_from_me,
-                  last_message_status: (() => {
-                    const curr = s.last_message_status;
-                    const other = b.last_message_status;
-                    if (!curr) return other;
-                    if (!other) return curr;
-                    return rank(curr) >= rank(other) ? curr : other;
-                  })(),
-                };
-              }
-              return s;
-            }).map(item => {
-              // Ensure unread is zero for currently open conversation
-              if (activeUserRef.current?.user_id && item.user_id === activeUserRef.current.user_id) {
-                return { ...item, unread_count: 0 };
-              }
-              return item;
-            });
-            setConversations(merged);
-          }
-        } catch (e) {
-          // network errors fall back to client filtering of existing list
-        }
-      })();
+    const run = async () => {
+      setLoadingFirstPage(true);
+      setHasMoreConversations(true);
+      setNextOffset(0);
+      try {
+        await fetchConversationPage({ offset: 0, replace: true, signal: controller.signal });
+      } catch (e) {
+        // network errors fall back to client filtering of existing list
+      } finally {
+        setLoadingFirstPage(false);
+      }
     };
-    // Debounce only for keystrokes/filter toggles; immediate on mount/first calls is fine
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(run, 350);
-    return () => { clearTimeout(searchDebounceRef.current); controller.abort(); };
-  }, [search, showUnreadOnly, assignedFilter, tagFilters, needsReplyOnly, showArchive]);
+    return () => {
+      clearTimeout(searchDebounceRef.current);
+      controller.abort();
+    };
+  }, [fetchConversationPage]);
 
   // Admin WebSocket handled in App; avoid duplicate WS here to prevent double updates
 
@@ -344,6 +416,12 @@ function ChatList({
       }),
     [setActiveUser]
   );
+
+  const handleItemsRendered = useCallback(({ visibleStopIndex }) => {
+    if (visibleStopIndex >= Math.max(0, filteredConversations.length - 10)) {
+      loadOlderConversations();
+    }
+  }, [filteredConversations.length, loadOlderConversations]);
 
   /* ─── Keyboard ↓↑ navigation (optional, remove if unused) ─── */
   const listRef = useRef(null);
@@ -512,7 +590,7 @@ function ChatList({
 
       {/* Empty states */}
       {filteredConversations.length === 0 ? (
-        loading ? (
+        (loading || loadingFirstPage) ? (
           <div className="flex-1 p-3 space-y-3" aria-live="polite">
             {Array.from({ length: 8 }).map((_, i) => (
               <div key={i} className="flex gap-3">
@@ -546,6 +624,7 @@ function ChatList({
             overscanCount={12}
             useIsScrolling
             itemKey={(index) => filteredConversations[index]?.user_id || `row_${index}`}
+            onItemsRendered={handleItemsRendered}
           >
             {({ index, style }) => (
               <ConversationRow
