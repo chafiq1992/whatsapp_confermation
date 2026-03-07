@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 
@@ -50,16 +50,22 @@ self.addEventListener('fetch', (event) => {
 
   // Cache-first for image proxy endpoint to enable fast thumbnail loads and offline viewing
   if (path.startsWith('/proxy-image')) {
-    event.respondWith(
-      caches.match(req).then((cached) => {
-        if (cached) return cached;
-        return fetch(req).then((res) => {
-          const copy = res.clone();
-          caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
-          return res;
-        });
-      })
-    );
+    event.respondWith((async () => {
+      const cache = await caches.open(RUNTIME_CACHE);
+      const cached = await cache.match(req, { ignoreVary: true });
+      if (cached) {
+        event.waitUntil((async () => {
+          try {
+            const res = await fetch(req);
+            if (res && res.ok) await cache.put(req, res.clone());
+          } catch {}
+        })());
+        return cached;
+      }
+      const res = await fetch(req);
+      if (res && res.ok) await cache.put(req, res.clone());
+      return res;
+    })());
     return;
   }
 
@@ -83,7 +89,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.match(req).then((cached) => cached || fetch(req).then((res) => {
         const copy = res.clone();
-        caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
+        if (res && res.ok) caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
         return res;
       }))
     );
@@ -95,7 +101,7 @@ self.addEventListener('fetch', (event) => {
     caches.match(req).then((cached) => {
       const fetched = fetch(req).then((res) => {
         const copy = res.clone();
-        caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
+        if (res && res.ok) caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, copy));
         return res;
       }).catch(() => cached);
       return cached || fetched;
@@ -117,12 +123,10 @@ self.addEventListener('message', (event) => {
         if (i >= urls.length) return;
         const u = urls[i];
         try {
-          const match = await cache.match(u);
+          const match = await cache.match(u, { ignoreVary: true });
           if (!match) {
-            const res = await fetch(u, { cache: 'no-store' });
-            if (res && res.ok) {
-              await cache.put(u, res.clone());
-            }
+            const res = await fetch(u);
+            if (res && res.ok) await cache.put(u, res.clone());
           }
         } catch {}
         return runNext();

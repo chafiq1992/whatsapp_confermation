@@ -35,8 +35,13 @@ import asyncpg
 import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for, _parse_gcs_url, _get_client
 from prometheus_fastapi_instrumentator import Instrumentator
-from fastapi_limiter import FastAPILimiter
-from fastapi_limiter.depends import RateLimiter
+try:
+    # fastapi-limiter 0.1.x API
+    from fastapi_limiter import FastAPILimiter  # type: ignore
+    from fastapi_limiter.depends import RateLimiter  # type: ignore
+except Exception:
+    FastAPILimiter = None  # type: ignore
+    RateLimiter = None  # type: ignore
 
 from fastapi.staticfiles import StaticFiles
 try:
@@ -70,6 +75,24 @@ DATABASE_URL = os.getenv("DATABASE_URL")  # optional PostgreSQL URL
 PG_POOL_MIN = int(os.getenv("PG_POOL_MIN", "1"))
 PG_POOL_MAX = int(os.getenv("PG_POOL_MAX", "4"))
 REQUIRE_POSTGRES = int(os.getenv("REQUIRE_POSTGRES", "1"))  # when 1 and DATABASE_URL is set, never fallback to SQLite
+# Webhook processing (durable queue best practice: Redis Streams)
+WEBHOOK_QUEUE_MAXSIZE = int(os.getenv("WEBHOOK_QUEUE_MAXSIZE", "1000"))
+WEBHOOK_WORKERS = int(os.getenv("WEBHOOK_WORKERS", "2"))
+WEBHOOK_PROCESSING_TIMEOUT_SECONDS = float(os.getenv("WEBHOOK_PROCESSING_TIMEOUT_SECONDS", "300"))
+WEBHOOK_USE_REDIS_STREAM = os.getenv("WEBHOOK_USE_REDIS_STREAM", "1") == "1"
+WEBHOOK_STREAM_KEY = os.getenv("WEBHOOK_STREAM_KEY", "wa:webhooks")
+WEBHOOK_STREAM_GROUP = os.getenv("WEBHOOK_STREAM_GROUP", "webhook-workers")
+WEBHOOK_STREAM_DLQ_KEY = os.getenv("WEBHOOK_STREAM_DLQ_KEY", "wa:webhooks:dlq")
+WEBHOOK_MAX_ATTEMPTS = int(os.getenv("WEBHOOK_MAX_ATTEMPTS", "20"))
+WEBHOOK_CLAIM_MIN_IDLE_MS = int(os.getenv("WEBHOOK_CLAIM_MIN_IDLE_MS", "60000"))  # 60s
+
+# Durable webhook queue (no Redis): Postgres-backed queue table.
+WEBHOOK_USE_DB_QUEUE = os.getenv("WEBHOOK_USE_DB_QUEUE", "1") == "1"
+WEBHOOK_DB_BATCH_SIZE = int(os.getenv("WEBHOOK_DB_BATCH_SIZE", "25"))
+WEBHOOK_DB_POLL_INTERVAL_SEC = float(os.getenv("WEBHOOK_DB_POLL_INTERVAL_SEC", "1.0"))
+# Runtime readiness flag for the Postgres webhook queue table.
+# We only start DB workers / enqueue into DB when this is True.
+WEBHOOK_DB_READY: bool = False
 # Anything that **must not** be baked in the image (tokens, IDs …) is
 # already picked up with os.getenv() further below. Keep it that way.
 
@@ -278,15 +301,25 @@ _ORDER_CONFIRM_ALLOWED_RAW = os.getenv("ORDER_CONFIRM_ALLOWED_NUMBERS", "")
 ORDER_CONFIRM_ALLOWED_NUMBERS: Set[str] = set(
     _digits_only(n.strip()) for n in _ORDER_CONFIRM_ALLOWED_RAW.split(",") if n.strip()
 )
-# Always include these defaults
-try:
-    ORDER_CONFIRM_ALLOWED_NUMBERS.update({"212650161162", "212606315335"})
-except Exception:
-    pass
 
 # Allow sending order confirmation to all numbers (bypass whitelist)
-ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "0") or "0").strip() not in ("0", "false", "False")
+ORDER_CONFIRM_ALLOW_ALL = (os.getenv("ORDER_CONFIRM_ALLOW_ALL", "1") or "1").strip() not in ("0", "false", "False")
+# Optionally skip WhatsApp contacts pre-check regardless of allow-all/whitelist mode
+# When enabled, the flow will attempt sending templates without tagging no_wtp first
+ORDER_CONFIRM_SKIP_CONTACT_CHECK = (os.getenv("ORDER_CONFIRM_SKIP_CONTACT_CHECK", "0") or "0").strip() not in ("0", "false", "False")
 ORDER_CONFIRM_SEND_CATALOG = (os.getenv("ORDER_CONFIRM_SEND_CATALOG", "0") or "0").strip() not in ("0", "false", "False")
+
+# Warn loudly when order-confirmation is effectively in allowlist/test gate mode
+try:
+    if not ORDER_CONFIRM_ALLOW_ALL:
+        logging.warning(
+            "Order confirmation phone gate is ENABLED (ORDER_CONFIRM_ALLOW_ALL=0). "
+            "Only allowlisted numbers will receive the order confirmation template. "
+            "Allowed digits: %s",
+            ",".join(sorted(list(ORDER_CONFIRM_ALLOWED_NUMBERS or set())))[:500],
+        )
+except Exception:
+    pass
 
 # Build/version identifiers for frontend refresh banner
 APP_BUILD_ID = os.getenv("APP_BUILD_ID") or datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -483,7 +516,12 @@ class ConnectionManager:
                     pass
             del self.message_queue[user_id]
         
-        print(f"✅ User {user_id} connected. Total connections: {len(self.active_connections[user_id])}")
+        # Avoid print+emoji which gets promoted to ERROR by the smart_print wrapper.
+        logging.getLogger(__name__).info(
+            "WS connected user_id=%s connections_for_user=%s",
+            user_id,
+            len(self.active_connections.get(user_id) or []),
+        )
     
     def disconnect(self, websocket: WebSocket):
         """Disconnect a WebSocket"""
@@ -495,7 +533,9 @@ class ConnectionManager:
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
             
-            print(f"❌ User {user_id} disconnected")
+            # Normal disconnects are expected (tab close, network change, idle timeout).
+            # Keep this as INFO to reduce log noise/cost.
+            logging.getLogger(__name__).info("WS disconnected user_id=%s", user_id)
     
     async def _send_local(self, user_id: str, message: dict):
         _vlog(f"📤 Attempting to send to user {user_id}")
@@ -1101,6 +1141,7 @@ class DatabaseManager:
             "type",
             "from_me",
             "status",
+            "error",
             "price",
             "caption",
             "media_path",
@@ -1222,6 +1263,7 @@ class DatabaseManager:
                     type           TEXT DEFAULT 'text',
                     from_me        INTEGER DEFAULT 0,             -- bool 0/1
                     status         TEXT  DEFAULT 'sending',
+                    error          TEXT,
                     price          TEXT,
                     caption        TEXT,
                     url            TEXT,
@@ -1317,6 +1359,22 @@ class DatabaseManager:
                     key   TEXT PRIMARY KEY,
                     value TEXT
                 );
+
+                -- Durable webhook queue (SQLite fallback; Postgres has JSONB schema below)
+                CREATE TABLE IF NOT EXISTS webhook_events (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status          TEXT NOT NULL DEFAULT 'pending', -- pending|processing|retry|done|dead
+                    attempts        INTEGER NOT NULL DEFAULT 0,
+                    payload         TEXT NOT NULL,
+                    last_error      TEXT,
+                    next_attempt_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    locked_at       TEXT,
+                    lock_owner      TEXT,
+                    created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_webhook_events_due
+                    ON webhook_events (status, datetime(next_attempt_at), id);
                 """
             if self.use_postgres:
                 script = base_script.replace(
@@ -1331,11 +1389,33 @@ class DatabaseManager:
                     await db.execute(stmt)
                 # Ensure the additional composite index exists in Postgres as well
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_msg_user_ts_text ON messages (user_id, timestamp)")
+                # Durable webhook queue schema for Postgres (JSONB + timestamptz)
+                await db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        payload JSONB NOT NULL,
+                        last_error TEXT,
+                        next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        locked_at TIMESTAMPTZ,
+                        lock_owner TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_events_due ON webhook_events (status, next_attempt_at, id)"
+                )
             else:
                 await db.executescript(base_script)
                 await db.commit()
 
             # Ensure newer columns exist for deployments created before they were added
+            # Agents table: optional color for per-agent tag color in UI
+            await self._add_column_if_missing(db, "agents", "color", "TEXT")
             await self._add_column_if_missing(db, "messages", "temp_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "url", "TEXT")
             # reply/reactions columns (idempotent)
@@ -1345,6 +1425,7 @@ class DatabaseManager:
             await self._add_column_if_missing(db, "messages", "reaction_emoji", "TEXT")
             await self._add_column_if_missing(db, "messages", "reaction_action", "TEXT")
             await self._add_column_if_missing(db, "messages", "waveform", "TEXT")
+            await self._add_column_if_missing(db, "messages", "error", "TEXT")
             # Ensure product identifiers columns exist for catalog items
             await self._add_column_if_missing(db, "messages", "product_retailer_id", "TEXT")
             await self._add_column_if_missing(db, "messages", "retailer_id", "TEXT")
@@ -1369,19 +1450,20 @@ class DatabaseManager:
                 await db.commit()
 
     # ── Agents management ──────────────────────────────────────────
-    async def create_agent(self, username: str, name: str, password_hash: str, is_admin: int = 0):
+    async def create_agent(self, username: str, name: str, password_hash: Optional[str], is_admin: int = 0, color: Optional[str] = None):
         async with self._conn() as db:
             query = self._convert(
                 """
-                INSERT INTO agents (username, name, password_hash, is_admin)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO agents (username, name, password_hash, is_admin, color)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(username) DO UPDATE SET
                     name=EXCLUDED.name,
-                    password_hash=EXCLUDED.password_hash,
-                    is_admin=EXCLUDED.is_admin
+                    password_hash=COALESCE(EXCLUDED.password_hash, agents.password_hash),
+                    is_admin=EXCLUDED.is_admin,
+                    color=EXCLUDED.color
                 """
             )
-            params = (username, name, password_hash, int(is_admin))
+            params = (username, name, password_hash, int(is_admin), color)
             if self.use_postgres:
                 await db.execute(query, *params)
             else:
@@ -1391,11 +1473,11 @@ class DatabaseManager:
     async def list_agents(self) -> List[dict]:
         async with self._conn() as db:
             if self.use_postgres:
-                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY created_at DESC")
+                query = self._convert("SELECT username, name, is_admin, color, created_at FROM agents ORDER BY created_at DESC")
                 rows = await db.fetch(query)
                 return [dict(r) for r in rows]
             else:
-                query = self._convert("SELECT username, name, is_admin, created_at FROM agents ORDER BY datetime(created_at) DESC")
+                query = self._convert("SELECT username, name, is_admin, color, created_at FROM agents ORDER BY datetime(created_at) DESC")
                 cur = await db.execute(query)
                 rows = await cur.fetchall()
                 return [dict(r) for r in rows]
@@ -1454,12 +1536,15 @@ class DatabaseManager:
                 d["tags"] = []
             return d
 
-    async def upsert_conversation_meta(self, user_id: str, assigned_agent: Optional[str] = None, tags: Optional[List[str]] = None, avatar_url: Optional[str] = None):
+    # Sentinel values to distinguish "argument omitted" from "explicitly set to None"
+    _SENTINEL = object()
+
+    async def upsert_conversation_meta(self, user_id: str, assigned_agent: Optional[str] = _SENTINEL, tags: Optional[List[str]] = _SENTINEL, avatar_url: Optional[str] = _SENTINEL):
         async with self._conn() as db:
             existing = await self.get_conversation_meta(user_id)
-            new_tags = tags if tags is not None else existing.get("tags")
-            new_assignee = assigned_agent if assigned_agent is not None else existing.get("assigned_agent")
-            new_avatar = avatar_url if avatar_url is not None else existing.get("avatar_url")
+            new_tags = existing.get("tags") if tags is self._SENTINEL else tags
+            new_assignee = existing.get("assigned_agent") if assigned_agent is self._SENTINEL else assigned_agent
+            new_avatar = existing.get("avatar_url") if avatar_url is self._SENTINEL else avatar_url
 
             query = self._convert(
                 """
@@ -1692,7 +1777,7 @@ class DatabaseManager:
                 await db.execute("DELETE FROM conversation_notes WHERE id = ?", (note_id,))
                 await db.commit()
 
-    async def update_message_status(self, wa_message_id: str, status: str):
+    async def update_message_status(self, wa_message_id: str, status: str, error: str | None = None):
         """Persist a status update for a message identified by wa_message_id.
 
         Returns the temp_id if available so the UI can reconcile optimistic bubbles.
@@ -1721,7 +1806,10 @@ class DatabaseManager:
                 pass
 
         if user_id:
-            await self.upsert_message({"user_id": user_id, "wa_message_id": wa_message_id, "status": status})
+            payload = {"user_id": user_id, "wa_message_id": wa_message_id, "status": status}
+            if error:
+                payload["error"] = error
+            await self.upsert_message(payload)
         # If we couldn't resolve user_id, do nothing to avoid inserting orphan rows
         return temp_id
 
@@ -2615,6 +2703,13 @@ class MessageProcessor:
                     wa_response = await self.whatsapp_messenger.send_text_message(
                         wa_to, message["message"], context_message_id=message.get("reply_to")
                     )
+                elif message["type"] == "template":
+                    wa_response = await self.whatsapp_messenger.send_template_message(
+                        to=wa_to,
+                        template_name=str(message.get("template_name") or message.get("message") or ""),
+                        language=str(message.get("language") or "en"),
+                        components=message.get("components"),
+                    )
                 elif message["type"] in ("catalog_item", "interactive_product"):
                     # Interactive single product via catalog
                     retailer_id = (
@@ -3020,6 +3115,16 @@ class MessageProcessor:
                 }
             }
             await self.connection_manager.send_to_user(user_id, error_update)
+            # Persist failure for later inspection (history/admin UI)
+            try:
+                await self.db_manager.upsert_message({
+                    "user_id": user_id,
+                    "temp_id": temp_id,
+                    "status": "failed",
+                    "error": str(e),
+                })
+            except Exception:
+                pass
         finally:
             media_path = message.get("media_path")
             if media_path and Path(media_path).exists():
@@ -3190,8 +3295,48 @@ class MessageProcessor:
             if not wa_id or not status:
                 continue
 
+            # Extract failure reason (Meta provides `errors` on failed delivery statuses)
+            error_payload: str | None = None
+            try:
+                errs = item.get("errors")
+                if isinstance(errs, list) and errs:
+                    e0 = errs[0] if isinstance(errs[0], dict) else {"raw": errs[0]}
+                    error_payload = json.dumps(
+                        {
+                            "code": e0.get("code"),
+                            "title": e0.get("title"),
+                            "details": e0.get("details"),
+                            "href": e0.get("href"),
+                        },
+                        ensure_ascii=False,
+                    )
+                elif isinstance(item.get("error"), dict):
+                    e0 = item.get("error") or {}
+                    error_payload = json.dumps(
+                        {
+                            "code": e0.get("code"),
+                            "title": e0.get("title"),
+                            "details": e0.get("message") or e0.get("details"),
+                        },
+                        ensure_ascii=False,
+                    )
+            except Exception:
+                error_payload = None
+
+            # Log failed deliveries loudly (helps debug "accepted" but not received)
+            try:
+                if str(status).lower() == "failed":
+                    logging.error(
+                        "WhatsApp status failed wa_message_id=%s error=%s raw=%s",
+                        str(wa_id),
+                        error_payload or "<no details>",
+                        json.dumps(item, ensure_ascii=False)[:800],
+                    )
+            except Exception:
+                pass
+
             # Update DB and fetch temp_id/user_id (skip if user_id unknown)
-            temp_id = await self.db_manager.update_message_status(wa_id, status)
+            temp_id = await self.db_manager.update_message_status(wa_id, status, error=error_payload)
             user_id = await self.db_manager.get_user_for_message(wa_id)
             if not user_id:
                 continue
@@ -3207,8 +3352,29 @@ class MessageProcessor:
                     "wa_message_id": wa_id,
                     "status": status,
                     "timestamp": timestamp,
+                    **({"error": error_payload} if error_payload else {}),
                 }
             })
+
+            # Order confirmation: adjust Shopify tags based on delivery outcome when mapping exists
+            try:
+                mapping = await redis_manager.get_json(f"oc:wa2order:{wa_id}") if redis_manager else None
+            except Exception:
+                mapping = None
+            try:
+                if isinstance(mapping, dict) and mapping.get("order_id"):
+                    order_id = str(mapping.get("order_id"))
+                    st = str(status).lower()
+                    if st in {"sent", "delivered", "read"}:
+                        await _add_order_tag(order_id, "ok_wtp")
+                        # Ensure no_wtp removed if it was added earlier
+                        await _remove_order_tag(order_id, "no_wtp")
+                    elif st == "failed":
+                        await _add_order_tag(order_id, "no_wtp")
+                        # Optionally remove optimistic ok_wtp if present
+                        await _remove_order_tag(order_id, "ok_wtp")
+            except Exception:
+                pass
 
 
     async def _handle_incoming_message(self, message: dict):
@@ -3332,7 +3498,7 @@ class MessageProcessor:
                     BTN2 = {"تغير المعلومات", "تغيير المعلومات"}
                     BTN3 = {"تكلم مع العميل"}
                     if tnorm in BTN1:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn1_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3367,7 +3533,7 @@ class MessageProcessor:
                         except Exception:
                             pass
                     elif tnorm in BTN2:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn2_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3389,7 +3555,7 @@ class MessageProcessor:
                             except Exception:
                                 pass
                     elif tnorm in BTN3:
-                        audio_url = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                        audio_url = str((await get_inbox_config()).get("order_confirm_btn3_audio_url") or "")
                         if audio_url:
                             try:
                                 to = _normalize_ma_phone(sender)
@@ -3509,11 +3675,11 @@ class MessageProcessor:
                 BTN3 = {"تكلم مع العميل"}
                 matched = None
                 if tnorm in BTN1:
-                    matched = os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn1_audio_url") or "")
                 elif tnorm in BTN2:
-                    matched = os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn2_audio_url") or "")
                 elif tnorm in BTN3:
-                    matched = os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "")
+                    matched = str((await get_inbox_config()).get("order_confirm_btn3_audio_url") or "")
                 if matched:
                     try:
                         to = _normalize_ma_phone(sender)
@@ -3578,11 +3744,6 @@ class MessageProcessor:
             message_obj["message"] = audio_path
             message_obj["url"] = drive_url
             message_obj["transcription"] = ""
-            # If customer sends an audio after order confirmation, try sending pending variant images
-            try:
-                await self._send_pending_variant_media(sender)
-            except Exception:
-                pass
         elif msg_type == "video":
             video_path, drive_url = await self._download_media(message["video"]["id"], "video")
             message_obj["message"] = video_path
@@ -3614,6 +3775,12 @@ class MessageProcessor:
             {"type": "message_received", "data": message_obj},
             exclude_user=sender
         )
+
+        # Trigger automations asynchronously (never block webhook workers)
+        try:
+            asyncio.create_task(run_whatsapp_automations(sender=sender, message_obj=message_obj, raw_message=message))
+        except Exception:
+            pass
         
         # Auto-responses
         try:
@@ -3889,7 +4056,9 @@ class MessageProcessor:
             return
         # Only the QUICK-REPLY BUTTONS are gated by test numbers; catalog matches are for all
         try:
-            is_test_number = _digits_only(user_id) in AUTO_REPLY_TEST_NUMBERS
+            cfg = await get_inbox_config()
+            test_numbers = set(_norm_digits_list(cfg.get("test_numbers") or AUTO_REPLY_TEST_NUMBERS))
+            is_test_number = _digits_only(user_id) in test_numbers
         except Exception:
             is_test_number = False
         # 24h cooldown per user (bypass when an explicit product ID/URL is present)
@@ -3911,6 +4080,13 @@ class MessageProcessor:
             has_url = False
             has_digit = False
         if (not has_url) and (not has_digit) and is_test_number:
+            try:
+                cfg = await get_inbox_config()
+                buy_title = str(cfg.get("catalog_buy_button_title") or "Acheter | شراء")
+                status_title = str(cfg.get("catalog_order_status_button_title") or "Statut | حالة")
+            except Exception:
+                buy_title = "Acheter | شراء"
+                status_title = "Statut | حالة"
             await self.process_outgoing_message({
                 "user_id": user_id,
                 "type": "buttons",
@@ -3920,8 +4096,8 @@ class MessageProcessor:
                     "اختر خيارًا:\nأريد شراء منتج\nأريد التحقق من حالة طلبي"
                 ),
                 "buttons": [
-                    {"id": "buy_item", "title": "Acheter | شراء"},
-                    {"id": "order_status", "title": "Statut | حالة"},
+                    {"id": "buy_item", "title": buy_title},
+                    {"id": "order_status", "title": status_title},
                 ],
                 "timestamp": datetime.utcnow().isoformat(),
             })
@@ -4189,17 +4365,39 @@ class MessageProcessor:
                                         vt = (li.get("variant_title") or "").strip()
                                         if vt and "/" in vt and not (size and color):
                                             parts = [s.strip() for s in vt.split("/") if s.strip()]
-                                            if len(parts) >= 1 and not size:
-                                                size = parts[0]
-                                            if len(parts) >= 2 and not color:
-                                                color = parts[1]
+                                            def _is_size_token(tok: str) -> bool:
+                                                t = (tok or "").strip().lower()
+                                                if t.isdigit():
+                                                    return True
+                                                return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
+                                            for part in parts:
+                                                if not color and not part.isdigit() and not _is_size_token(part):
+                                                    color = part
+                                                    continue
+                                                if not size and _is_size_token(part):
+                                                    size = part
+                                    price_val = None
+                                    try:
+                                        price_val = li.get("price")
+                                    except Exception:
+                                        price_val = None
+                                    if price_val is not None:
+                                        try:
+                                            num = float(str(price_val).replace(",","."))
+                                            price_str = f"{num:.2f}"
+                                        except Exception:
+                                            price_str = str(price_val)
+                                    else:
+                                        price_str = ""
                                     lines = []
-                                    if size:
-                                        lines.append(f"المقاس: {size}")
                                     if color:
                                         lines.append(f"اللون: {color}")
+                                    if size:
+                                        lines.append(f"المقاس: {size}")
                                     if qstr:
                                         lines.append(f"الكمية: {qstr}")
+                                    if price_str:
+                                        lines.append(f"السعر: {price_str}")
                                     caption = "\n".join(lines)
                                     items.append({"url": img_url, "caption": caption})
                 except Exception as exc:
@@ -4291,17 +4489,39 @@ class MessageProcessor:
                                     vt = (li.get("variant_title") or "").strip()
                                     if vt and "/" in vt and not (size and color):
                                         parts = [s.strip() for s in vt.split("/") if s.strip()]
-                                        if len(parts) >= 1 and not size:
-                                            size = parts[0]
-                                        if len(parts) >= 2 and not color:
-                                            color = parts[1]
+                                        def _is_size_token(tok: str) -> bool:
+                                            t = (tok or "").strip().lower()
+                                            if t.isdigit():
+                                                return True
+                                            return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
+                                        for part in parts:
+                                            if not color and not part.isdigit() and not _is_size_token(part):
+                                                color = part
+                                                continue
+                                            if not size and _is_size_token(part):
+                                                size = part
+                                price_val = None
+                                try:
+                                    price_val = li.get("price")
+                                except Exception:
+                                    price_val = None
+                                if price_val is not None:
+                                    try:
+                                        num = float(str(price_val).replace(",","."))
+                                        price_str = f"{num:.2f}"
+                                    except Exception:
+                                        price_str = str(price_val)
+                                else:
+                                    price_str = ""
                                 lines = []
-                                if size:
-                                    lines.append(f"المقاس: {size}")
                                 if color:
                                     lines.append(f"اللون: {color}")
+                                if size:
+                                    lines.append(f"المقاس: {size}")
                                 if qstr:
                                     lines.append(f"الكمية: {qstr}")
+                                if price_str:
+                                    lines.append(f"السعر: {price_str}")
                                 caption = "\n".join(lines)
                                 items.append({"url": img_url, "caption": caption})
                 except Exception:
@@ -4424,20 +4644,46 @@ class MessageProcessor:
                     vt = (li.get("variant_title") or "").strip()
                     if vt and "/" in vt and not (size and color):
                         parts = [s.strip() for s in vt.split("/") if s.strip()]
-                        if len(parts) >= 1 and not size:
-                            size = parts[0]
-                        if len(parts) >= 2 and not color:
-                            color = parts[1]
+                        def _is_size_token(tok: str) -> bool:
+                            t = (tok or "").strip().lower()
+                            if t.isdigit():
+                                return True
+                            return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
+                        for part in parts:
+                            if not color and not part.isdigit() and not _is_size_token(part):
+                                color = part
+                                continue
+                            if not size and _is_size_token(part):
+                                size = part
+                price_val = None
+                try:
+                    price_val = li.get("price")
+                except Exception:
+                    price_val = None
+                if price_val is not None:
+                    try:
+                        num = float(str(price_val).replace(",","."))
+                        price_str = f"{num:.2f}"
+                    except Exception:
+                        price_str = str(price_val)
+                else:
+                    price_str = ""
                 lines = []
-                if size:
-                    lines.append(f"المقاس: {size}")
                 if color:
                     lines.append(f"اللون: {color}")
+                if size:
+                    lines.append(f"المقاس: {size}")
                 if qstr:
                     lines.append(f"الكمية: {qstr}")
+                if price_str:
+                    lines.append(f"السعر: {price_str}")
                 caption = "\n".join(lines)
                 try:
                     res = await self.whatsapp_messenger.send_single_catalog_item(to, str(variant_id), caption)
+                    # Treat missing messages or explicit error as failure to trigger image fallback
+                    msgs = (res or {}).get("messages") if isinstance(res, dict) else None
+                    if not msgs:
+                        raise RuntimeError("catalog_send_failed")
                     # Build synthetic interactive entry for UI
                     synthetic = {
                         "temp_id": f"temp_{uuid.uuid4().hex}",
@@ -4450,7 +4696,7 @@ class MessageProcessor:
                     }
                     # attach WA id if present
                     try:
-                        arr = (res or {}).get("messages") or []
+                        arr = msgs or []
                         if isinstance(arr, list) and arr:
                             synthetic["wa_message_id"] = str((arr[0] or {}).get("id") or "")
                             synthetic["status"] = "sent"
@@ -4462,7 +4708,10 @@ class MessageProcessor:
                     sent += 1
                     await asyncio.sleep(0.2)
                 except Exception:
-                    continue
+                    # Bubble up to allow full image fallback when catalog not usable
+                    raise
+            if sent <= 0:
+                raise RuntimeError("no_catalog_items_sent")
         except Exception:
             return
 
@@ -4525,6 +4774,366 @@ connection_manager = ConnectionManager()
 redis_manager = RedisManager()
 message_processor = MessageProcessor(connection_manager, redis_manager, db_manager)
 messenger = message_processor.whatsapp_messenger
+
+# ────────────────────────────────────────────────────────────
+# Webhook ingress: ACK fast, process async (durable via Redis Streams)
+# ────────────────────────────────────────────────────────────
+WEBHOOK_QUEUE: "asyncio.Queue[dict]" = asyncio.Queue(maxsize=max(1, int(WEBHOOK_QUEUE_MAXSIZE)))
+
+def _webhook_backend_name() -> str:
+    if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE and WEBHOOK_DB_READY:
+        return "db"
+    if WEBHOOK_USE_REDIS_STREAM and bool(getattr(redis_manager, "redis_client", None)):
+        return "redis_stream"
+    return "memory"
+
+async def _db_enqueue_webhook(payload: dict) -> None:
+    """Persist webhook payload into Postgres-backed queue before ACKing."""
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            raise RuntimeError("DB queue requires Postgres")
+        await db.execute(
+            "INSERT INTO webhook_events (payload, status, next_attempt_at) VALUES ($1::jsonb, 'pending', NOW())",
+            json.dumps(payload),
+        )
+
+_webhook_db_ready_last_log_ts: float = 0.0
+
+async def _ensure_webhook_events_table() -> bool:
+    """Best-effort: ensure Postgres webhook_events table exists before using DB queue.
+
+    Returns True when the table appears ready, False otherwise.
+    """
+    global WEBHOOK_DB_READY, _webhook_db_ready_last_log_ts
+    if not (getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE):
+        WEBHOOK_DB_READY = False
+        return False
+    try:
+        async with db_manager._conn() as db:
+            if not db_manager.use_postgres:
+                WEBHOOK_DB_READY = False
+                return False
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS webhook_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    payload JSONB NOT NULL,
+                    last_error TEXT,
+                    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    locked_at TIMESTAMPTZ,
+                    lock_owner TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhook_events_due ON webhook_events (status, next_attempt_at, id)"
+            )
+        WEBHOOK_DB_READY = True
+        return True
+    except Exception as exc:
+        WEBHOOK_DB_READY = False
+        # Avoid log spam if DB isn't ready yet.
+        now = time.time()
+        if now - float(_webhook_db_ready_last_log_ts) > 60.0:
+            _webhook_db_ready_last_log_ts = now
+            logging.getLogger(__name__).warning("Webhook DB queue not ready (will fallback): %s", exc)
+        return False
+
+async def _db_claim_webhook_events(batch_size: int, lock_owner: str) -> list[dict]:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return []
+        try:
+            rows = await db.fetch(
+                """
+                WITH cte AS (
+                  SELECT id
+                  FROM webhook_events
+                  WHERE status IN ('pending','retry')
+                    AND next_attempt_at <= NOW()
+                  ORDER BY id
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT $1
+                )
+                UPDATE webhook_events e
+                SET status='processing',
+                    locked_at=NOW(),
+                    lock_owner=$2,
+                    attempts=e.attempts+1,
+                    updated_at=NOW()
+                FROM cte
+                WHERE e.id = cte.id
+                RETURNING e.id, e.payload, e.attempts
+                """,
+                int(batch_size),
+                str(lock_owner),
+            )
+        except Exception as exc:
+            # Most common production failure mode: table missing because init didn't run / timed out.
+            # Ensure table and return empty batch (worker will back off via poll sleep).
+            if "webhook_events" in str(exc).lower() or "undefinedtable" in str(exc).lower():
+                await _ensure_webhook_events_table()
+                return []
+            raise
+        out: list[dict] = []
+        for r in rows or []:
+            try:
+                payload = r["payload"]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+            except Exception:
+                payload = {}
+            out.append({"id": int(r["id"]), "payload": payload, "attempts": int(r["attempts"] or 0)})
+        return out
+
+async def _db_mark_webhook_done(event_id: int) -> None:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return
+        await db.execute(
+            "UPDATE webhook_events SET status='done', last_error=NULL, locked_at=NULL, lock_owner=NULL, updated_at=NOW() WHERE id=$1",
+            int(event_id),
+        )
+
+async def _db_reschedule_webhook(event_id: int, *, attempts: int, error: str) -> None:
+    async with db_manager._conn() as db:
+        if not db_manager.use_postgres:
+            return
+        dead = int(attempts) >= int(WEBHOOK_MAX_ATTEMPTS)
+        delay = min(300, max(1, int(2 ** min(int(attempts), 8))))
+        if dead:
+            await db.execute(
+                "UPDATE webhook_events SET status='dead', last_error=$2, locked_at=NULL, lock_owner=NULL, updated_at=NOW() WHERE id=$1",
+                int(event_id),
+                str(error)[:4000],
+            )
+        else:
+            await db.execute(
+                """
+                UPDATE webhook_events
+                SET status='retry',
+                    last_error=$2,
+                    next_attempt_at=NOW() + ($3 * INTERVAL '1 second'),
+                    locked_at=NULL,
+                    lock_owner=NULL,
+                    updated_at=NOW()
+                WHERE id=$1
+                """,
+                int(event_id),
+                str(error)[:4000],
+                int(delay),
+            )
+
+async def _ensure_webhook_stream_group() -> bool:
+    """Ensure Redis Stream + consumer group exists for durable webhook ingestion."""
+    try:
+        r = getattr(redis_manager, "redis_client", None)
+        if not r or not WEBHOOK_USE_REDIS_STREAM:
+            return False
+        try:
+            await r.xgroup_create(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, id="0-0", mkstream=True)
+        except Exception as exc:
+            if "BUSYGROUP" not in str(exc).upper():
+                raise
+        return True
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to ensure webhook redis stream group: %s", exc)
+        return False
+
+async def _webhook_worker(worker_id: int):
+    log = logging.getLogger(__name__)
+    consumer = f"w{worker_id}-{uuid.uuid4().hex[:10]}"
+    last_claim = 0.0
+
+    async def process_one(payload: dict):
+        await asyncio.wait_for(
+            message_processor.process_incoming_message(payload),
+            timeout=max(1.0, float(WEBHOOK_PROCESSING_TIMEOUT_SECONDS)),
+        )
+
+    while True:
+        r = getattr(redis_manager, "redis_client", None)
+        use_stream = bool(r and WEBHOOK_USE_REDIS_STREAM)
+
+        if use_stream:
+            # Reclaim pending messages periodically to survive crashes/restarts.
+            now = time.time()
+            if now - last_claim > 15:
+                last_claim = now
+                try:
+                    res = await r.xautoclaim(
+                        WEBHOOK_STREAM_KEY,
+                        WEBHOOK_STREAM_GROUP,
+                        consumer,
+                        min_idle_time=max(1, int(WEBHOOK_CLAIM_MIN_IDLE_MS)),
+                        start_id="0-0",
+                        count=25,
+                    )
+                    claimed = res[1] if isinstance(res, (list, tuple)) and len(res) >= 2 else []
+                except Exception:
+                    claimed = []
+
+                for msg_id, fields in claimed or []:
+                    raw = None
+                    try:
+                        raw = fields.get("payload") if isinstance(fields, dict) else None
+                        if raw is None and isinstance(fields, dict):
+                            raw = fields.get(b"payload")
+                        payload = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else None
+                        if isinstance(payload, (bytes, bytearray)):
+                            payload = json.loads(payload.decode("utf-8"))
+                        if not isinstance(payload, dict):
+                            raise ValueError("bad payload")
+                        await process_one(payload)
+                        await r.xack(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, msg_id)
+                        try:
+                            await r.hdel("wa:webhooks:attempts", str(msg_id))
+                        except Exception:
+                            pass
+                    except Exception as exc:
+                        try:
+                            attempts = await r.hincrby("wa:webhooks:attempts", str(msg_id), 1)
+                        except Exception:
+                            attempts = 1
+                        if int(attempts) >= int(WEBHOOK_MAX_ATTEMPTS):
+                            try:
+                                await r.xadd(
+                                    WEBHOOK_STREAM_DLQ_KEY,
+                                    {
+                                        "id": str(msg_id),
+                                        "error": str(exc),
+                                        "payload": raw if isinstance(raw, str) else (raw.decode("utf-8", "ignore") if isinstance(raw, (bytes, bytearray)) else ""),
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            await r.xack(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, msg_id)
+                        log.exception("Webhook worker %s: claimed msg failed: %s", worker_id, exc)
+
+            try:
+                resp = await r.xreadgroup(
+                    WEBHOOK_STREAM_GROUP,
+                    consumer,
+                    streams={WEBHOOK_STREAM_KEY: ">"},
+                    count=25,
+                    block=5000,
+                )
+                if resp:
+                    for _stream, messages in resp:
+                        for msg_id, fields in messages:
+                            raw = None
+                            try:
+                                raw = fields.get("payload") if isinstance(fields, dict) else None
+                                if raw is None and isinstance(fields, dict):
+                                    raw = fields.get(b"payload")
+                                payload = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else None
+                                if isinstance(payload, (bytes, bytearray)):
+                                    payload = json.loads(payload.decode("utf-8"))
+                                if not isinstance(payload, dict):
+                                    raise ValueError("bad payload")
+                                await process_one(payload)
+                                await r.xack(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, msg_id)
+                                try:
+                                    await r.hdel("wa:webhooks:attempts", str(msg_id))
+                                except Exception:
+                                    pass
+                            except asyncio.TimeoutError:
+                                log.error("Webhook worker %s: msg %s timed out after %ss", worker_id, msg_id, WEBHOOK_PROCESSING_TIMEOUT_SECONDS)
+                                try:
+                                    attempts = await r.hincrby("wa:webhooks:attempts", str(msg_id), 1)
+                                except Exception:
+                                    attempts = 1
+                                if int(attempts) >= int(WEBHOOK_MAX_ATTEMPTS):
+                                    try:
+                                        await r.xadd(
+                                            WEBHOOK_STREAM_DLQ_KEY,
+                                            {
+                                                "id": str(msg_id),
+                                                "error": "timeout",
+                                                "payload": raw if isinstance(raw, str) else (raw.decode("utf-8", "ignore") if isinstance(raw, (bytes, bytearray)) else ""),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                    await r.xack(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, msg_id)
+                            except Exception as exc:
+                                try:
+                                    attempts = await r.hincrby("wa:webhooks:attempts", str(msg_id), 1)
+                                except Exception:
+                                    attempts = 1
+                                if int(attempts) >= int(WEBHOOK_MAX_ATTEMPTS):
+                                    try:
+                                        await r.xadd(
+                                            WEBHOOK_STREAM_DLQ_KEY,
+                                            {
+                                                "id": str(msg_id),
+                                                "error": str(exc),
+                                                "payload": raw if isinstance(raw, str) else (raw.decode("utf-8", "ignore") if isinstance(raw, (bytes, bytearray)) else ""),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                    await r.xack(WEBHOOK_STREAM_KEY, WEBHOOK_STREAM_GROUP, msg_id)
+                                log.exception("Webhook worker %s: msg %s failed: %s", worker_id, msg_id, exc)
+                continue
+            except Exception as exc:
+                log.warning("Webhook worker %s: redis stream read failed, falling back to in-memory: %s", worker_id, exc)
+
+        # Fallback: in-memory queue (not durable)
+        data = await WEBHOOK_QUEUE.get()
+        try:
+            await process_one(data)
+        except asyncio.TimeoutError:
+            log.error("Webhook worker %s: in-memory processing timed out after %ss", worker_id, WEBHOOK_PROCESSING_TIMEOUT_SECONDS)
+        except Exception as exc:
+            log.exception("Webhook worker %s: in-memory processing failed: %s", worker_id, exc)
+        finally:
+            try:
+                WEBHOOK_QUEUE.task_done()
+            except Exception:
+                pass
+
+async def _webhook_db_worker(worker_id: int):
+    """Postgres-backed webhook worker (no Redis required)."""
+    log = logging.getLogger(__name__)
+    lock_owner = f"dbw{worker_id}-{uuid.uuid4().hex[:10]}"
+    batch = max(1, int(WEBHOOK_DB_BATCH_SIZE))
+    poll = max(0.1, float(WEBHOOK_DB_POLL_INTERVAL_SEC))
+    while True:
+        try:
+            events = await _db_claim_webhook_events(batch, lock_owner)
+            if not events:
+                await asyncio.sleep(poll)
+                continue
+            for ev in events:
+                eid = int(ev.get("id") or 0)
+                payload = ev.get("payload") or {}
+                attempts = int(ev.get("attempts") or 0)
+                try:
+                    await asyncio.wait_for(
+                        message_processor.process_incoming_message(payload),
+                        timeout=max(1.0, float(WEBHOOK_PROCESSING_TIMEOUT_SECONDS)),
+                    )
+                    await _db_mark_webhook_done(eid)
+                except asyncio.TimeoutError:
+                    log.error("DB webhook worker %s: event %s timed out after %ss", worker_id, eid, WEBHOOK_PROCESSING_TIMEOUT_SECONDS)
+                    await _db_reschedule_webhook(eid, attempts=attempts, error="timeout")
+                except Exception as exc:
+                    log.exception("DB webhook worker %s: event %s failed: %s", worker_id, eid, exc)
+                    await _db_reschedule_webhook(eid, attempts=attempts, error=str(exc))
+        except Exception as outer:
+            # Avoid tight error loops if DB schema isn't ready.
+            if "webhook_events" in str(outer).lower() or "undefinedtable" in str(outer).lower():
+                await _ensure_webhook_events_table()
+                log.warning("DB webhook worker %s: webhook_events missing/unready; backing off: %s", worker_id, outer)
+                await asyncio.sleep(max(5.0, poll))
+                continue
+            log.exception("DB webhook worker %s: loop error: %s", worker_id, outer)
+            await asyncio.sleep(poll)
 
 # FastAPI app
 app = FastAPI(default_response_class=(ORJSONResponse if _ORJSON_AVAILABLE else JSONResponse))
@@ -4601,7 +5210,12 @@ async def no_cache_html(request: StarletteRequest, call_next):
 @app.on_event("startup")
 async def startup():
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    await db_manager.init_db()
+    # Never block container readiness on DB init. If Postgres is down/misconfigured,
+    # we still want the HTTP server to start so /webhook can return 503 quickly and Meta can retry.
+    try:
+        await asyncio.wait_for(db_manager.init_db(), timeout=30.0)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("DB init failed during startup (continuing degraded): %s", exc)
     try:
         # Safe startup hint about DB backend and pool settings
         from urllib.parse import urlparse
@@ -4640,10 +5254,27 @@ async def startup():
         asyncio.create_task(redis_manager.subscribe_ws_events(connection_manager))
     # Initialize rate limiter
     if redis_manager.redis_client:
-        try:
-            await FastAPILimiter.init(redis_manager.redis_client)
-        except Exception as exc:
-            print(f"Rate limiter init failed: {exc}")
+        if FastAPILimiter is not None:
+            try:
+                await FastAPILimiter.init(redis_manager.redis_client)
+            except Exception as exc:
+                print(f"Rate limiter init failed: {exc}")
+    # Start webhook background workers so /webhook can ACK quickly.
+    try:
+        # Best effort: ensure the DB queue table exists before starting DB workers.
+        if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE:
+            await _ensure_webhook_events_table()
+        if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE and WEBHOOK_DB_READY:
+            for i in range(max(1, int(WEBHOOK_WORKERS))):
+                asyncio.create_task(_webhook_db_worker(i + 1))
+            print(f"Webhook DB workers started: {max(1, int(WEBHOOK_WORKERS))} (batch={WEBHOOK_DB_BATCH_SIZE})")
+        else:
+            await _ensure_webhook_stream_group()
+            for i in range(max(1, int(WEBHOOK_WORKERS))):
+                asyncio.create_task(_webhook_worker(i + 1))
+            print(f"Webhook workers started: {max(1, int(WEBHOOK_WORKERS))} (queue maxsize={WEBHOOK_QUEUE_MAXSIZE})")
+    except Exception as exc:
+        print(f"Webhook worker startup failed: {exc}")
     # Ensure conversation_notes table exists for legacy deployments
     try:
         async with db_manager._conn() as db:
@@ -4797,7 +5428,7 @@ async def run_survey_scheduler() -> None:
 # Optional rate limit dependencies that no-op when limiter is not initialized
 async def _optional_rate_limit_text(request: _LimiterRequest, response: _LimiterResponse):
     try:
-        if FastAPILimiter.redis:
+        if FastAPILimiter is not None and getattr(FastAPILimiter, "redis", None):
             limiter = RateLimiter(times=SEND_TEXT_PER_MIN, seconds=60)
             return await limiter(request, response)
     except Exception:
@@ -4805,7 +5436,7 @@ async def _optional_rate_limit_text(request: _LimiterRequest, response: _Limiter
 
 async def _optional_rate_limit_media(request: _LimiterRequest, response: _LimiterResponse):
     try:
-        if FastAPILimiter.redis:
+        if FastAPILimiter is not None and getattr(FastAPILimiter, "redis", None):
             limiter = RateLimiter(times=SEND_MEDIA_PER_MIN, seconds=60)
             return await limiter(request, response)
     except Exception:
@@ -4996,7 +5627,7 @@ async def handle_websocket_message(websocket: WebSocket, user_id: str, data: dic
             pass
 
 @app.api_route("/webhook", methods=["GET", "POST"])
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
     """WhatsApp webhook endpoint"""
     if request.method == "GET":
         # --- Meta verification logic ---
@@ -5050,7 +5681,33 @@ async def webhook(request: Request):
         _vlog("📥 Incoming Webhook Payload:")
         _vlog(json.dumps(data, indent=2))
 
-        await message_processor.process_incoming_message(data)
+        # Best practice: persist the event durably before returning 200.
+        # Prefer Postgres-backed queue when DATABASE_URL is set (no Redis required).
+        try:
+            if getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE:
+                # If schema isn't ready, fall back to Redis/in-memory instead of 503-ing every time.
+                if await _ensure_webhook_events_table():
+                    await _db_enqueue_webhook(data)
+                else:
+                    r = getattr(redis_manager, "redis_client", None)
+                    if r and WEBHOOK_USE_REDIS_STREAM:
+                        await r.xadd(WEBHOOK_STREAM_KEY, {"payload": json.dumps(data)})
+                    else:
+                        WEBHOOK_QUEUE.put_nowait(data)
+            else:
+                r = getattr(redis_manager, "redis_client", None)
+                if r and WEBHOOK_USE_REDIS_STREAM:
+                    await r.xadd(WEBHOOK_STREAM_KEY, {"payload": json.dumps(data)})
+                else:
+                    WEBHOOK_QUEUE.put_nowait(data)
+        except asyncio.QueueFull:
+            return PlainTextResponse("Webhook queue full", status_code=503)
+        except Exception:
+            # Fail fast so Meta retries
+            return PlainTextResponse("Webhook enqueue failed", status_code=503)
+
+        # Keep request handler fast; actual processing happens in background workers.
+        background_tasks.add_task(lambda: None)
         return {"ok": True}
 
 @app.post("/test-media-upload")
@@ -5266,9 +5923,19 @@ async def create_agent_endpoint(payload: dict = Body(...)):
     name = (payload.get("name") or username).strip()
     password = payload.get("password") or ""
     is_admin = int(bool(payload.get("is_admin", False)))
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="username and password are required")
-    await db_manager.create_agent(username=username, name=name, password_hash=hash_password(password), is_admin=is_admin)
+    color = (payload.get("color") or None)
+    if not username:
+        raise HTTPException(status_code=400, detail="username is required")
+    password_hash = None
+    if password:
+        password_hash = hash_password(password)
+    else:
+        # For updates without password, ensure the agent already exists
+        existing = await db_manager.get_agent_password_hash(username)
+        if not existing:
+            raise HTTPException(status_code=400, detail="password is required for new agents")
+        # Leave password_hash as None to keep existing via COALESCE in upsert
+    await db_manager.create_agent(username=username, name=name, password_hash=password_hash, is_admin=is_admin, color=color)
     return {"ok": True}
 
 @app.delete("/admin/agents/{username}")
@@ -5277,6 +5944,137 @@ async def delete_agent_endpoint(username: str):
     return {"ok": True}
 
 SESSIONS: dict[str, dict] = {}
+
+# ---------------- Inbox config (DB-backed, editable from UI) -----------------
+
+INBOX_CONFIG_KEY = "inbox:config"
+_INBOX_CONFIG_CACHE: dict = {"ts": 0.0, "data": None}
+_INBOX_CONFIG_CACHE_TTL_SEC = float(os.getenv("INBOX_CONFIG_CACHE_TTL_SEC", "5"))
+
+
+async def _require_admin(request: Request) -> dict:
+    me = await auth_me(request)
+    if not me.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin required")
+    return me
+
+
+def _norm_digits_list(values) -> list[str]:
+    out: list[str] = []
+    if values is None:
+        return out
+    if isinstance(values, str):
+        # allow comma / newline separated
+        raw = re.split(r"[,\n]+", values)
+    elif isinstance(values, list):
+        raw = values
+    else:
+        raw = [values]
+    for v in raw:
+        try:
+            d = _digits_only(str(v).strip())
+            if d:
+                out.append(d)
+        except Exception:
+            continue
+    # de-dup preserve order
+    seen = set()
+    dedup = []
+    for d in out:
+        if d in seen:
+            continue
+        seen.add(d)
+        dedup.append(d)
+    return dedup
+
+
+async def get_inbox_config() -> dict:
+    """Return merged inbox config (DB overrides env defaults)."""
+    now = time.time()
+    try:
+        cached = _INBOX_CONFIG_CACHE.get("data")
+        if cached is not None and (now - float(_INBOX_CONFIG_CACHE.get("ts") or 0.0)) < _INBOX_CONFIG_CACHE_TTL_SEC:
+            return dict(cached)
+    except Exception:
+        pass
+
+    # Defaults derived from current env behavior
+    defaults = {
+        # Automations runner gate
+        "automations_test_gate_enabled": False,
+        "test_numbers": [],  # digits-only list; used for automations + catalog quick replies
+
+        # Catalog quick-reply buttons (shown only for test numbers)
+        "catalog_buy_button_title": "Acheter | شراء",
+        "catalog_order_status_button_title": "Statut | حالة",
+
+        # Order confirmation button audio URLs
+        "order_confirm_btn1_audio_url": os.getenv("ORDER_CONFIRM_BTN1_AUDIO_URL", "") or "",
+        "order_confirm_btn2_audio_url": os.getenv("ORDER_CONFIRM_BTN2_AUDIO_URL", "") or "",
+        "order_confirm_btn3_audio_url": os.getenv("ORDER_CONFIRM_BTN3_AUDIO_URL", "") or "",
+    }
+
+    try:
+        raw = await db_manager.get_setting(INBOX_CONFIG_KEY)
+        db_cfg = json.loads(raw) if raw else {}
+        if not isinstance(db_cfg, dict):
+            db_cfg = {}
+    except Exception:
+        db_cfg = {}
+
+    merged = {**defaults, **db_cfg}
+    merged["test_numbers"] = _norm_digits_list(merged.get("test_numbers") or AUTO_REPLY_TEST_NUMBERS)
+    merged["automations_test_gate_enabled"] = bool(merged.get("automations_test_gate_enabled"))
+
+    try:
+        _INBOX_CONFIG_CACHE["ts"] = now
+        _INBOX_CONFIG_CACHE["data"] = merged
+    except Exception:
+        pass
+    return merged
+
+
+@app.get("/admin/inbox-config")
+async def get_inbox_config_endpoint(request: Request):
+    await _require_admin(request)
+    return await get_inbox_config()
+
+
+@app.post("/admin/inbox-config")
+async def set_inbox_config_endpoint(request: Request, payload: dict = Body(...)):
+    await _require_admin(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    # Only accept known keys
+    allowed_keys = {
+        "automations_test_gate_enabled",
+        "test_numbers",
+        "catalog_buy_button_title",
+        "catalog_order_status_button_title",
+        "order_confirm_btn1_audio_url",
+        "order_confirm_btn2_audio_url",
+        "order_confirm_btn3_audio_url",
+    }
+    cfg = {k: payload.get(k) for k in allowed_keys if k in payload}
+
+    # Normalize
+    cfg["automations_test_gate_enabled"] = bool(cfg.get("automations_test_gate_enabled"))
+    cfg["test_numbers"] = _norm_digits_list(cfg.get("test_numbers"))
+    for k in ("catalog_buy_button_title", "catalog_order_status_button_title"):
+        if k in cfg and cfg[k] is not None:
+            cfg[k] = str(cfg[k])
+    for k in ("order_confirm_btn1_audio_url", "order_confirm_btn2_audio_url", "order_confirm_btn3_audio_url"):
+        if k in cfg and cfg[k] is not None:
+            cfg[k] = str(cfg[k]).strip()
+
+    await db_manager.set_setting(INBOX_CONFIG_KEY, cfg)
+    try:
+        _INBOX_CONFIG_CACHE["ts"] = 0.0
+        _INBOX_CONFIG_CACHE["data"] = None
+    except Exception:
+        pass
+    return {"ok": True, "config": await get_inbox_config()}
 
 @app.post("/auth/login")
 async def auth_login(payload: dict = Body(...)):
@@ -5325,6 +6123,14 @@ async def auth_me(request: Request):
 async def assign_conversation(user_id: str, payload: dict = Body(...)):
     agent = payload.get("agent")  # string or None
     await db_manager.set_conversation_assignment(user_id, agent)
+    # Broadcast realtime update to all admin dashboards so lists refresh instantly
+    try:
+        await connection_manager.broadcast_to_admins({
+            "type": "conversation_assignment_updated",
+            "data": {"user_id": user_id, "assigned_agent": agent},
+        })
+    except Exception:
+        pass
     return {"ok": True, "user_id": user_id, "assigned_agent": agent}
 
 @app.post("/conversations/{user_id}/tags")
@@ -5342,6 +6148,17 @@ async def health_check():
     return {
         "status": "healthy",
         "redis": redis_status,
+        "webhook": {
+            "backend": _webhook_backend_name(),
+            "queue_size": getattr(WEBHOOK_QUEUE, "qsize", lambda: None)(),
+            "queue_maxsize": int(WEBHOOK_QUEUE_MAXSIZE),
+            "workers": int(max(1, int(WEBHOOK_WORKERS))),
+            "use_redis_stream": bool(WEBHOOK_USE_REDIS_STREAM and bool(redis_manager.redis_client)),
+            "stream_key": WEBHOOK_STREAM_KEY if (WEBHOOK_USE_REDIS_STREAM and redis_manager.redis_client) else None,
+            "dlq_key": WEBHOOK_STREAM_DLQ_KEY if (WEBHOOK_USE_REDIS_STREAM and redis_manager.redis_client) else None,
+            "use_db_queue": bool(getattr(db_manager, "use_postgres", False) and WEBHOOK_USE_DB_QUEUE and WEBHOOK_DB_READY),
+            "db_queue_ready": bool(WEBHOOK_DB_READY),
+        },
         "active_connections": len(connection_manager.active_connections),
         "timestamp": datetime.utcnow().isoformat(),
         "whatsapp_config": {
@@ -5442,6 +6259,62 @@ async def _add_order_tag(order_id: str, tag: str) -> None:
     except Exception:
         return
 
+async def _remove_order_tag(order_id: str, tag: str) -> None:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            current_tags = order.get("tags") or ""
+            tags = [t.strip() for t in str(current_tags).split(",") if t and t.strip()]
+            new_tags = [t for t in tags if t.lower() != str(tag or "").strip().lower()]
+            payload = {"order": {"id": order_id, "tags": ", ".join(new_tags)}}
+            await client.put(url, json=payload, **_client_args())
+    except Exception:
+        return
+
+async def _order_has_tag(order_id: str, required_tag: str) -> bool:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return False
+            data = resp.json() or {}
+            order = data.get("order") or {}
+            tags_str = str(order.get("tags") or "")
+            tags = [t.strip().lower() for t in tags_str.split(",") if t and t.strip()]
+            return str(required_tag or "").strip().lower() in tags
+    except Exception:
+        return False
+
+async def _is_online_store_order(order_id: str) -> bool:
+    try:
+        from .shopify_integration import admin_api_base, _client_args  # type: ignore
+        import httpx as _httpx  # type: ignore
+        base = admin_api_base()
+        url = f"{base}/orders/{order_id}.json"
+        async with _httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, **_client_args())
+            if resp.status_code >= 400:
+                return False
+            order = (resp.json() or {}).get("order") or {}
+            source_name = str(order.get("source_name") or order.get("source") or "").strip().lower()
+            channel = str(order.get("channel") or order.get("channel_type") or "").strip().lower()
+            # Shopify Online Store orders usually have source_name == 'web'
+            return source_name in {"web", "online", "online_store"} or channel in {"online", "online_store"}
+    except Exception:
+        return False
+
 def _normalize_ma_phone(phone: str) -> str:
     """Normalize Moroccan phone to E.164 (+212...)."""
     try:
@@ -5498,6 +6371,30 @@ async def _run_order_confirmation_flow(
         raw_phone = raw_phone_override if raw_phone_override is not None else await _fetch_order_phone(order_id)
         log_node("trigger:order_created", {"order_id": order_id, "raw_phone": raw_phone}, {"started": True})
 
+        # Gate: proceed when order has required tag OR is an Online Store order
+        required_tag = os.getenv("ORDER_CONFIRM_REQUIRED_TAG", "easysell_cod_form")
+        include_online_store_env = os.getenv("ORDER_CONFIRM_INCLUDE_ONLINE_STORE", "1").strip().lower()
+        include_online_store = include_online_store_env not in {"0", "false", "no", "off"}
+        try:
+            has_required_tag = True if not required_tag else await _order_has_tag(order_id, required_tag)
+        except Exception:
+            has_required_tag = False
+        is_online_store = False
+        if not has_required_tag and include_online_store:
+            try:
+                is_online_store = await _is_online_store_order(order_id)
+            except Exception:
+                is_online_store = False
+        allowed_by_entry_gate = bool(has_required_tag or (include_online_store and is_online_store))
+        log_node(
+            "gate:required_tag_or_online_store",
+            {"order_id": order_id, "tag": required_tag, "include_online_store": include_online_store},
+            {"has_tag": has_required_tag, "is_online_store": is_online_store, "allowed": allowed_by_entry_gate},
+        )
+        if not allowed_by_entry_gate:
+            await _persist_flow_nodes(flow_key, nodes)
+            return
+
         # Gate: only proceed if phone matches allowed numbers (env + defaults)
         raw_digits = "".join(ch for ch in str(raw_phone or "") if ch.isdigit())
         candidates: list[str] = []
@@ -5540,8 +6437,10 @@ async def _run_order_confirmation_flow(
             # Store nodes and return
             await _persist_flow_nodes(flow_key, nodes)
             return
-        # Test-gate mode controls whether to skip WA contact checks; disable when allowing all
+        # Test-gate mode historically skipped WA contact checks when not allowing all
+        # Now decouple with ORDER_CONFIRM_SKIP_CONTACT_CHECK to allow global bypass
         is_test_gate = not ORDER_CONFIRM_ALLOW_ALL
+        skip_contact_check = ORDER_CONFIRM_SKIP_CONTACT_CHECK or is_test_gate
 
         # Normalize phone
         phone_e164 = _normalize_ma_phone(raw_phone)
@@ -5551,9 +6450,9 @@ async def _run_order_confirmation_flow(
             await _persist_flow_nodes(flow_key, nodes)
             return
 
-        # Check WhatsApp availability (skip for test gate to allow direct send attempt)
+        # Check WhatsApp availability (skip when explicitly configured)
         has_wa = True
-        if not is_test_gate:
+        if not skip_contact_check:
             try:
                 contact_res = await messenger.check_whatsapp_contact(phone_e164)
                 entry = (contact_res.get("contacts") or [{}])[0] if isinstance(contact_res, dict) else {}
@@ -5619,8 +6518,26 @@ async def _run_order_confirmation_flow(
                     logging.info("order_confirm flow: sent template ok order_id=%s response=%s", order_id, json.dumps(send_res)[:500])
                 except Exception:
                     pass
-                await _add_order_tag(order_id, "ok_wtp")
-                log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                # Map wa_message_id -> order_id for later status-based tagging
+                try:
+                    wa_id = None
+                    try:
+                        arr = (send_res or {}).get("messages") or []
+                        if isinstance(arr, list) and arr:
+                            wa_id = str((arr[0] or {}).get("id") or "") or None
+                    except Exception:
+                        wa_id = None
+                    if wa_id and redis_manager:
+                        await redis_manager.set_json(f"oc:wa2order:{wa_id}", {"order_id": str(order_id)}, ttl=3 * 24 * 3600)
+                except Exception:
+                    pass
+                # Optimistic tag: mark ok_wtp immediately; status callback will correct if it fails
+                try:
+                    await _add_order_tag(order_id, "ok_wtp")
+                    await _remove_order_tag(order_id, "no_wtp")
+                    log_node("tag:ok_wtp", {"order_id": order_id}, {"tagged": True})
+                except Exception:
+                    pass
                 # Best-effort: add a synthetic message to the UI/inbox so agents can see the template was sent
                 try:
                     uid = _normalize_user_id(phone_e164)
@@ -6095,6 +7012,26 @@ async def favicon():
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
+@app.get("/broken-image.png")
+async def broken_image():
+    try:
+        p = ROOT_DIR / "frontend" / "build" / "broken-image.png"
+        if p.exists():
+            return FileResponse(str(p), media_type="image/png")
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+@app.get("/placeholder-product.png")
+async def placeholder_product():
+    try:
+        p = ROOT_DIR / "frontend" / "build" / "broken-image.png"
+        if p.exists():
+            return FileResponse(str(p), media_type="image/png")
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    except Exception:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
 @app.get("/")
 async def index_page():
     try:
@@ -6106,6 +7043,34 @@ async def index_page():
         return HTMLResponse(content=html)
     except Exception:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+# Runtime app configuration for the frontend (allows Cloud Run env-based overrides)
+@app.get("/app-config")
+async def app_config():
+    try:
+        def read_filter(suffix: str):
+            label = os.getenv(f"CATALOG_FILTER_{suffix}_LABEL", "")
+            query = os.getenv(f"CATALOG_FILTER_{suffix}_QUERY", "")
+            match = (os.getenv(f"CATALOG_FILTER_{suffix}_MATCH", "includes") or "").strip().lower()
+            if label and query:
+                return {
+                    "label": label,
+                    "query": query,
+                    "match": "startsWith" if match in ("start", "startswith", "starts_with") else "includes",
+                }
+            return None
+
+        fA = read_filter("A") or {"label": "Girls", "query": "girls", "match": "includes"}
+        fB = read_filter("B") or {"label": "Boys", "query": "boys", "match": "includes"}
+        fall = {"label": os.getenv("CATALOG_FILTER_ALL_LABEL", "All"), "type": "all"}
+        return {"catalogFilters": [fA, fB, fall]}
+    except Exception:
+        # On any error, return safe defaults
+        return {"catalogFilters": [
+            {"label": "Girls", "query": "girls", "match": "includes"},
+            {"label": "Boys", "query": "boys", "match": "includes"},
+            {"label": "All", "type": "all"},
+        ]}
 
 # Serve hashed main bundle filenames for safety even if HTML references are stale
 @app.get("/static/js/{filename}")
@@ -6459,7 +7424,12 @@ async def get_catalog_sets():
 
 
 @app.get("/catalog-all-products")
-async def get_catalog_products_endpoint(force_refresh: bool = False):
+async def get_catalog_products_endpoint(force_refresh: bool = False, background_tasks: BackgroundTasks = None):
+    """Return cached catalog products quickly.
+
+    Important: do NOT block this endpoint on a full remote refresh (can exceed Cloud Run timeouts),
+    instead trigger a background refresh and serve stale cache immediately.
+    """
     # Refresh cache if forced or stale/missing; otherwise serve cached for speed
     need_refresh = bool(force_refresh)
     try:
@@ -6475,10 +7445,15 @@ async def get_catalog_products_endpoint(force_refresh: bool = False):
 
     if need_refresh:
         try:
-            await catalog_manager.refresh_catalog_cache()
+            # Fire-and-forget refresh to avoid request timeouts.
+            if background_tasks is not None:
+                background_tasks.add_task(catalog_manager.refresh_catalog_cache)
+            else:
+                asyncio.create_task(catalog_manager.refresh_catalog_cache())
         except Exception as exc:
-            print(f"Catalog cache refresh failed in endpoint: {exc}")
+            logging.getLogger(__name__).warning("Catalog cache refresh scheduling failed: %s", exc)
 
+    # Always serve current cache (may be stale, but fast).
     return catalog_manager.get_cached_products() or []
 
 
@@ -6673,7 +7648,6 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                             media_type="image/jpeg",
                             headers={
                                 "Cache-Control": "public, max-age=86400",
-                                "Vary": "Accept",
                             },
                         )
                     except Exception:
@@ -6684,7 +7658,6 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                     media_type=ctype,
                     headers={
                         "Cache-Control": "public, max-age=86400",
-                        "Vary": "Accept",
                     },
                 )
             except Exception:
@@ -6696,8 +7669,13 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
         # Forward upstream status code and caching headers to enable proper browser caching/conditional requests
         passthrough = {
             "Cache-Control": resp.headers.get("Cache-Control", "public, max-age=86400"),
-            "Vary": resp.headers.get("Vary", "Accept"),
         }
+        try:
+            vary = resp.headers.get("Vary")
+            if vary:
+                passthrough["Vary"] = vary
+        except Exception:
+            pass
         for h in ("ETag", "Last-Modified", "Content-Length"):
             v = resp.headers.get(h)
             if v:
@@ -6715,6 +7693,7 @@ async def proxy_image(url: str, w: int | None = None, q: int | None = None):
                 thumb_bytes = buf.getvalue()
                 # Remove upstream length since content length changed
                 passthrough.pop("Content-Length", None)
+                passthrough.pop("Vary", None)
                 return StarletteResponse(
                     content=thumb_bytes,
                     media_type="image/jpeg",
@@ -6996,9 +7975,358 @@ async def list_automations():
 async def save_automations(payload: list[dict] = Body(...)):
     try:
         await db_manager.set_setting(AUTOMATIONS_KEY, payload or [])
+        # Invalidate in-memory cache (best-effort)
+        try:
+            _AUTOMATIONS_CACHE["ts"] = 0.0
+            _AUTOMATIONS_CACHE["data"] = []
+        except Exception:
+            pass
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save automations: {exc}")
+
+
+# ---------------- Automations runtime (WhatsApp inbox) -----------------
+# NOTE: intentionally minimal: trigger on WhatsApp incoming message → run actions.
+
+_AUTOMATIONS_CACHE: dict = {"ts": 0.0, "data": []}
+_AUTOMATIONS_CACHE_TTL_SEC = float(os.getenv("AUTOMATIONS_CACHE_TTL_SEC", "5"))
+_AUTOMATIONS_MAX_DEPTH = int(os.getenv("AUTOMATIONS_MAX_DEPTH", "60"))
+_AUTOMATIONS_MAX_DELAY_SEC = int(os.getenv("AUTOMATIONS_MAX_DELAY_SEC", "3600"))
+
+
+def _render_vars(text: str, ctx: dict) -> str:
+    """Very small {{ var }} renderer used by the automation runner."""
+    try:
+        if not isinstance(text, str) or "{{" not in text:
+            return str(text or "")
+
+        def repl(m: re.Match) -> str:
+            key = (m.group(1) or "").strip()
+            val = ctx.get(key, "")
+            return "" if val is None else str(val)
+
+        return re.sub(r"\{\{\s*([^}]+?)\s*\}\}", repl, text)
+    except Exception:
+        return str(text or "")
+
+
+def _eval_condition_expr(expr: str, ctx: dict) -> bool:
+    """Minimal, safe condition evaluator.
+
+    Supported forms (after {{var}} substitution):
+    - "<left> == <right>"
+    - "<left> != <right>"
+    - "<left> contains <right>"
+    - "contains(<left>, <right>)"
+
+    Where <right> may be quoted with ' or ".
+    """
+    try:
+        s = _render_vars(str(expr or ""), ctx).strip()
+        if not s:
+            return False
+
+        def _strip_quotes(v: str) -> str:
+            v = (v or "").strip()
+            if (v.startswith("'") and v.endswith("'")) or (v.startswith('"') and v.endswith('"')):
+                return v[1:-1]
+            return v
+
+        m = re.match(r"^\s*contains\s*\(\s*(.+?)\s*,\s*(.+?)\s*\)\s*$", s, re.IGNORECASE)
+        if m:
+            left = _strip_quotes(m.group(1))
+            right = _strip_quotes(m.group(2))
+            return right.lower() in left.lower()
+
+        if re.search(r"\s+contains\s+", s, re.IGNORECASE):
+            parts = re.split(r"\s+contains\s+", s, maxsplit=1, flags=re.IGNORECASE)
+            left = _strip_quotes(parts[0]) if parts else ""
+            right = _strip_quotes(parts[1]) if len(parts) > 1 else ""
+            return right.lower() in left.lower()
+
+        if "==" in s:
+            a, b = s.split("==", 1)
+            return _strip_quotes(a).strip() == _strip_quotes(b).strip()
+        if "!=" in s:
+            a, b = s.split("!=", 1)
+            return _strip_quotes(a).strip() != _strip_quotes(b).strip()
+
+        return s.lower() in {"true", "1", "yes", "y", "ok"}
+    except Exception:
+        return False
+
+
+async def _get_automations_cached() -> list[dict]:
+    now = time.time()
+    try:
+        if (
+            _AUTOMATIONS_CACHE.get("data")
+            and (now - float(_AUTOMATIONS_CACHE.get("ts") or 0.0)) < _AUTOMATIONS_CACHE_TTL_SEC
+        ):
+            return list(_AUTOMATIONS_CACHE.get("data") or [])
+    except Exception:
+        pass
+
+    try:
+        raw = await db_manager.get_setting(AUTOMATIONS_KEY)
+        arr = json.loads(raw) if raw else []
+        if not isinstance(arr, list):
+            arr = []
+    except Exception:
+        arr = []
+
+    try:
+        _AUTOMATIONS_CACHE["ts"] = now
+        _AUTOMATIONS_CACHE["data"] = arr
+    except Exception:
+        pass
+
+    return arr
+
+
+async def run_whatsapp_automations(*, sender: str, message_obj: dict, raw_message: dict) -> None:
+    """Execute saved automations for a WhatsApp inbound message (best-effort)."""
+    try:
+        # Optional test-gate: run automations only for configured test numbers
+        try:
+            cfg = await get_inbox_config()
+            if cfg.get("automations_test_gate_enabled"):
+                tests = set(_norm_digits_list(cfg.get("test_numbers") or []))
+                if tests and _digits_only(sender) not in tests:
+                    return
+        except Exception:
+            pass
+
+        automations = await _get_automations_cached()
+        if not automations:
+            return
+
+        # Compact context for {{ var }} templates
+        text = ""
+        try:
+            if isinstance(message_obj, dict) and message_obj.get("type") == "text":
+                text = str(message_obj.get("message") or "")
+        except Exception:
+            text = ""
+
+        ctx = {
+            "user_id": sender,
+            "phone": sender,
+            "from": sender,
+            "text": text,
+            "message": text,
+            "topic": "message",
+            "source": "whatsapp",
+            "message_type": str(message_obj.get("type") or raw_message.get("type") or "text"),
+        }
+
+        for a in automations:
+            try:
+                if not isinstance(a, dict):
+                    continue
+                if a.get("id") == "order_confirmation":
+                    continue
+                if a.get("enabled", True) is False:
+                    continue
+
+                flow = a.get("flow") if isinstance(a.get("flow"), dict) else None
+                if not flow:
+                    continue
+                nodes = flow.get("nodes") or []
+                edges = flow.get("edges") or []
+                if not isinstance(nodes, list) or not isinstance(edges, list):
+                    continue
+
+                by_id = {str(n.get("id")): n for n in nodes if isinstance(n, dict) and n.get("id")}
+                out_map: dict[str, list[dict]] = {}
+                for e in edges:
+                    if isinstance(e, dict) and e.get("from") and e.get("to"):
+                        out_map.setdefault(str(e["from"]), []).append(e)
+
+                triggers: list[str] = []
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    if str(n.get("type") or "") != "trigger":
+                        continue
+                    data = n.get("data") if isinstance(n.get("data"), dict) else {}
+                    if str(data.get("source") or "").lower() != "whatsapp":
+                        continue
+                    topic = str(data.get("topic") or "message").strip().lower()
+                    if topic not in {"message", "incoming_message", "incoming", "inbox"}:
+                        continue
+                    triggers.append(str(n.get("id")))
+
+                if not triggers:
+                    continue
+
+                async def exec_action(node_data: dict) -> None:
+                    atype = str((node_data or {}).get("type") or "").strip()
+                    if atype == "send_whatsapp_text":
+                        body = _render_vars(str(node_data.get("text") or ""), ctx).strip()
+                        if not body:
+                            return
+                        await message_processor.process_outgoing_message({
+                            "user_id": sender,
+                            "type": "text",
+                            "from_me": True,
+                            "message": body,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "agent_username": "automation",
+                        })
+                    elif atype == "send_whatsapp_template":
+                        template_name = _render_vars(str(node_data.get("template_name") or ""), ctx).strip()
+                        if not template_name:
+                            return
+                        language = _render_vars(str(node_data.get("language") or "en"), ctx).strip() or "en"
+                        await message_processor.process_outgoing_message({
+                            "user_id": sender,
+                            "type": "template",
+                            "from_me": True,
+                            "message": template_name,
+                            "template_name": template_name,
+                            "language": language,
+                            "components": node_data.get("components"),
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "agent_username": "automation",
+                        })
+
+                async def visit(node_id: str, depth: int, seen: set[str]) -> None:
+                    if depth > _AUTOMATIONS_MAX_DEPTH or node_id in seen:
+                        return
+                    seen.add(node_id)
+                    node = by_id.get(str(node_id))
+                    if not isinstance(node, dict):
+                        return
+                    ntype = str(node.get("type") or "")
+                    ndata = node.get("data") if isinstance(node.get("data"), dict) else {}
+                    outs = out_map.get(str(node_id), []) or []
+
+                    if ntype == "condition":
+                        ok = _eval_condition_expr(str(ndata.get("expression") or ""), ctx)
+                        port = "true" if ok else "false"
+                        nxt = next((e for e in outs if str(e.get("fromPort") or "") == port), None)
+                        if nxt and nxt.get("to"):
+                            await visit(str(nxt.get("to")), depth + 1, seen)
+                        return
+
+                    if ntype == "delay":
+                        try:
+                            minutes = float(ndata.get("minutes") or 0)
+                        except Exception:
+                            minutes = 0.0
+                        delay_sec = min(max(0, int(minutes * 60)), max(0, int(_AUTOMATIONS_MAX_DELAY_SEC)))
+                        for e in outs:
+                            if e.get("to"):
+                                asyncio.create_task(_continue_after_delay(str(e.get("to")), delay_sec, by_id, out_map, ctx, sender))
+                        return
+
+                    if ntype == "action":
+                        await exec_action(ndata)
+
+                    # Default: follow non-input edges
+                    for e in outs:
+                        if str(e.get("fromPort") or "") == "in":
+                            continue
+                        if e.get("to"):
+                            await visit(str(e.get("to")), depth + 1, seen)
+
+                for tid in triggers:
+                    await visit(tid, 0, set())
+
+            except Exception:
+                continue
+    except Exception:
+        return
+
+
+async def _continue_after_delay(
+    next_node_id: str,
+    delay_sec: int,
+    by_id: dict,
+    out_map: dict,
+    ctx: dict,
+    sender: str,
+) -> None:
+    """Delayed continuation for a single branch (best-effort)."""
+    try:
+        if int(delay_sec) > 0:
+            await asyncio.sleep(int(delay_sec))
+
+        async def exec_action(node_data: dict) -> None:
+            atype = str((node_data or {}).get("type") or "").strip()
+            if atype == "send_whatsapp_text":
+                body = _render_vars(str(node_data.get("text") or ""), ctx).strip()
+                if not body:
+                    return
+                await message_processor.process_outgoing_message({
+                    "user_id": sender,
+                    "type": "text",
+                    "from_me": True,
+                    "message": body,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "agent_username": "automation",
+                })
+            elif atype == "send_whatsapp_template":
+                template_name = _render_vars(str(node_data.get("template_name") or ""), ctx).strip()
+                if not template_name:
+                    return
+                language = _render_vars(str(node_data.get("language") or "en"), ctx).strip() or "en"
+                await message_processor.process_outgoing_message({
+                    "user_id": sender,
+                    "type": "template",
+                    "from_me": True,
+                    "message": template_name,
+                    "template_name": template_name,
+                    "language": language,
+                    "components": node_data.get("components"),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "agent_username": "automation",
+                })
+
+        async def visit(node_id: str, depth: int, seen: set[str]) -> None:
+            if depth > _AUTOMATIONS_MAX_DEPTH or node_id in seen:
+                return
+            seen.add(node_id)
+            node = by_id.get(str(node_id))
+            if not isinstance(node, dict):
+                return
+            ntype = str(node.get("type") or "")
+            ndata = node.get("data") if isinstance(node.get("data"), dict) else {}
+            outs = out_map.get(str(node_id), []) or []
+
+            if ntype == "condition":
+                ok = _eval_condition_expr(str(ndata.get("expression") or ""), ctx)
+                port = "true" if ok else "false"
+                nxt = next((e for e in outs if str(e.get("fromPort") or "") == port), None)
+                if nxt and nxt.get("to"):
+                    await visit(str(nxt.get("to")), depth + 1, seen)
+                return
+
+            if ntype == "delay":
+                try:
+                    minutes = float(ndata.get("minutes") or 0)
+                except Exception:
+                    minutes = 0.0
+                ds = min(max(0, int(minutes * 60)), max(0, int(_AUTOMATIONS_MAX_DELAY_SEC)))
+                for e in outs:
+                    if e.get("to"):
+                        asyncio.create_task(_continue_after_delay(str(e.get("to")), ds, by_id, out_map, ctx, sender))
+                return
+
+            if ntype == "action":
+                await exec_action(ndata)
+
+            for e in outs:
+                if str(e.get("fromPort") or "") == "in":
+                    continue
+                if e.get("to"):
+                    await visit(str(e.get("to")), depth + 1, seen)
+
+        await visit(str(next_node_id), 0, set())
+    except Exception:
+        return
 
 @app.post("/whatsapp/send-template")
 async def send_whatsapp_template(

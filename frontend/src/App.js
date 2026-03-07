@@ -368,6 +368,13 @@ export default function App() {
               };
               return [newConv, ...prev];
             });
+          } else if (data.type === 'conversation_assignment_updated') {
+            const { user_id: userId, assigned_agent } = data.data || {};
+            if (!userId) return;
+            setConversations(prev => prev.map(c => c.user_id === userId ? { ...c, assigned_agent } : c));
+            if (activeUserRef.current?.user_id === userId) {
+              setActiveUser(prev => prev ? { ...prev, assigned_agent } : prev);
+            }
           }
         } catch (err) {
           console.error("WS message parsing failed", err);

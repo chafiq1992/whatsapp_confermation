@@ -29,10 +29,11 @@ export default function CatalogPanel({
   const [selectedSet, setSelectedSet] = useState(null);
 
   // Products and pagination
-  const INITIAL_FETCH_LIMIT = 10000; // fetch many items up-front for instant preview
+  const INITIAL_FETCH_LIMIT = 600; // keep initial render/network bounded; load more on scroll
   const PREFETCH_LIMIT = 120; // lightweight background prefetch for folder previews
   const PAGE_STEP = 200; // only used when falling back to infinite scroll for very large sets
   const CONCURRENT_THUMB_PREFETCH = 6;
+  const MAX_THUMBNAIL_PRECACHE = 300; // avoid flooding /proxy-image when opening large sets
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -42,6 +43,7 @@ export default function CatalogPanel({
   const requestIdRef = useRef(0);
   const fetchInFlightRef = useRef(false);
   const fetchLimitTimerRef = useRef(null);
+  const prefetchedThumbsRef = useRef(new Set());
 
   // Selected images (URLs)
   const [selectedImages, setSelectedImages] = useState([]);
@@ -57,6 +59,11 @@ export default function CatalogPanel({
   const [modalMode, setModalMode] = useState('products'); // 'folders' | 'products'
   const [folderSets, setFolderSets] = useState([]); // sets shown as folders in folder view
   const [activeFilter, setActiveFilter] = useState(null); // 'girls' | 'boys' | 'all'
+  const [catalogFilters, setCatalogFilters] = useState([
+    { key: 'A', label: 'Girls', query: 'girls', match: 'includes' },
+    { key: 'B', label: 'Boys', query: 'boys', match: 'includes' },
+    { key: 'ALL', label: 'All', type: 'all' },
+  ]);
 
   // All selections send as images (product toggle removed per requirements)
 
@@ -128,7 +135,7 @@ export default function CatalogPanel({
         const i = index++;
         if (i >= unique.length) return;
         const u = unique[i];
-        try { await fetch(u, { cache: 'no-store' }); } catch {}
+        try { await fetch(u, { cache: 'force-cache' }); } catch {}
         return runNext();
       };
       await Promise.all(Array.from({ length: CONCURRENT_THUMB_PREFETCH }, runNext));
@@ -159,7 +166,14 @@ export default function CatalogPanel({
             .map(p => p?.images?.[0]?.url)
             .filter(Boolean)
             .map(u => thumbUrlFor(u, 256));
-          setTimeout(() => { _precacheThumbs(urls); }, 0);
+          const next = [];
+          for (const u of urls) {
+            if (!u || prefetchedThumbsRef.current.has(u)) continue;
+            prefetchedThumbsRef.current.add(u);
+            next.push(u);
+            if (next.length >= MAX_THUMBNAIL_PRECACHE) break;
+          }
+          if (next.length) setTimeout(() => { _precacheThumbs(next); }, 0);
         } catch {}
       }
       try { await saveCatalogSetProducts(setId, list); } catch {}
@@ -442,6 +456,29 @@ export default function CatalogPanel({
   // Initial load of sets
   useEffect(() => { fetchSets(); }, []);
 
+  // Load runtime config for catalog filters (from backend env via /app-config)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.get(`${API_BASE}/app-config`);
+        const arr = (res?.data && Array.isArray(res.data.catalogFilters)) ? res.data.catalogFilters : null;
+        if (arr && arr.length >= 2) {
+          const norm = arr.slice(0, 3).map((f, idx) => {
+            if (f && f.type === 'all') return { key: 'ALL', label: f.label || 'All', type: 'all' };
+            const key = idx === 0 ? 'A' : (idx === 1 ? 'B' : 'C');
+            return { key, label: String(f.label || ''), query: String(f.query || ''), match: (f.match || 'includes') };
+          });
+          const ensured = [
+            norm[0] || { key: 'A', label: 'Girls', query: 'girls', match: 'includes' },
+            norm[1] || { key: 'B', label: 'Boys', query: 'boys', match: 'includes' },
+            norm.find(x => x.type === 'all') || { key: 'ALL', label: 'All', type: 'all' },
+          ];
+          setCatalogFilters(ensured);
+        }
+      } catch {}
+    })();
+  }, []);
+
   // Minimal refresh catalog control (icon button)
   function RefreshCatalogButton({ onRefresh }) {
     const [loading, setLoading] = useState(false);
@@ -501,6 +538,7 @@ export default function CatalogPanel({
     setSelectedImages([]);
     setLoadingProducts(true);
     setModalOpen(true);
+    try { prefetchedThumbsRef.current.clear(); } catch {}
     try { if (gridRef.current) gridRef.current.scrollTop = 0; } catch {}
     // Show cached instantly
     try {
@@ -521,10 +559,22 @@ export default function CatalogPanel({
   }, [modalOpen, modalMode, products.length]);
 
   // Helpers: filter sets by prefix (case-insensitive)
-  const filterSetsByPrefix = (prefix) => {
-    const p = String(prefix || '').trim().toLowerCase();
-    const has = (txt) => (txt || '').toString().toLowerCase().includes(p);
-    return sets.filter(s => has(s?.name) || has(s?.id));
+  const filterSetsByPrefix = (filter) => {
+    const f = filter;
+    if (typeof f === 'string') {
+      const p = String(f || '').trim().toLowerCase();
+      const has = (txt) => (txt || '').toString().toLowerCase().includes(p);
+      return sets.filter(s => has(s?.name) || has(s?.id));
+    }
+    if (!f || f.type === 'all') return sets.filter(s => s?.id);
+    const q = String(f.query || '').trim().toLowerCase();
+    const mode = String(f.match || 'includes').toLowerCase();
+    const nameOrId = (s) => ((s?.name || s?.id || '') + '').toLowerCase().trim();
+    if (!q) return sets.filter(s => s?.id);
+    if (mode === 'startswith' || mode === 'startsWith') {
+      return sets.filter(s => nameOrId(s).startsWith(q));
+    }
+    return sets.filter(s => nameOrId(s).includes(q));
   };
 
   // Sorting helpers for folder view: order by age ranges, then shoes sizes
@@ -575,20 +625,21 @@ export default function CatalogPanel({
     });
   };
 
-  // Open folder view modal for a filter (girls/boys/all)
+  // Open folder view modal for a filter (runtime-configurable)
   const openFolderModal = async (filter) => {
     setActiveFilter(filter);
-    const title = filter === 'girls' ? 'Girls' : filter === 'boys' ? 'Boys' : 'All Sets';
+    const title = typeof filter === 'object' && filter && filter.label
+      ? String(filter.label)
+      : (filter === 'girls' ? 'Girls' : filter === 'boys' ? 'Boys' : 'All Sets');
     setModalTitle(title);
     setModalMode('folders');
     setSelectedImages([]);
     setProducts([]);
     setModalOpen(true);
 
-    let fsets = filter === 'all' ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
-    if (filter === 'girls' || filter === 'boys') {
-      fsets = sortFolderSets(fsets);
-    }
+    const isAll = (typeof filter === 'object' && filter && filter.type === 'all') || filter === 'all';
+    let fsets = isAll ? sets.filter(s => s?.id) : filterSetsByPrefix(filter);
+    if (!isAll) { fsets = sortFolderSets(fsets); }
     setFolderSets(fsets);
 
     // Prefetch first few sets in the background for instant entry
@@ -639,7 +690,7 @@ export default function CatalogPanel({
         </div>
       )}
 
-      {/* Filter buttons: Girls / Boys / All */}
+      {/* Filter buttons (runtime configurable via /app-config) */}
       <div className="catalog-sets grid grid-cols-3 gap-2 max-h-[84px]">
         {loadingSets ? (
           <div className="text-xs text-gray-500 col-span-full">Loading sets…</div>
@@ -650,27 +701,16 @@ export default function CatalogPanel({
           </div>
         ) : (
           <>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('girls')}
-            >
-              Girls
-            </button>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('boys')}
-            >
-              Boys
-            </button>
-            <button
-              className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
-              type="button"
-              onClick={() => openFolderModal('all')}
-            >
-              All
-            </button>
+            {catalogFilters.map((f) => (
+              <button
+                key={f.key || f.label}
+                className="px-3 py-2 text-sm rounded bg-gray-800 text-gray-200 hover:bg-gray-700 border border-gray-700"
+                type="button"
+                onClick={() => openFolderModal(f)}
+              >
+                {String(f.label || '').trim() || 'Filter'}
+              </button>
+            ))}
           </>
         )}
       </div>
@@ -739,7 +779,7 @@ export default function CatalogPanel({
                         const url = p.images?.[0]?.url;
                         const checked = url && selectedImages.includes(url);
                         return (
-                          <div key={`${p.retailer_id}-${idx}`} className="relative group border rounded overflow-hidden">
+                          <div key={`${p.retailer_id || p.id || 'p'}-${idx}`} className="relative group border rounded overflow-hidden">
                             {url && (
                               <input type="checkbox" className="absolute top-2 right-2 z-10 scale-150 cursor-pointer" checked={checked} onChange={() => toggleSelect(url)} />
                             )}
@@ -751,9 +791,16 @@ export default function CatalogPanel({
                                   sizes="(max-width: 640px) 45vw, (max-width: 1024px) 22vw, 256px"
                                   alt={p.name}
                                   className="w-full h-32 object-cover"
-                                  loading="eager"
+                                  loading="lazy"
                                   decoding="async"
-                                  onError={(e) => { try { e.currentTarget.src = '/broken-image.png'; } catch {} }}
+                                  onError={(e) => {
+                                    try {
+                                      const img = e.currentTarget;
+                                      if (img?.dataset?.fallbackApplied) return;
+                                      img.dataset.fallbackApplied = '1';
+                                      img.src = '/broken-image.png';
+                                    } catch {}
+                                  }}
                                 />
                               ) : (
                                 <span className="text-xs text-gray-400">No Image</span>

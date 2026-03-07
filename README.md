@@ -1,6 +1,6 @@
 # WhatsApp Shopify Integration 
 
-This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores.
+This project contains a FastAPI backend and React frontend for integrating WhatsApp messaging with Shopify stores. 
 
 **Note:** File upload endpoints require the `python-multipart` package. Make sure this dependency is installed when deploying the backend.
 
@@ -156,6 +156,26 @@ uvicorn backend.main:app --reload --port 8080
 ```
 
 The backend attempts to connect to Redis at startup. If Redis is unavailable, the app continues to work but without caching, pub/sub, or rate limiting.
+
+## Webhook reliability (don’t miss messages)
+
+WhatsApp (Meta) expects your `/webhook` to respond quickly. To prevent timeouts and reduce missed/delayed messages, this backend ACKs webhooks quickly and processes them asynchronously.
+
+**Best practice** is to persist webhook events durably before ACKing. If you already run **Postgres** (set `DATABASE_URL`), you can use the **DB-backed queue** (no Redis required):
+
+- `WEBHOOK_USE_DB_QUEUE=1`
+- `WEBHOOK_DB_BATCH_SIZE`
+- `WEBHOOK_DB_POLL_INTERVAL_SEC`
+
+Alternatively, this repo also supports a durable queue using **Redis Streams** (requires `REDIS_URL`):
+
+- `WEBHOOK_USE_REDIS_STREAM=1`
+- `WEBHOOK_STREAM_KEY`
+- `WEBHOOK_STREAM_GROUP`
+- `WEBHOOK_STREAM_DLQ_KEY` (dead-letter queue for poisoned events)
+- `WEBHOOK_MAX_ATTEMPTS`
+
+If neither Postgres queue nor Redis Streams is available, the backend falls back to an in-memory queue (not durable across crashes).
 
 ## CI/CD to Cloud Run with Memorystore and GCS
 

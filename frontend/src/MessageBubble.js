@@ -20,10 +20,27 @@ export function getSafeMediaUrl(raw) {
 }
 
 // Message status ticks renderer
+function formatErrorTitle(raw) {
+  if (!raw) return "";
+  try {
+    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (obj && typeof obj === "object") {
+      const code = obj.code ? `#${obj.code}` : "";
+      const title = obj.title ? String(obj.title) : "";
+      const details = obj.details ? String(obj.details) : "";
+      return [code, title, details].filter(Boolean).join(" — ").trim();
+    }
+  } catch {}
+  return String(raw);
+}
+
 function renderTick(msg, self) {
   if (!self) return null;
   const status = msg.status || "sent";   // fall-back if backend is late
-  return ICONS[status] || null;
+  const icon = ICONS[status] || null;
+  if (!icon) return null;
+  const title = status === "failed" ? formatErrorTitle(msg.error) : "";
+  return title ? <span title={title}>{icon}</span> : icon;
 }
 
 // Format timestamp utility
@@ -507,21 +524,26 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
   );
 
   // Enhanced video renderer
-  const renderVideo = () => (
-    videoError ? (
+  const renderVideo = () => {
+    const videoSrc =
+      mediaUrl && /^https?:\/\//i.test(mediaUrl)
+        ? `${API_BASE}/proxy-media?url=${encodeURIComponent(mediaUrl)}`
+        : mediaUrl;
+
+    return videoError ? (
       <div className="text-xs text-red-300 italic">Video file missing or failed to load</div>
     ) : (
       <video
         controls
-        src={mediaUrl ? `${API_BASE}/proxy-media?url=${encodeURIComponent(mediaUrl)}` : ""}
+        src={videoSrc || ""}
         className="mb-1 max-w-[250px] rounded-xl bg-gray-100"
         onError={() => setVideoError(true)}
         preload="metadata"
       >
         Your browser does not support the video element.
       </video>
-    )
-  );
+    );
+  };
 
   // Enhanced order renderer
   const renderOrder = () => (
@@ -812,7 +834,13 @@ export default function MessageBubble({ msg, self, catalogProducts = {}, highlig
         )}
         {/* Content based on message type */}
         {isGroupedImages ? renderGroupedImages() :
-         isImage ? renderSingleImage(mediaUrl ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}` : mediaUrl, "Product", msg.caption || msg.price) :
+         isImage ? renderSingleImage(
+           mediaUrl && /^https?:\/\//i.test(mediaUrl)
+             ? `${API_BASE}/proxy-image?url=${encodeURIComponent(mediaUrl)}`
+             : mediaUrl,
+           "Product",
+           msg.caption || msg.price
+         ) :
          isAudio ? renderAudio() :
          isVideo ? renderVideo() :
          isTemplate ? renderTemplate() :

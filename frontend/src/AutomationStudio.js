@@ -1,6 +1,6 @@
 // Lightweight Automation Studio — WhatsApp × Shopify
 // Self-contained, Tailwind-only (no shadcn, no framer-motion)
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import {
   Rocket,
   Plus,
@@ -226,35 +226,21 @@ let idSeq = 1;
 const nextId = () => "n" + idSeq++;
 
 const defaultFlow = () => {
+  const waTrig = TRIGGERS.find(t => t.id === "t_whatsapp_in") || TRIGGERS[0];
   const trigger = makeNode(NODE_TYPES.TRIGGER, 120, 160, {
-    name: "Order Paid",
-    ...TRIGGERS[0].config,
-    sample: TRIGGERS[0].payloadHint,
+    name: "WhatsApp Incoming",
+    ...(waTrig?.config || { source: "whatsapp", topic: "message" }),
+    sample: waTrig?.payloadHint,
   });
-  const cond = makeNode(NODE_TYPES.CONDITION, 420, 160, {
-    expression: "{{ total_price }} >= 300",
-    trueLabel: "VIP",
-    falseLabel: "Regular",
-  });
-  const act1 = makeNode(NODE_TYPES.ACTION, 720, 80, {
-    label: "Send Confirm (EN)",
-    ...ACTIONS[0].config,
-  });
-  const delay = makeNode(NODE_TYPES.DELAY, 720, 240, { minutes: 5 });
-  const act2 = makeNode(NODE_TYPES.ACTION, 960, 240, {
-    label: "Nurture Text (AR)",
+  const act = makeNode(NODE_TYPES.ACTION, 420, 160, {
+    label: "Auto-reply",
     ...ACTIONS[1].config,
-    text: "مبروك 🎉 الطلب ديالك تأكد. شكراً على الثقة!",
+    text: "Bonjour 👋\nNous avons bien reçu votre message.\n\nمرحبا 👋\nتوصلنا برسالتك.",
   });
 
-  const edges = [
-    makeEdge(trigger.id, PORT.OUT, cond.id, PORT.IN),
-    makeEdge(cond.id, "true", act1.id, PORT.IN),
-    makeEdge(cond.id, "false", delay.id, PORT.IN),
-    makeEdge(delay.id, PORT.OUT, act2.id, PORT.IN),
-  ];
+  const edges = [makeEdge(trigger.id, PORT.OUT, act.id, PORT.IN)];
 
-  return { nodes: [trigger, cond, act1, delay, act2], edges };
+  return { nodes: [trigger, act], edges };
 };
 
 function makeNode(type, x, y, data = {}) {
@@ -270,9 +256,14 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
   const [linking, setLinking] = useState(null);
   const [selected, setSelected] = useState(null);
   const [zoom, setZoom] = useState(1);
+  const flowRef = useRef(flow);
 
   const dragRef = useRef({ id: null, offsetX: 0, offsetY: 0 });
   const canvasRef = useRef(null);
+
+  useEffect(() => {
+    flowRef.current = flow;
+  }, [flow]);
 
   const onCanvasDown = (e) => {
     if (e.target.dataset && e.target.dataset.canvas) {
@@ -363,9 +354,19 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
   const [activeNodeId, setActiveNodeId] = useState(null);
   const handleSave = async () => {
     try {
-      if (typeof onSaveFlow === 'function') await onSaveFlow(flow);
+      const f = flowRef.current;
+      if (typeof onSaveFlow === 'function') await onSaveFlow(f);
+      alert("Saved");
     } catch {}
   };
+
+  // Allow parent chrome (StudioPage header) to trigger save
+  useEffect(() => {
+    const h = () => { handleSave(); };
+    window.addEventListener("studio-save-flow", h);
+    return () => window.removeEventListener("studio-save-flow", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const simulate = async () => {
     setRunning(true);
@@ -403,7 +404,7 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
   const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
   return (
-    <div className="h-screen w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
+    <div className="h-full w-full bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-sky-50 via-white to-indigo-50 text-slate-800">
       <header className="h-12 px-3 flex items-center justify-between border-b bg-white/70 backdrop-blur sticky top-0 z-50">
         <div className="flex items-center gap-2">
           <Rocket className="w-5 h-5 text-blue-600" />
@@ -420,13 +421,13 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
           </button>
           <button
             className="px-2 py-1 border rounded text-sm"
-            onClick={() => alert("Saved draft (wire up API)!")}
+            onClick={handleSave}
           >
             <span className="inline-flex items-center gap-1"><Save className="w-4 h-4" />Save draft</span>
           </button>
           <button
             className="px-2 py-1 rounded text-sm bg-blue-600 text-white"
-            onClick={() => alert("Published (replace with API)")}
+            onClick={handleSave}
           >
             <span className="inline-flex items-center gap-1"><CirclePlay className="w-4 h-4" />Publish</span>
           </button>
@@ -436,7 +437,7 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
         </div>
       </header>
 
-      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100vh-3rem)]">
+      <div className="grid grid-cols-12 gap-3 p-3 h-[calc(100%-3rem)]">
         <aside className="col-span-12 md:col-span-3 space-y-3 overflow-y-auto pb-20">
           <div className="border rounded">
             <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-2"><Webhook className="w-4 h-4"/>Triggers</div>
@@ -546,14 +547,14 @@ export default function AutomationStudio({ onClose, initialFlow = null, onSaveFl
         </aside>
       </div>
 
-      <footer className="fixed bottom-3 left-0 right-0 flex justify-center">
+      <footer className="sticky bottom-3 left-0 right-0 flex justify-center">
         <div className="flex items-center gap-2 bg-white/80 backdrop-blur rounded-full shadow px-3 py-2 border">
           <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 inline-flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/>Validated</span>
           <span className="text-xs text-slate-500">No errors</span>
           <div className="w-px h-5 bg-slate-300 mx-1"/>
           <button className="px-2 py-1 border rounded text-sm" onClick={simulate} disabled={running}><span className="inline-flex items-center gap-1"><Play className="w-4 h-4"/>Test</span></button>
-          <button className="px-2 py-1 border rounded text-sm" onClick={()=>alert("Saved!")}><span className="inline-flex items-center gap-1"><Save className="w-4 h-4"/>Save</span></button>
-          <button className="px-2 py-1 rounded text-sm bg-blue-600 text-white" onClick={()=>alert("Published!")}><span className="inline-flex items-center gap-1"><CirclePlay className="w-4 h-4"/>Publish</span></button>
+          <button className="px-2 py-1 border rounded text-sm" onClick={handleSave}><span className="inline-flex items-center gap-1"><Save className="w-4 h-4"/>Save</span></button>
+          <button className="px-2 py-1 rounded text-sm bg-blue-600 text-white" onClick={handleSave}><span className="inline-flex items-center gap-1"><CirclePlay className="w-4 h-4"/>Publish</span></button>
         </div>
       </footer>
     </div>

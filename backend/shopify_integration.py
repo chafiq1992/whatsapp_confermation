@@ -10,33 +10,44 @@ from fastapi import APIRouter, Body, Query, HTTPException, Request
 
 # ================= CONFIG ==================
 
+def _load_store_config_for_prefix(prefix: str) -> tuple[str, str | None, str, str | None]:
+    api_key = os.getenv(f"{prefix}_API_KEY")
+    password = os.getenv(f"{prefix}_PASSWORD")
+    access_token = os.getenv(f"{prefix}_ACCESS_TOKEN")
+    store_url = os.getenv(f"{prefix}_STORE_URL")
+    if not store_url:
+        domain = os.getenv(f"{prefix}_STORE_DOMAIN")
+        if domain:
+            store_url = domain if domain.startswith("http") else f"https://{domain}"
+    # Prefer token-based auth if provided, else basic auth
+    if all([api_key, store_url]) and (password or access_token):
+        return api_key, password, store_url, access_token
+    raise RuntimeError(f"Missing Shopify environment variables for prefix {prefix}")
+
+
 def _load_store_config() -> tuple[str, str | None, str, str | None]:
     """Return the first set of Shopify credentials found in the environment.
 
-    Environment variables are checked using the prefixes ``SHOPIFY``,
-    ``IRRAKIDS`` and ``IRRANOVA``. For each prefix we look for
-    ``<prefix>_API_KEY`` and ``<prefix>_PASSWORD`` together with either
-    ``<prefix>_STORE_URL`` or ``<prefix>_STORE_DOMAIN``.
+    Environment variables are checked using known prefixes and any discovered
+    prefix that has <PREFIX>_STORE_URL or <PREFIX>_STORE_DOMAIN set.
     """
-    prefixes = [
-        "SHOPIFY",
-        "IRRAKIDS",
-        "IRRANOVA",
-    ]
+    prefixes = ["SHOPIFY", "IRRAKIDS", "IRRANOVA"]
+    try:
+        for k in os.environ.keys():
+            if k.endswith("_STORE_URL") or k.endswith("_STORE_DOMAIN"):
+                p = k.rsplit("_", 1)[0]
+                if p and p not in prefixes:
+                    prefixes.append(p)
+    except Exception:
+        pass
 
     for prefix in prefixes:
-        api_key = os.getenv(f"{prefix}_API_KEY")
-        password = os.getenv(f"{prefix}_PASSWORD")
-        access_token = os.getenv(f"{prefix}_ACCESS_TOKEN")
-        store_url = os.getenv(f"{prefix}_STORE_URL")
-        if not store_url:
-            domain = os.getenv(f"{prefix}_STORE_DOMAIN")
-            if domain:
-                store_url = domain if domain.startswith("http") else f"https://{domain}"
-        # Prefer token-based auth if provided, else basic auth
-        if all([api_key, store_url]) and (password or access_token):
-            logging.getLogger(__name__).info("Using Shopify prefix %s", prefix)
-            return api_key, password, store_url, access_token
+        try:
+            api_key, password, store_url, access_token = _load_store_config_for_prefix(prefix)
+        except Exception:
+            continue
+        logging.getLogger(__name__).info("Using Shopify prefix %s", prefix)
+        return api_key, password, store_url, access_token
 
     raise RuntimeError("\u274c\u00a0Missing Shopify environment variables")
 
@@ -50,29 +61,49 @@ except Exception as _exc:
 
 API_VERSION = "2023-04"
 
-def admin_api_base() -> str:
-    """Return the Admin API base URL or raise 503 if not configured.
+_STORE_CACHE: dict[str, tuple[str, str | None, str, str | None]] = {}
 
-    Lazily loads env on first use to allow dynamic configuration in runtime.
-    """
+
+def _get_store_config(store: str | None = None) -> tuple[str, str | None, str, str | None]:
+    """Get Shopify credentials for `store` prefix, or default if store is None."""
     global API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN
+
+    if store:
+        key = str(store).strip().upper()
+        if key:
+            if key in _STORE_CACHE:
+                return _STORE_CACHE[key]
+            try:
+                cfg = _load_store_config_for_prefix(key)
+            except Exception:
+                raise HTTPException(status_code=404, detail=f"Unknown or unconfigured Shopify store '{store}'")
+            _STORE_CACHE[key] = cfg
+            return cfg
+
     if not STORE_URL:
         try:
             API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN = _load_store_config()
         except Exception:
             raise HTTPException(status_code=503, detail="Shopify not configured")
-    return f"{STORE_URL}/admin/api/{API_VERSION}"
+    return API_KEY, PASSWORD, STORE_URL, ACCESS_TOKEN  # type: ignore[return-value]
 
-def _client_args(headers: dict | None = None) -> dict:
+
+def admin_api_base(store: str | None = None) -> str:
+    """Return the Admin API base URL for selected store prefix."""
+    _api_key, _password, store_url, _access_token = _get_store_config(store)
+    return f"{store_url}/admin/api/{API_VERSION}"
+
+def _client_args(headers: dict | None = None, store: str | None = None) -> dict:
     args: dict = {}
     hdrs = dict(headers or {})
+    api_key, password, _store_url, access_token = _get_store_config(store)
     # Prefer Admin API access token. If not provided explicitly, detect token in PASSWORD (shpat_...)
-    effective_token = ACCESS_TOKEN or (PASSWORD if isinstance(PASSWORD, str) and PASSWORD.startswith("shpat_") else None)
+    effective_token = access_token or (password if isinstance(password, str) and password.startswith("shpat_") else None)
     if effective_token:
         hdrs["X-Shopify-Access-Token"] = effective_token
         args["headers"] = hdrs
-    elif API_KEY and PASSWORD:
-        args["auth"] = (API_KEY, PASSWORD)
+    elif api_key and password:
+        args["auth"] = (api_key, password)
         if hdrs:
             args["headers"] = hdrs
     return args
@@ -152,13 +183,37 @@ def _split_name(full_name: str) -> tuple[str, str]:
 # =============== FASTAPI ROUTER ===============
 router = APIRouter()
 
+@router.get("/shopify-stores")
+async def shopify_stores():
+    """List configured Shopify store prefixes available to the backend."""
+    prefixes = ["SHOPIFY", "IRRAKIDS", "IRRANOVA"]
+    try:
+        for k in os.environ.keys():
+            if k.endswith("_STORE_URL") or k.endswith("_STORE_DOMAIN"):
+                p = k.rsplit("_", 1)[0]
+                if p and p not in prefixes:
+                    prefixes.append(p)
+    except Exception:
+        pass
+    out = []
+    for p in prefixes:
+        try:
+            _api_key, _password, store_url, _access_token = _load_store_config_for_prefix(p)
+            out.append({"id": p, "store_url": store_url})
+        except Exception:
+            continue
+    return out
+
 # --- List products, with optional search query ---
 @router.get("/shopify-products")
-async def shopify_products(q: str = Query("", description="Search product titles (optional)")):
+async def shopify_products(
+    q: str = Query("", description="Search product titles (optional)"),
+    store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)"),
+):
     params = {"title": q} if q else {}
-    endpoint = f"{admin_api_base()}/products.json"
+    endpoint = f"{admin_api_base(store)}/products.json"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(endpoint, params=params, **_client_args())
+        resp = await client.get(endpoint, params=params, **_client_args(store=store))
         resp.raise_for_status()
         products = resp.json().get("products", [])
         # Optionally include product_title for variant for UI display
@@ -169,11 +224,14 @@ async def shopify_products(q: str = Query("", description="Search product titles
 
 # --- Lookup a single variant by ID ---
 @router.get("/shopify-variant/{variant_id}")
-async def shopify_variant(variant_id: str):
-    endpoint = f"{admin_api_base()}/variants/{variant_id}.json"
+async def shopify_variant(
+    variant_id: str,
+    store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)"),
+):
+    endpoint = f"{admin_api_base(store)}/variants/{variant_id}.json"
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(endpoint, **_client_args())
+            resp = await client.get(endpoint, **_client_args(store=store))
         except httpx.RequestError as e:
             logger.warning("Shopify variant request failed: %s", e)
             raise HTTPException(status_code=502, detail="Shopify unreachable")
@@ -196,8 +254,8 @@ async def shopify_variant(variant_id: str):
             try:
                 product_id = variant.get("product_id")
                 if product_id:
-                    prod_endpoint = f"{admin_api_base()}/products/{product_id}.json"
-                    p_resp = await client.get(prod_endpoint, **_client_args())
+                    prod_endpoint = f"{admin_api_base(store)}/products/{product_id}.json"
+                    p_resp = await client.get(prod_endpoint, **_client_args(store=store))
                     if p_resp.status_code == 200:
                         prod = (p_resp.json() or {}).get("product") or {}
                         variant["product_title"] = prod.get("title", "")
@@ -222,14 +280,14 @@ async def shopify_variant(variant_id: str):
         return variant or {}
 
 # =============== CUSTOMER BY PHONE ===============
-async def fetch_customer_by_phone(phone_number: str):
+async def fetch_customer_by_phone(phone_number: str, store: str | None = None):
     try:
         phone_number = normalize_phone(phone_number)
         params = {'query': f'phone:{phone_number}'}
         async with httpx.AsyncClient() as client:
             # Search customer
-            search_endpoint = f"{admin_api_base()}/customers/search.json"
-            resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args())
+            search_endpoint = f"{admin_api_base(store)}/customers/search.json"
+            resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args(store=store))
             if resp.status_code == 403:
                 logger.error("Shopify API 403 on customers/search. Missing read_customers scope for token or app not installed.")
                 return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
@@ -240,7 +298,7 @@ async def fetch_customer_by_phone(phone_number: str):
             if not customers and phone_number.startswith("+212"):
                 alt_phone = "0" + phone_number[4:]
                 params = {'query': f'phone:{alt_phone}'}
-                resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args())
+                resp = await client.get(search_endpoint, params=params, timeout=10, **_client_args(store=store))
                 if resp.status_code == 403:
                     logger.error("Shopify API 403 on customers/search (fallback). Missing read_customers scope.")
                     return {"error": "Forbidden", "detail": "Shopify token lacks read_customers scope or app not installed.", "status": 403}
@@ -261,7 +319,7 @@ async def fetch_customer_by_phone(phone_number: str):
                 "limit": 1,
                 "order": "created_at desc"
             }
-            orders_resp = await client.get(f"{admin_api_base()}/orders.json", params=order_params, timeout=10, **_client_args())
+            orders_resp = await client.get(f"{admin_api_base(store)}/orders.json", params=order_params, timeout=10, **_client_args(store=store))
             orders_data = orders_resp.json()
             orders_list = orders_data.get('orders', [])
 
@@ -286,12 +344,20 @@ async def fetch_customer_by_phone(phone_number: str):
                 }
 
             # Build response
+            # Safely pick the first address1 if present
+            try:
+                addr_list = c.get("addresses") or []
+                primary_addr = addr_list[0] if isinstance(addr_list, list) and addr_list else {}
+                address1 = (primary_addr or {}).get("address1") or ""
+            except Exception:
+                address1 = ""
+
             return {
-                "customer_id": c["id"],   # <--- ADD THIS LINE
+                "customer_id": c.get("id"),
                 "name": f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
                 "email": c.get("email") or "",
                 "phone": c.get("phone") or "",
-                "address": (c["addresses"][0]["address1"] if c.get("addresses") and c["addresses"] else ""),
+                "address": address1,
                 "total_orders": total_orders,
                 "last_order": last_order
             }
@@ -304,11 +370,11 @@ async def fetch_customer_by_phone(phone_number: str):
 
 # =========== FASTAPI ENDPOINT: SEARCH CUSTOMER ============
 @router.get("/search-customer")
-async def search_customer(phone_number: str):
+async def search_customer(phone_number: str, store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)")):
     """
     Fetch customer and order info by phone.
     """
-    data = await fetch_customer_by_phone(phone_number)
+    data = await fetch_customer_by_phone(phone_number, store=store)
     if not data:
         raise HTTPException(status_code=404, detail="Customer not found")
     if isinstance(data, dict) and data.get("status") == 403:
@@ -349,7 +415,7 @@ def _candidate_phones(raw: str) -> list[str]:
 
 
 @router.get("/search-customers-all")
-async def search_customers_all(phone_number: str):
+async def search_customers_all(phone_number: str, store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)")):
     """
     Return all Shopify customers matching multiple phone normalizations.
     Each customer includes minimal profile and primary address if available.
@@ -361,7 +427,7 @@ async def search_customers_all(phone_number: str):
     async with httpx.AsyncClient() as client:
         for pn in cand:
             params = {'query': f'phone:{pn}'}
-            resp = await client.get(f"{admin_api_base()}/customers/search.json", params=params, timeout=10, **_client_args())
+            resp = await client.get(f"{admin_api_base(store)}/customers/search.json", params=params, timeout=10, **_client_args(store=store))
             if resp.status_code == 403:
                 raise HTTPException(status_code=403, detail="Shopify token lacks read_customers scope or app not installed.")
             customers = resp.json().get('customers', [])
@@ -405,7 +471,7 @@ async def search_customers_all(phone_number: str):
                 "order": "created_at desc",
             }
             try:
-                orders_resp = await client.get(f"{admin_api_base()}/orders.json", params=order_params, timeout=10, **_client_args())
+                orders_resp = await client.get(f"{admin_api_base(store)}/orders.json", params=order_params, timeout=10, **_client_args(store=store))
                 orders_list = orders_resp.json().get('orders', [])
                 if orders_list:
                     o = orders_list[0]
@@ -426,8 +492,134 @@ async def search_customers_all(phone_number: str):
 
     return list(results_by_id.values())
 
+def _parse_link_header_page_info(link_header: str | None) -> dict[str, str]:
+    """Parse Shopify pagination Link header into {rel: page_info}."""
+    out: dict[str, str] = {}
+    if not link_header:
+        return out
+    for part in str(link_header).split(","):
+        p = part.strip()
+        rel = None
+        if 'rel="next"' in p:
+            rel = "next"
+        elif 'rel="previous"' in p:
+            rel = "previous"
+        if not rel:
+            continue
+        lt = p.find("<")
+        gt = p.find(">")
+        if lt == -1 or gt == -1 or gt <= lt:
+            continue
+        url = p[lt + 1 : gt]
+        idx = url.find("page_info=")
+        if idx == -1:
+            continue
+        token = url[idx + len("page_info=") :]
+        token = token.split("&", 1)[0]
+        if token:
+            out[rel] = token
+    return out
+
+
+@router.get("/shopify-customers")
+async def shopify_customers(
+    store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)"),
+    limit: int = Query(50, ge=1, le=250),
+    page_info: str | None = Query(None, description="Cursor for pagination (Shopify page_info)"),
+    q: str = Query("", description="Search query (Shopify customers/search query syntax)"),
+):
+    """List Shopify customers (paginated), with optional search."""
+    async with httpx.AsyncClient() as client:
+        params: dict[str, str | int] = {"limit": int(limit), "order": "updated_at desc"}
+        if page_info:
+            params["page_info"] = page_info
+
+        if q and q.strip():
+            endpoint = f"{admin_api_base(store)}/customers/search.json"
+            params["query"] = q.strip()
+        else:
+            endpoint = f"{admin_api_base(store)}/customers.json"
+
+        resp = await client.get(endpoint, params=params, timeout=20, **_client_args(store=store))
+        if resp.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks read_customers scope or app not installed.")
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=(resp.text or "Shopify error")[:300])
+
+        payload = resp.json() or {}
+        customers = payload.get("customers", []) or []
+
+        # Count only for the "all customers" default listing first page.
+        total_count: int | None = None
+        if (not q or not q.strip()) and (not page_info):
+            try:
+                c_resp = await client.get(f"{admin_api_base(store)}/customers/count.json", timeout=20, **_client_args(store=store))
+                if c_resp.status_code == 200:
+                    total_count = int((c_resp.json() or {}).get("count") or 0)
+            except Exception:
+                total_count = None
+
+        links = _parse_link_header_page_info(resp.headers.get("link") or resp.headers.get("Link"))
+        next_pi = links.get("next")
+        prev_pi = links.get("previous")
+
+        def fmt_location(c: dict) -> str:
+            addr = c.get("default_address") or {}
+            city = str(addr.get("city") or "").strip()
+            country = str(addr.get("country") or "").strip()
+            if city and country and country.lower() != city.lower():
+                return f"{city}, {country}"
+            return city or country or ""
+
+        def email_sub_status(c: dict) -> str:
+            emc = c.get("email_marketing_consent") or {}
+            state = str(emc.get("state") or "").strip()
+            if state:
+                return state
+            if c.get("accepts_marketing") is True:
+                return "subscribed"
+            if c.get("accepts_marketing") is False:
+                return "not_subscribed"
+            return "-"
+
+        out = []
+        for c in customers:
+            first = str(c.get("first_name") or "").strip()
+            last = str(c.get("last_name") or "").strip()
+            name = (f"{first} {last}").strip() or (c.get("email") or "") or "(no name)"
+            currency = str(c.get("currency") or "").strip() or "MAD"
+            spent = c.get("total_spent")
+            try:
+                spent_val = float(spent) if spent is not None else 0.0
+            except Exception:
+                spent_val = 0.0
+            out.append(
+                {
+                    "id": c.get("id"),
+                    "customer_name": name,
+                    "note": c.get("note") or "",
+                    "email_subscription_status": email_sub_status(c),
+                    "location": fmt_location(c),
+                    "orders": int(c.get("orders_count") or 0),
+                    "amount_spent": {"value": round(spent_val, 2), "currency": currency},
+                    "updated_at": c.get("updated_at"),
+                }
+            )
+
+        return {
+            "store": (store.strip().upper() if store else None),
+            "total_count": total_count,
+            "customers": out,
+            "next_page_info": next_pi,
+            "prev_page_info": prev_pi,
+        }
+
 @router.get("/shopify-orders")
-async def shopify_orders(customer_id: str, limit: int = 50):
+async def shopify_orders(
+    customer_id: str,
+    limit: int = 50,
+    store: str | None = Query(None, description="Optional Shopify store prefix (e.g. IRRAKIDS)"),
+):
     """Return recent orders for a Shopify customer (admin-simplified list)."""
     params = {
         "customer_id": customer_id,
@@ -437,7 +629,7 @@ async def shopify_orders(customer_id: str, limit: int = 50):
     }
     async with httpx.AsyncClient() as client:
         try:
-            resp = await client.get(f"{admin_api_base()}/orders.json", params=params, timeout=15, **_client_args())
+            resp = await client.get(f"{admin_api_base(store)}/orders.json", params=params, timeout=15, **_client_args(store=store))
             if resp.status_code == 429:
                 retry_after = resp.headers.get("Retry-After")
                 detail = {"error": "rate_limited", "message": "Shopify rate limit reached", "retry_after": retry_after}
@@ -453,7 +645,7 @@ async def shopify_orders(customer_id: str, limit: int = 50):
             raise
 
         orders = resp.json().get("orders", [])
-        domain = admin_api_base().replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
+        domain = admin_api_base(store).replace("https://", "").replace("http://", "").split("/admin/api", 1)[0]
         simplified = []
         for o in orders:
             simplified.append({
@@ -464,6 +656,10 @@ async def shopify_orders(customer_id: str, limit: int = 50):
                 "fulfillment_status": o.get("fulfillment_status"),
                 "total_price": o.get("total_price"),
                 "currency": o.get("currency"),
+                # Comma-separated string in Shopify; expose as array for UI clarity
+                "tags": [t.strip() for t in str(o.get("tags") or "").split(",") if t and t.strip()],
+                # Include order note for quick display/append in UI
+                "note": o.get("note") or "",
                 "admin_url": f"https://{domain}/admin/orders/{o.get('id')}",
             })
         return simplified
@@ -771,13 +967,44 @@ async def shopify_orders_create_webhook(request: Request):
                                 size = parts[0]
                             if len(parts) >= 2 and not color:
                                 color = parts[1]
+                    # Try to improve size/color inference when variant_title has mixed info
+                    if not (size and color):
+                        vt = (li.get("variant_title") or "").strip()
+                        if vt and "/" in vt and not (size and color):
+                            parts = [s.strip() for s in vt.split("/") if s.strip()]
+                            def _is_size_token(tok: str) -> bool:
+                                t = (tok or "").strip().lower()
+                                if t.isdigit():
+                                    return True
+                                return t in {"xs","s","m","l","xl","xxl","xxxl","2xl","3xl"}
+                            for part in parts:
+                                if not color and not part.isdigit() and not _is_size_token(part):
+                                    color = part
+                                    continue
+                                if not size and _is_size_token(part):
+                                    size = part
+                    price_val = None
+                    try:
+                        price_val = li.get("price")
+                    except Exception:
+                        price_val = None
+                    if price_val is not None:
+                        try:
+                            num = float(str(price_val).replace(",","."))
+                            price_str = f"{num:.2f}"
+                        except Exception:
+                            price_str = str(price_val)
+                    else:
+                        price_str = ""
                     lines = []
-                    if size:
-                        lines.append(f"المقاس: {size}")
                     if color:
                         lines.append(f"اللون: {color}")
+                    if size:
+                        lines.append(f"المقاس: {size}")
                     if qstr:
                         lines.append(f"الكمية: {qstr}")
+                    if price_str:
+                        lines.append(f"السعر: {price_str}")
                     caption = "\n".join(lines)
                     entry = {"url": img_url, "caption": caption}
                     try:
@@ -839,6 +1066,117 @@ async def shopify_orders_create_webhook(request: Request):
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Webhook handling failed: {exc}")
+
+# --- Add or set order tags ---
+@router.post("/shopify-orders/{order_id}/tags")
+async def add_order_tag(order_id: str, payload: dict = Body(...)):
+    """Add a single tag to a Shopify order. Returns updated tags list.
+
+    Body: { "tag": "new-tag" }
+    """
+    base = admin_api_base()
+    tag = (payload.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Missing tag")
+    if "," in tag:
+        raise HTTPException(status_code=400, detail="Tag cannot contain comma")
+
+    get_endpoint = f"{base}/orders/{order_id}.json"
+    async with httpx.AsyncClient() as client:
+        # Fetch existing order to read current tags
+        resp = await client.get(get_endpoint, **_client_args())
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        resp.raise_for_status()
+        order = (resp.json() or {}).get("order") or {}
+        existing_s = str(order.get("tags") or "")
+        existing = [t.strip() for t in existing_s.split(",") if t and t.strip()]
+        # Avoid case-insensitive duplicates
+        lower_set = {t.lower() for t in existing}
+        if tag.lower() not in lower_set:
+            existing.append(tag)
+
+        put_endpoint = f"{base}/orders/{order_id}.json"
+        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "tags": ", ".join(existing)}}
+        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
+        if upd.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        upd.raise_for_status()
+        return {"order_id": order_id, "tags": existing}
+
+# --- Remove a tag from order ---
+@router.post("/shopify-orders/{order_id}/tags/remove")
+async def remove_order_tag(order_id: str, payload: dict = Body(...)):
+    """Remove a single tag from a Shopify order. Returns updated tags list.
+
+    Body: { "tag": "existing-tag" }
+    """
+    base = admin_api_base()
+    tag = (payload.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="Missing tag")
+
+    get_endpoint = f"{base}/orders/{order_id}.json"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(get_endpoint, **_client_args())
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        resp.raise_for_status()
+        order = (resp.json() or {}).get("order") or {}
+        existing_s = str(order.get("tags") or "")
+        existing = [t.strip() for t in existing_s.split(",") if t and t.strip()]
+        # Remove case-insensitively
+        updated = [t for t in existing if t.lower() != tag.lower()]
+        put_endpoint = f"{base}/orders/{order_id}.json"
+        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "tags": ", ".join(updated)}}
+        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
+        if upd.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        upd.raise_for_status()
+        return {"order_id": order_id, "tags": updated}
+
+# --- Append/Clear order note ---
+@router.post("/shopify-orders/{order_id}/note")
+async def append_order_note(order_id: str, payload: dict = Body(...)):
+    """Append text to the Shopify order note. Returns updated note text.
+
+    Body: { "note": "text to append" }
+    """
+    base = admin_api_base()
+    text = str(payload.get("note") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing note text")
+    get_endpoint = f"{base}/orders/{order_id}.json"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(get_endpoint, **_client_args())
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        resp.raise_for_status()
+        order = (resp.json() or {}).get("order") or {}
+        existing = str(order.get("note") or "").strip()
+        new_note = (existing + ("\n" if existing else "") + text)
+        put_endpoint = f"{base}/orders/{order_id}.json"
+        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "note": new_note}}
+        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
+        if upd.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        upd.raise_for_status()
+        return {"order_id": order_id, "note": new_note}
+
+@router.delete("/shopify-orders/{order_id}/note")
+async def clear_order_note(order_id: str):
+    """Clear the Shopify order note (set to empty)."""
+    base = admin_api_base()
+    async with httpx.AsyncClient() as client:
+        put_endpoint = f"{base}/orders/{order_id}.json"
+        update_payload = {"order": {"id": int(order_id) if str(order_id).isdigit() else order_id, "note": ""}}
+        upd = await client.put(put_endpoint, json=update_payload, **_client_args())
+        if upd.status_code == 404:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if upd.status_code == 403:
+            raise HTTPException(status_code=403, detail="Shopify token lacks write_orders scope or app not installed.")
+        upd.raise_for_status()
+        return {"order_id": order_id, "note": ""}
 
 @router.get("/shopify-shipping-options")
 async def get_shipping_options():

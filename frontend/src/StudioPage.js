@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import api from './api';
 import AutomationStudio from './AutomationStudio';
+import AutomationCustomersTab from './AutomationCustomersTab';
+import InboxSettingsPanel from './InboxSettingsPanel';
 
 export default function StudioPage() {
   const [allowed, setAllowed] = useState(false);
@@ -29,7 +31,10 @@ export default function StudioPage() {
     return null;
   };
 
+  const SETTINGS_ID = '__inbox_settings__';
+
   const [selectedId, setSelectedId] = useState(getFlowIdFromUrl());
+  const [viewTab, setViewTab] = useState('canvas'); // 'canvas' | 'compaioing_es'
   const selectedAutomation = useMemo(() => list.find(x => x?.id === selectedId) || null, [list, selectedId]);
   const initialFlow = useMemo(() => {
     if (selectedId === 'order_confirmation') return orderFlow;
@@ -71,6 +76,11 @@ export default function StudioPage() {
     };
   }, []);
 
+  useEffect(() => {
+    // Reset to canvas when switching flows
+    setViewTab('canvas');
+  }, [selectedId]);
+
   // When selecting Order Confirmation, fetch latest run and build a live visualization
   useEffect(() => {
     if (selectedId !== 'order_confirmation') return;
@@ -103,6 +113,7 @@ export default function StudioPage() {
 
   const goHome = () => { window.location.href = '/#/automation-studio'; };
   const openFlow = (id) => { window.location.href = '/#/automation-studio/' + encodeURIComponent(id); };
+  const openSettings = () => { window.location.href = '/#/automation-studio/' + encodeURIComponent(SETTINGS_ID); };
   const fetchOrderRun = async (oid) => {
     try {
       setLoadingOrder(true);
@@ -173,6 +184,10 @@ export default function StudioPage() {
                 onClick={() => (window.location.href = '/')}
               >← Back to Inbox</button>
               <button
+                className="px-3 py-1.5 text-sm border rounded"
+                onClick={openSettings}
+              >Inbox Settings</button>
+              <button
                 className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded"
                 onClick={() => {
                   const name = window.prompt('New automation name?');
@@ -189,6 +204,20 @@ export default function StudioPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="border rounded-xl p-4 shadow-sm hover:shadow transition bg-white">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium">Inbox Settings</div>
+                  <div className="text-xs text-gray-500">Test numbers, catalog buttons, confirmation audios</div>
+                </div>
+              </div>
+              <div className="mt-4">
+                <button
+                  className="w-full px-3 py-2 text-sm bg-gray-900 text-white rounded"
+                  onClick={openSettings}
+                >Open</button>
+              </div>
+            </div>
             {homeFlows.map((f) => (
               <div key={f.id} className="border rounded-xl p-4 shadow-sm hover:shadow transition bg-white">
                 <div className="flex items-start justify-between gap-3">
@@ -235,8 +264,25 @@ export default function StudioPage() {
   }
 
   // CANVAS: show single flow editor with back button
+  if (selectedId === SETTINGS_ID) {
+    return (
+      <div className="min-h-screen w-screen bg-white">
+        <div className="h-12 border-b flex items-center justify-between px-3">
+          <div className="flex items-center gap-2">
+            <button className="px-2 py-1 text-sm border rounded" onClick={goHome}>← All flows</button>
+            <div className="font-medium">Inbox Settings</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="px-2 py-1 text-sm bg-gray-800 text-white rounded" onClick={() => (window.location.href = '/')}>Back to Inbox</button>
+          </div>
+        </div>
+        <InboxSettingsPanel />
+      </div>
+    );
+  }
+
   return (
-    <div className="h-screen w-screen bg-white">
+    <div className="h-screen w-screen bg-white flex flex-col">
       <div className="h-12 border-b flex items-center justify-between px-3">
         <div className="flex items-center gap-2">
           <button className="px-2 py-1 text-sm border rounded" onClick={goHome}>← All flows</button>
@@ -285,33 +331,56 @@ export default function StudioPage() {
               >Run Test</button>
             </>
           ) : (
-            <button
-              className="px-2 py-1 text-sm border rounded"
-              onClick={async ()=>{
-                try { await persist(list); alert('Automations saved'); } catch { alert('Failed to save'); }
-              }}
-            >Save</button>
+            <>
+              <button className="px-2 py-1 text-sm border rounded" onClick={openSettings}>Inbox Settings</button>
+              <button
+                className="px-2 py-1 text-sm border rounded"
+                onClick={()=>{
+                  try { window.dispatchEvent(new Event('studio-save-flow')); } catch {}
+                }}
+              >Save</button>
+            </>
           )}
         </div>
       </div>
-      <div className="h-[calc(100vh-14rem)]">
-        <AutomationStudio
-          key={`flow-${selectedId}-${flowVersion}`}
-          initialFlow={initialFlow}
-          onSaveFlow={async (flow)=>{
-            try {
-              const existing = [...list];
-              const idx = existing.findIndex(x => x?.id === selectedId);
-              const entry = { id: selectedId || 'order_confirmation', name: selectedAutomation?.name || (selectedId === 'order_confirmation' ? 'Shopify: Order Confirmation' : selectedId), flow };
-              if (idx >= 0) existing[idx] = entry; else existing.push(entry);
-              setList(existing);
-              await persist(existing);
-              alert('Saved');
-            } catch { alert('Save failed'); }
-          }}
-        />
+
+      {/* Sub-tabs */}
+      <div className="h-10 border-b flex items-center gap-2 px-3 bg-white">
+        <button
+          className={`px-3 py-1.5 text-sm rounded ${viewTab === 'canvas' ? 'bg-slate-900 text-white' : 'border'}`}
+          onClick={() => setViewTab('canvas')}
+        >Canvas</button>
+        <button
+          className={`px-3 py-1.5 text-sm rounded ${viewTab === 'compaioing_es' ? 'bg-slate-900 text-white' : 'border'}`}
+          onClick={() => setViewTab('compaioing_es')}
+        >compaioing es</button>
       </div>
-      {selectedId === 'order_confirmation' && (
+
+      <div className="flex-1 overflow-hidden">
+        {viewTab === 'canvas' ? (
+          <div className={selectedId === 'order_confirmation' ? "h-[calc(100vh-12rem)]" : "h-[calc(100vh-6.5rem)]"}>
+            <AutomationStudio
+              key={`flow-${selectedId}-${flowVersion}`}
+              initialFlow={initialFlow}
+              onSaveFlow={async (flow)=>{
+                try {
+                  const existing = [...list];
+                  const idx = existing.findIndex(x => x?.id === selectedId);
+                  const entry = { id: selectedId || 'order_confirmation', name: selectedAutomation?.name || (selectedId === 'order_confirmation' ? 'Shopify: Order Confirmation' : selectedId), flow };
+                  if (idx >= 0) existing[idx] = entry; else existing.push(entry);
+                  setList(existing);
+                  await persist(existing);
+                  alert('Saved');
+                } catch { alert('Save failed'); }
+              }}
+            />
+          </div>
+        ) : (
+          <AutomationCustomersTab />
+        )}
+      </div>
+
+      {selectedId === 'order_confirmation' && viewTab === 'canvas' && (
         <div className="h-44 border-t bg-white">
           <div className="h-10 border-b flex items-center justify-between px-3">
             <div className="text-sm font-medium">Flow history</div>
