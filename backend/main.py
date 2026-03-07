@@ -35,8 +35,13 @@ import asyncpg
 import mimetypes
 from .google_cloud_storage import upload_file_to_gcs, download_file_from_gcs, maybe_signed_url_for, _parse_gcs_url, _get_client
 from prometheus_fastapi_instrumentator import Instrumentator
-from fastapi_limiter import FastAPILimiter
-from fastapi_limiter.depends import RateLimiter
+try:
+    # fastapi-limiter 0.1.x API
+    from fastapi_limiter import FastAPILimiter  # type: ignore
+    from fastapi_limiter.depends import RateLimiter  # type: ignore
+except Exception:
+    FastAPILimiter = None  # type: ignore
+    RateLimiter = None  # type: ignore
 
 from fastapi.staticfiles import StaticFiles
 try:
@@ -5249,10 +5254,11 @@ async def startup():
         asyncio.create_task(redis_manager.subscribe_ws_events(connection_manager))
     # Initialize rate limiter
     if redis_manager.redis_client:
-        try:
-            await FastAPILimiter.init(redis_manager.redis_client)
-        except Exception as exc:
-            print(f"Rate limiter init failed: {exc}")
+        if FastAPILimiter is not None:
+            try:
+                await FastAPILimiter.init(redis_manager.redis_client)
+            except Exception as exc:
+                print(f"Rate limiter init failed: {exc}")
     # Start webhook background workers so /webhook can ACK quickly.
     try:
         # Best effort: ensure the DB queue table exists before starting DB workers.
@@ -5422,7 +5428,7 @@ async def run_survey_scheduler() -> None:
 # Optional rate limit dependencies that no-op when limiter is not initialized
 async def _optional_rate_limit_text(request: _LimiterRequest, response: _LimiterResponse):
     try:
-        if FastAPILimiter.redis:
+        if FastAPILimiter is not None and getattr(FastAPILimiter, "redis", None):
             limiter = RateLimiter(times=SEND_TEXT_PER_MIN, seconds=60)
             return await limiter(request, response)
     except Exception:
@@ -5430,7 +5436,7 @@ async def _optional_rate_limit_text(request: _LimiterRequest, response: _Limiter
 
 async def _optional_rate_limit_media(request: _LimiterRequest, response: _LimiterResponse):
     try:
-        if FastAPILimiter.redis:
+        if FastAPILimiter is not None and getattr(FastAPILimiter, "redis", None):
             limiter = RateLimiter(times=SEND_MEDIA_PER_MIN, seconds=60)
             return await limiter(request, response)
     except Exception:
