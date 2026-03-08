@@ -1952,17 +1952,46 @@ class DatabaseManager:
                 rows = await cur.fetchall()
             return [r["user_id"] for r in rows]
 
-    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 200, offset: int = 0) -> List[dict]:
+    async def get_conversations_with_stats(self, q: Optional[str] = None, unread_only: bool = False, assigned: Optional[str] = None, tags: Optional[List[str]] = None, unresponded_only: bool = False, limit: int = 200, offset: int = 0) -> List[dict]:
         """Return conversation summaries for chat list with optional filters.
 
         Optimized single-query plan for Postgres; SQLite uses existing per-user aggregation.
+        Filters are applied in SQL so LIMIT/OFFSET paginate correctly over filtered results.
         """
         async with self._conn() as db:
             # Postgres optimized path
             if self.use_postgres:
-                # Fetch a window of conversations ordered by last message time using LATERAL
-                base = self._convert(
-                    """
+                where_parts = []
+                where_params = []
+
+                if unread_only:
+                    where_parts.append(
+                        "EXISTS (SELECT 1 FROM messages mu WHERE mu.user_id = m.user_id AND mu.from_me = 0 AND mu.status != 'read')"
+                    )
+
+                if unresponded_only:
+                    where_parts.append(
+                        "EXISTS (SELECT 1 FROM messages mx WHERE mx.user_id = m.user_id"
+                        " AND mx.from_me = 0 AND mx.status = 'read'"
+                        " AND COALESCE(mx.server_ts, mx.timestamp) > ("
+                        "SELECT COALESCE(MAX(COALESCE(server_ts, timestamp)), '1970-01-01')"
+                        " FROM messages ma WHERE ma.user_id = m.user_id AND ma.from_me = 1))"
+                    )
+
+                if q:
+                    where_params.append(f'%{q.lower()}%')
+                    where_parts.append("LOWER(COALESCE(u.name, m.user_id)) LIKE ?")
+
+                if assigned is not None:
+                    if assigned == "unassigned":
+                        where_parts.append("(cm.assigned_agent IS NULL OR cm.assigned_agent = '')")
+                    else:
+                        where_params.append(assigned)
+                        where_parts.append("cm.assigned_agent = ?")
+
+                where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+                base_query = f"""
                     SELECT
                       m.user_id,
                       u.name,
@@ -1998,14 +2027,16 @@ class DatabaseManager:
                       LIMIT 1
                     ) last_msg ON TRUE
                     LEFT JOIN conversation_meta cm ON cm.user_id = m.user_id
+                    {where_sql}
                     ORDER BY last_msg.ts DESC NULLS LAST
                     LIMIT ? OFFSET ?
-                    """
-                )
-                rows = await db.fetch(base, limit, offset)
+                """
+
+                all_params = where_params + [limit, offset]
+                base = self._convert(base_query)
+                rows = await db.fetch(base, *all_params)
                 conversations: List[dict] = []
                 for r in rows:
-                    # Normalize tags JSON to list
                     tags_raw = r["tags"] if "tags" in r else None
                     try:
                         tags_list = json.loads(tags_raw) if isinstance(tags_raw, str) and tags_raw else []
@@ -2026,18 +2057,6 @@ class DatabaseManager:
                         "assigned_agent": r["assigned_agent"],
                         "tags": tags_list,
                     }
-                    # Apply light in-memory filters
-                    if q:
-                        t = (conv.get("name") or conv.get("user_id") or "").lower()
-                        if q.lower() not in t:
-                            continue
-                    if unread_only and not (conv.get("unread_count") or 0) > 0:
-                        continue
-                    if assigned is not None:
-                        if assigned == "unassigned" and conv.get("assigned_agent"):
-                            continue
-                        if assigned not in (None, "unassigned") and conv.get("assigned_agent") != assigned:
-                            continue
                     if tags:
                         conv_tags = set(conv.get("tags") or [])
                         if not set(tags).issubset(conv_tags):
@@ -2109,12 +2128,13 @@ class DatabaseManager:
                     "assigned_agent": meta.get("assigned_agent"),
                     "tags": meta.get("tags", []),
                 }
-                # Apply filters in-memory
                 if q:
                     t = (conv.get("name") or conv.get("user_id") or "").lower()
                     if q.lower() not in t:
                         continue
                 if unread_only and not (conv.get("unread_count") or 0) > 0:
+                    continue
+                if unresponded_only and not (conv.get("unresponded_count") or 0) > 0:
                     continue
                 if assigned is not None:
                     if assigned == "unassigned" and conv.get("assigned_agent"):
@@ -2128,7 +2148,6 @@ class DatabaseManager:
                 conversations.append(conv)
 
             conversations.sort(key=lambda x: x["last_message_time"] or "", reverse=True)
-            # Apply pagination for SQLite path
             return conversations[offset: offset + limit]
 
     # ── Settings (key/value JSON) ──────────────────────────────────
@@ -5883,9 +5902,11 @@ async def get_conversations(q: Optional[str] = None, unread_only: bool = False, 
     """Get conversations with optional filters: q, unread_only, assigned, tags (csv), unresponded_only."""
     try:
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
-        conversations = await db_manager.get_conversations_with_stats(q=q, unread_only=unread_only, assigned=assigned, tags=tag_list, limit=max(1, min(limit, 500)), offset=max(0, offset))
-        if unresponded_only:
-            conversations = [c for c in conversations if (c.get("unresponded_count") or 0) > 0]
+        conversations = await db_manager.get_conversations_with_stats(
+            q=q, unread_only=unread_only, assigned=assigned, tags=tag_list,
+            unresponded_only=unresponded_only,
+            limit=max(1, min(limit, 500)), offset=max(0, offset),
+        )
         return conversations
     except Exception as e:
         print(f"Error fetching conversations: {e}")
